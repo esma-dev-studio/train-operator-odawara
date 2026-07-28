@@ -1504,29 +1504,81 @@ export class RailScene {
     });
   }
 
-  /* ---------- 駅の人々(待つ・乗る・降りる) ---------- */
+  /* ---------- 駅の人々(待つ・乗る・降りる。脚と腕が歩きで振れる) ---------- */
   _buildPeople() {
-    const palette = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0x2e6e62, 0x714a71, 0x4f6636];
+    const shirt = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0x2e6e62, 0x714a71, 0x4f6636];
+    const pants = [0x2b3138, 0x3a3f46, 0x4a4038, 0x333a42, 0x26303a];
+    const hairs = [0x201a16, 0x3a2c20, 0x4a3a2a, 0x14161a];
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xd8b49a, roughness: 0.8 });
     this.people = [];
     for (let i = 0; i < 12; i++) {
       const g = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.19, 0.95, 7),
-        new THREE.MeshStandardMaterial({ color: palette[i % palette.length], roughness: 0.9 }));
-      body.position.y = 0.68;
+      const bodyMat = new THREE.MeshStandardMaterial({ color: shirt[i % shirt.length], roughness: 0.9 });
+      const pantMat = new THREE.MeshStandardMaterial({ color: pants[i % pants.length], roughness: 0.9 });
+      const hairMat = new THREE.MeshStandardMaterial({ color: hairs[i % hairs.length], roughness: 0.85 });
+      /* 胴(上着) */
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.175, 0.55, 8), bodyMat);
+      body.position.y = 0.96;
       body.castShadow = true;
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 7),
-        new THREE.MeshStandardMaterial({ color: 0xd8b49a, roughness: 0.8 }));
-      head.position.y = 1.34;
+      g.add(body);
+      /* 脚2本(股関節で振る) */
+      const legGeo = new THREE.CylinderGeometry(0.055, 0.062, 0.62, 6);
+      legGeo.translate(0, -0.31, 0);
+      const legL = new THREE.Mesh(legGeo, pantMat);
+      legL.position.set(-0.075, 0.68, 0);
+      legL.castShadow = true;
+      const legR = legL.clone();
+      legR.position.x = 0.075;
+      g.add(legL, legR);
+      /* 腕2本(肩で振る) */
+      const armGeo = new THREE.CylinderGeometry(0.038, 0.042, 0.5, 6);
+      armGeo.translate(0, -0.25, 0);
+      const armL = new THREE.Mesh(armGeo, bodyMat);
+      armL.position.set(-0.21, 1.2, 0);
+      const armR = armL.clone();
+      armR.position.x = 0.21;
+      g.add(armL, armR);
+      /* 頭+髪 */
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.135, 9, 8), skinMat);
+      head.position.y = 1.42;
       head.castShadow = true;
-      g.add(body, head);
-      g.scale.setScalar(0.82 + (i % 5) * 0.055);
+      g.add(head);
+      const hair = new THREE.Mesh(new THREE.SphereGeometry(0.14, 9, 8), hairMat);
+      hair.scale.set(1, 0.72, 1);
+      hair.position.set(0, 1.49, -0.025);
+      g.add(hair);
+      g.scale.setScalar(0.86 + (i % 5) * 0.05);
       g.visible = false;
       this.scene.add(g);
-      this.people.push(g);
+      this.people.push({ g, legL, legR, armL, armR, ph: i * 1.7 });
     }
+    this._tmpPrev = new THREE.Vector3();
   }
 
-  _updatePeople() {
+  /* 1人分の配置+歩行アニメ。dirWorldは歩く向き(nullなら立ち) */
+  _placeFig(fig, pos, dirWorld, dt, speed) {
+    fig.g.position.copy(pos);
+    if (dirWorld && speed > 0.05) {
+      fig.g.rotation.y = Math.atan2(dirWorld.x, dirWorld.z);
+      fig.ph += dt * (4.5 + speed * 2.2);
+      const sw = Math.sin(fig.ph);
+      fig.legL.rotation.x = sw * 0.5;
+      fig.legR.rotation.x = -sw * 0.5;
+      fig.armL.rotation.x = -sw * 0.38;
+      fig.armR.rotation.x = sw * 0.38;
+      fig.g.position.y += Math.abs(Math.cos(fig.ph)) * 0.025;
+    } else {
+      /* 立ち: 手足を下ろして小さくゆれる */
+      fig.legL.rotation.x *= 0.8;
+      fig.legR.rotation.x *= 0.8;
+      fig.armL.rotation.x *= 0.8;
+      fig.armR.rotation.x *= 0.8;
+      fig.g.position.y += Math.sin(this.clockT * 1.6 + fig.ph) * 0.008;
+    }
+    fig.g.visible = true;
+  }
+
+  _updatePeople(dt) {
     if (!this.people) return;
     const sim = this.sim;
     /* ドア開放中は「いま停まっている駅」(到着でstopIdxはもう次を指している) */
@@ -1534,49 +1586,51 @@ export class RailScene {
     const next = cur || sim.stops[sim.stopIdx];
     const d = next ? next.stopAt - sim.pos : 1e9;
     if (!next || d > 430 || d < -40) {
-      this.people.forEach((p) => { p.visible = false; });
+      this.people.forEach((p) => { p.g.visible = false; });
       return;
     }
     const F = this.frames;
-    /* ドア開放中の進行度(0→1)。dwellはおよそ20秒とみなす */
     const f01 = sim.doorOpen ? Math.min(1, Math.max(0, 1 - (this._departOf() - sim.t) / 20)) : 0;
+    const P = new THREE.Vector3();
     /* 自ホーム(進行左側)の6人: 0-1=降りる人, 2-5=乗る人 */
     for (let i = 0; i < 6; i++) {
-      const p = this.people[i];
+      const fig = this.people[i];
       const s = next.stopAt + 8 - i * 13;
       const fr = frameAt(F, this.step, Math.max(2, s));
-      let lat;
-      let vis = true;
+      let lat, walking = 0, dir = null;
       if (!sim.doorOpen) {
-        lat = 3.5 + (i % 3) * 0.35;   // 待っている
-        if (i < 2) vis = false;        // 降りる人はドアが開くまでいない
+        lat = 3.5 + (i % 3) * 0.35;
+        if (i < 2) { fig.g.visible = false; continue; }
       } else if (i < 2) {
         const pk = Math.min(1, Math.max(0, f01 * 1.7 - i * 0.25));
-        lat = 1.95 + pk * 2.3;         // 電車から降りて離れる
+        lat = 1.95 + pk * 2.3;
+        if (pk > 0 && pk < 1) { walking = 1; dir = fr.left.clone(); }
       } else {
         const pk = Math.min(1, Math.max(0, f01 * 1.6 - (i - 2) * 0.18));
-        lat = 3.6 - pk * 1.65;         // 電車へ歩いて乗る
-        if (pk >= 1) vis = false;      // 乗車済み
+        lat = 3.6 - pk * 1.65;
+        if (pk >= 1) { fig.g.visible = false; continue; }
+        if (pk > 0) { walking = 1; dir = fr.left.clone().negate(); }
       }
-      p.position.copy(fr.p).addScaledVector(fr.left, lat);
-      p.position.y += 1.02;
-      p.visible = vis;
+      P.copy(fr.p).addScaledVector(fr.left, lat);
+      P.y += 1.02;
+      this._placeFig(fig, P, dir, dt, walking);
     }
-    /* 向かいホームの6人: 接近中は立って待ち、停車中は歩く人の流れになる
-     * (停車時は運転台が先頭=ホームの端なので、動きが前方に見えるように) */
+    /* 向かいホームの6人: 接近中は立って待ち、停車中は歩く流れ */
     for (let i = 6; i < 12; i++) {
-      const p = this.people[i];
+      const fig = this.people[i];
       const k = i - 6;
-      let s;
+      let s, walking = 0, dir = null;
       if (sim.doorOpen) {
-        s = next.stopAt + 12 - ((this.clockT * 8 + k * 29) % 172);   // ホームを歩く流れ
+        s = next.stopAt + 12 - ((this.clockT * 8 + k * 29) % 172);
+        walking = 1;
       } else {
-        s = next.stopAt - 12 - k * 21;                               // 待っている
+        s = next.stopAt - 12 - k * 21;
       }
       const fr = frameAt(F, this.step, Math.max(2, s));
-      p.position.copy(fr.p).addScaledVector(fr.left, -6.4 - (i % 3) * 0.3);
-      p.position.y += 1.02 + Math.sin(this.clockT * 1.8 + i) * 0.012;
-      p.visible = true;
+      if (walking) dir = fr.t.clone().negate();
+      P.copy(fr.p).addScaledVector(fr.left, -6.4 - (i % 3) * 0.3);
+      P.y += 1.02;
+      this._placeFig(fig, P, dir, dt, walking);
     }
   }
 
@@ -1654,7 +1708,7 @@ export class RailScene {
     if (this.wheelSpin) this.wheelSpin.rotation.z += dt * 0.05;
     /* 踏切と駅の人々 */
     this._updateCrossings(dt);
-    this._updatePeople();
+    this._updatePeople(dt);
 
     this.renderer.render(this.scene, this.camera);
 

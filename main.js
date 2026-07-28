@@ -210,12 +210,19 @@ const App = {
     $('#btn-res-select').addEventListener('click', () => this.quitDrive());
     $('#btn-overrun-retry').addEventListener('click', () => { $('#overrun-modal').classList.add('hidden'); this.retryStation(); });
 
-    /* タッチ用ボタン(すすむ/ブレーキ/けいてき/ポーズ) */
+    /* タッチ用ボタン(すすむ/ブレーキ/けいてき/ポーズ)
+     * ▲▼はレバーを1段ずつ動かすのと同じ。押したらレバーの持ち手を光らせて関係を見せる */
+    const flashGrip = () => {
+      const g = $('#lever-grip');
+      g.classList.add('tb-flash');
+      clearTimeout(this._gripFlashT);
+      this._gripFlashT = setTimeout(() => g.classList.remove('tb-flash'), 320);
+    };
     $('#tb-up').addEventListener('click', () => {
-      if (this.running && !this.paused) this.sim.setNotch(Math.min(4, this.sim.notch + 1));
+      if (this.running && !this.paused) { this.sim.setNotch(Math.min(4, this.sim.notch + 1)); flashGrip(); }
     });
     $('#tb-dn').addEventListener('click', () => {
-      if (this.running && !this.paused) this.sim.setNotch(Math.max(-8, this.sim.notch - 1));
+      if (this.running && !this.paused) { this.sim.setNotch(Math.max(-8, this.sim.notch - 1)); flashGrip(); }
     });
     $('#tb-horn').addEventListener('click', () => { if (this.running && !this.paused && this.audio) this.audio.horn(); });
     $('#btn-pause-touch').addEventListener('click', () => { if (this.running) this.setPaused(!this.paused); });
@@ -390,6 +397,35 @@ const App = {
       el.innerHTML = txt;
       el.classList.toggle('hidden', !txt);
     }
+
+    /* 大型HUD(じそく・のこりm/あと秒) */
+    if (!this._bh) {
+      this._bh = {
+        v: $('#bh-v'), cap: $('#bh-ctx-cap'), num: $('#bh-ctx-num'),
+        unit: $('#bh-ctx-unit'), row: document.querySelector('.bh-ctx'),
+      };
+    }
+    const bv = String(Math.round(sim.v));
+    if (this._bh.v.textContent !== bv) this._bh.v.textContent = bv;
+    let cap, num, unit, warn = false;
+    if (h.doorOpen) {
+      cap = 'しゅっぱつまで';
+      num = String(Math.max(0, Math.ceil((h.next ? h.next.dep : sim._departTime) - sim.t)));
+      unit = 'びょう';
+      warn = Number(num) <= 5;
+    } else if (h.next) {
+      cap = 'えきまで';
+      const dm = Math.max(0, h.next.dist);
+      num = dm >= 1000 ? (dm / 1000).toFixed(1) : String(Math.round(dm));
+      unit = dm >= 1000 ? 'km' : 'm';
+      warn = dm < 250;
+    } else {
+      cap = 'ゴールまで'; num = '—'; unit = '';
+    }
+    if (this._bh.num.textContent !== num) this._bh.num.textContent = num;
+    if (this._bh.cap.textContent !== cap) this._bh.cap.textContent = cap;
+    if (this._bh.unit.textContent !== unit) this._bh.unit.textContent = unit;
+    this._bh.row.classList.toggle('bh-warn', warn);
   },
 
   retryStation() {

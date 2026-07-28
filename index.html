@@ -57,7 +57,8 @@
     </div>
     <div class="sel-keys">
       <b>そうさ</b>　<span class="key-item">↑ = すすむ</span><span class="key-item">↓ = ブレーキ</span><span class="key-item">スペース = きんきゅうブレーキ</span><span class="key-item">H = けいてき</span><span class="key-item">P = ポーズ</span><br>
-      iPadは、みぎはしの<b>レバー</b>をゆびで上下にうごかしてね
+      iPadは、みぎはしの<b>レバー</b>をゆびで上下にうごかしてね<br>
+      （<b>▲すすむ／▼ブレーキ</b>ボタンは、レバーを1だんずつうごかすボタン。おなじものだよ）
     </div>
     <div class="t-btns">
       <button id="btn-start" class="btn btn-primary"><ruby>出発<rt>しゅっぱつ</rt></ruby>する！</button>
@@ -74,7 +75,12 @@
     </div>
     <button id="btn-pause-touch" class="gl-btn" title="ポーズ">⏸</button>
     <div id="coach" class="hidden"></div>
+    <div id="bighud">
+      <div class="bh-row"><span class="bh-cap">じそく</span><span id="bh-v">0</span><small>km/h</small></div>
+      <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small></div>
+    </div>
     <div id="touch-btns">
+      <span class="tb-cap">レバー</span>
       <button id="tb-up" class="tb">▲<span>すすむ</span></button>
       <button id="tb-dn" class="tb">▼<span>ブレーキ</span></button>
       <button id="tb-horn" class="tb tb-horn">♪<span>けいてき</span></button>
