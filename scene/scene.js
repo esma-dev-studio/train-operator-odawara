@@ -128,14 +128,26 @@ const texBuilding = (base, opt = {}) => canvasTex(128, 256, (c) => {
   ao.addColorStop(0.7, 'rgba(0,0,0,0.07)');
   ao.addColorStop(1, 'rgba(0,0,0,0.30)');
   c.fillStyle = ao; c.fillRect(0, 0, 128, 256);
+  const N = !!opt.night;
+  if (N) { c.fillStyle = 'rgba(8,10,14,0.85)'; c.fillRect(0, 0, 128, 256); }   // 夜: 壁を沈める
   const bottom = opt.shop ? 204 : 246;
   for (let y = 12; y < bottom - 8; y += 20) {
     /* 階スラブの影とハイライト */
-    c.fillStyle = 'rgba(0,0,0,0.22)'; c.fillRect(0, y + 15, 128, 3);
-    c.fillStyle = 'rgba(255,255,255,0.07)'; c.fillRect(0, y + 18, 128, 1.5);
+    c.fillStyle = N ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.22)'; c.fillRect(0, y + 15, 128, 3);
+    c.fillStyle = N ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.07)'; c.fillRect(0, y + 18, 128, 1.5);
     for (let x = 7; x < 118; x += 17) {
       const lit = ((x * 7 + y * 13 + seed * 5) % 23) / 23;
-      if (lit < (opt.winRatio || 0.86)) {
+      if (N) {
+        /* 夜: 4割の窓が暖色に灯る */
+        if (lit < 0.4) {
+          const g = c.createLinearGradient(0, y, 0, y + 12);
+          g.addColorStop(0, 'rgba(255,220,158,0.98)');
+          g.addColorStop(1, 'rgba(232,168,86,0.98)');
+          c.fillStyle = g;
+        } else {
+          c.fillStyle = 'rgba(14,18,24,0.96)';
+        }
+      } else if (lit < (opt.winRatio || 0.86)) {
         const g = c.createLinearGradient(0, y, 0, y + 12);
         g.addColorStop(0, `rgba(${Math.round(150 + lit * 45)},${Math.round(175 + lit * 30)},210,0.95)`);
         g.addColorStop(1, `rgba(${Math.round(58 + lit * 30)},${Math.round(78 + lit * 30)},104,0.95)`);
@@ -145,36 +157,49 @@ const texBuilding = (base, opt = {}) => canvasTex(128, 256, (c) => {
       }
       c.fillRect(x, y, 12, 12);
       c.fillStyle = 'rgba(0,0,0,0.28)'; c.fillRect(x, y + 11, 12, 1.6);
-      if (opt.balcony) { c.fillStyle = 'rgba(255,255,255,0.34)'; c.fillRect(x - 2, y + 13, 15, 2); }
+      if (opt.balcony) { c.fillStyle = N ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.34)'; c.fillRect(x - 2, y + 13, 15, 2); }
     }
   }
   if (opt.shop) {
-    /* 1階: ガラスの店先+色ちがいのひさし+看板 */
-    c.fillStyle = '#18222e'; c.fillRect(3, 214, 122, 40);
-    c.fillStyle = 'rgba(160,190,215,0.22)';
-    c.beginPath(); c.moveTo(12, 254); c.lineTo(44, 214); c.lineTo(62, 214); c.lineTo(30, 254); c.fill();
+    /* 1階: ガラスの店先+色ちがいのひさし+看板(夜はこうこうと灯る) */
+    c.fillStyle = N ? '#f2c87e' : '#18222e'; c.fillRect(3, 214, 122, 40);
+    if (N) {
+      c.fillStyle = 'rgba(255,244,214,0.85)'; c.fillRect(3, 214, 122, 14);
+    } else {
+      c.fillStyle = 'rgba(160,190,215,0.22)';
+      c.beginPath(); c.moveTo(12, 254); c.lineTo(44, 214); c.lineTo(62, 214); c.lineTo(30, 254); c.fill();
+    }
     const awn = ['#a8503e', '#3e64a8', '#3e8a58', '#b08a3a'];
     for (let x = 3, i = 0; x < 120; x += 41, i++) {
       c.fillStyle = awn[(seed + i) % awn.length];
       c.fillRect(x, 206, 36, 9);
+      if (N) { c.fillStyle = 'rgba(0,0,0,0.35)'; c.fillRect(x, 206, 36, 9); }
     }
-    c.fillStyle = '#ece8de'; c.fillRect(26, 191, 76, 12);
-    c.fillStyle = 'rgba(40,50,60,0.8)';
+    c.fillStyle = N ? '#fff6dc' : '#ece8de'; c.fillRect(26, 191, 76, 12);
+    c.fillStyle = N ? 'rgba(60,50,30,0.85)' : 'rgba(40,50,60,0.8)';
     for (let x = 32; x < 96; x += 9) c.fillRect(x, 194, 5, 6);
   }
   c.fillStyle = 'rgba(0,0,0,0.32)'; c.fillRect(0, 0, 128, 7);
-  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(0, 7, 128, 2);
+  c.fillStyle = N ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.12)'; c.fillRect(0, 7, 128, 2);
 });
 
 /* 戸建て外壁 */
-const texHouse = () => canvasTex(64, 64, (c) => {
-  c.fillStyle = '#c9c3b8';
+const texHouse = (opt = {}) => canvasTex(64, 64, (c) => {
+  const N = !!opt.night;
+  c.fillStyle = N ? '#33363c' : '#c9c3b8';
   c.fillRect(0, 0, 64, 64);
   for (let y = 8; y < 64; y += 9) { c.fillStyle = 'rgba(0,0,0,0.05)'; c.fillRect(0, y, 64, 1.5); }
-  c.fillStyle = 'rgba(52,64,76,0.9)';
-  c.fillRect(9, 24, 15, 16); c.fillRect(39, 24, 15, 16);
-  c.fillStyle = 'rgba(235,242,248,0.35)';
-  c.fillRect(9, 24, 15, 5); c.fillRect(39, 24, 15, 5);
+  if (N) {
+    c.fillStyle = 'rgba(255,222,160,0.98)';
+    c.fillRect(9, 24, 15, 16);                       // 灯りのついた窓
+    c.fillStyle = 'rgba(12,15,20,0.95)';
+    c.fillRect(39, 24, 15, 16);                      // 消えている窓
+  } else {
+    c.fillStyle = 'rgba(52,64,76,0.9)';
+    c.fillRect(9, 24, 15, 16); c.fillRect(39, 24, 15, 16);
+    c.fillStyle = 'rgba(235,242,248,0.35)';
+    c.fillRect(9, 24, 15, 5); c.fillRect(39, 24, 15, 5);
+  }
   c.fillStyle = 'rgba(0,0,0,0.18)'; c.fillRect(0, 56, 64, 8);
 });
 
@@ -278,6 +303,7 @@ export class RailScene {
     this.step = line.meta.step;
     this.frames = buildFrames(line);
     this.quality = QUALITY[opts.quality] ? opts.quality : 'high';
+    this.night = !!opts.night;
     const Q = QUALITY[this.quality];
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -355,7 +381,7 @@ export class RailScene {
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     this._pmrem.compileEquirectangularShader();
     const rl = new RGBELoader();
-    [['clear', './assets/sky/sky_clear.hdr'], ['rain', './assets/sky/sky_overcast.hdr']].forEach(([k, url]) => {
+    [['clear', './assets/sky/sky_clear.hdr'], ['rain', './assets/sky/sky_overcast.hdr'], ['night', './assets/sky/sky_night.hdr']].forEach(([k, url]) => {
       rl.load(url, (t) => {
         t.mapping = THREE.EquirectangularReflectionMapping;
         this.env[k] = { bg: t, ibl: this._pmrem.fromEquirectangular(t).texture };
@@ -391,6 +417,13 @@ export class RailScene {
     this._buildRailsideDetails();
     this._buildPlatformFurniture();
     this._buildPeople();
+    /* 建物材質や駅照明ができた後に、昼夜・天候の見た目を確定させる */
+    this._applyWeather();
+  }
+
+  setNight(n) {
+    this.night = !!n;
+    this._applyWeather();
   }
 
   /* 踏切候補の選定 */
@@ -440,25 +473,29 @@ export class RailScene {
 
   _applyWeather() {
     const rain = this.weather === 'rain';
-    const key = rain ? 'rain' : 'clear';
+    const night = !!this.night;
+    const key = night ? 'night' : rain ? 'rain' : 'clear';
     const env = this.env[key];
     if (env) {
       this.scene.background = env.bg;
       this.scene.environment = env.ibl;
-      this.scene.backgroundIntensity = rain ? 0.85 : 1.0;
+      this.scene.backgroundIntensity = night ? (rain ? 0.55 : 0.8) : rain ? 0.85 : 1.0;
     } else {
-      this.scene.background = new THREE.Color(rain ? 0x8d959c : 0xa8c4dd);
+      this.scene.background = new THREE.Color(night ? 0x0a0f16 : rain ? 0x8d959c : 0xa8c4dd);
       this.scene.environment = null;
     }
-    this.scene.fog = rain
-      ? new THREE.Fog(0x99a1a8, 140, 780)
-      : new THREE.Fog(0xcfd9e2, 300, 1500);
-    this.renderer.toneMappingExposure = rain ? 0.92 : 1.08;
-    this.sun.intensity = rain ? 0.45 : 2.8;
-    this.sun.color.setHex(rain ? 0xdfe4ea : 0xfff0da);
+    this.scene.fog = night
+      ? (rain ? new THREE.Fog(0x0a0e13, 110, 560) : new THREE.Fog(0x0c1119, 180, 1050))
+      : rain
+        ? new THREE.Fog(0x99a1a8, 140, 780)
+        : new THREE.Fog(0xcfd9e2, 300, 1500);
+    this.renderer.toneMappingExposure = night ? (rain ? 0.8 : 0.9) : rain ? 0.92 : 1.08;
+    /* 夜は月明かり */
+    this.sun.intensity = night ? 0.32 : rain ? 0.45 : 2.8;
+    this.sun.color.setHex(night ? 0xa8bcd8 : rain ? 0xdfe4ea : 0xfff0da);
     this.sun.castShadow = QUALITY[this.quality].shadowsOn && !rain;
-    this.hemi.intensity = rain ? 0.55 : 0.45;
-    if (this.headlight) this.headlight.intensity = rain ? 850 : 700;
+    this.hemi.intensity = night ? 0.14 : rain ? 0.55 : 0.45;
+    if (this.headlight) this.headlight.intensity = night ? (rain ? 1900 : 1600) : rain ? 850 : 700;
     /* 濡れ表現 */
     this.M.railHead.roughness = rain ? 0.12 : 0.3;
     this.M.ballast.color.setHex(rain ? 0x6e6b66 : 0xaaa59b);
@@ -466,8 +503,23 @@ export class RailScene {
     this.M.apron.roughness = rain ? 0.5 : 0.95;
     this.M.plat.color.setHex(rain ? 0x93908a : 0xc2bfb6);
     this.M.plat.roughness = rain ? 0.45 : 0.95;
-    this.M.water.roughness = rain ? 0.38 : 0.3;
-    this.M.water.color.setHex(rain ? 0x49525a : 0x455e6d);
+    this.M.water.roughness = night ? 0.22 : rain ? 0.38 : 0.3;
+    this.M.water.color.setHex(night ? 0x141c26 : rain ? 0x49525a : 0x455e6d);
+    /* 夜: ビル・住宅を窓明かりテクスチャへ切替 */
+    if (this._bldMats) {
+      this._bldMats.forEach(({ m, day, night: nt }) => {
+        m.map = night ? nt : day;
+        m.emissiveMap = night ? nt : null;
+        m.emissive.setHex(night ? 0x9a8968 : 0x000000);
+        m.needsUpdate = true;
+      });
+    }
+    /* 駅ホームの照明 */
+    if (this.stationLamps) this.stationLamps.visible = night;
+    /* 自販機の面板が光る */
+    if (this._vendFrontMat) {
+      this._vendFrontMat.emissive.setHex(night ? 0xcfe0ee : 0x000000);
+    }
   }
 
   /* ---------- 軌道 ---------- */
@@ -729,6 +781,29 @@ export class RailScene {
     const m4 = new THREE.Matrix4();
     colList.forEach((p, i) => { m4.makeTranslation(p.x, p.y, p.z); cols.setMatrixAt(i, m4); });
     this.scene.add(cols);
+
+    /* ホーム屋根下の照明(夜モードで点灯) */
+    const lampSpots = [];
+    this.line.stations.forEach((st) => {
+      if (this._inTunnel(st.s)) return;
+      [3.05, -6.85].forEach((off) => {
+        for (let s = st.s - 140; s < st.s + 6; s += 12) {
+          const f = frameAt(F, this.step, s);
+          lampSpots.push({ f, off });
+        }
+      });
+    });
+    const slGeo = new THREE.BoxGeometry(0.14, 0.08, 1.7);
+    const slMat = new THREE.MeshBasicMaterial({ color: 0xfff3d2 });
+    this.stationLamps = new THREE.InstancedMesh(slGeo, slMat, lampSpots.length);
+    const q4 = new THREE.Quaternion(), one4 = new THREE.Vector3(1, 1, 1), m4b = new THREE.Matrix4();
+    lampSpots.forEach((a, i) => {
+      q4.setFromUnitVectors(new THREE.Vector3(0, 0, 1), a.f.t);
+      m4b.compose(a.f.p.clone().addScaledVector(a.f.left, a.off).setY(a.f.p.y + 4.15), q4, one4);
+      this.stationLamps.setMatrixAt(i, m4b);
+    });
+    this.stationLamps.visible = false;
+    this.scene.add(this.stationLamps);
   }
 
   /* ---------- 信号機 ---------- */
@@ -800,12 +875,27 @@ export class RailScene {
   _buildTown() {
     const F = this.frames;
     const rng = (() => { let x = 12345; return () => (x = (x * 16807) % 2147483647) / 2147483647; })();
-    const mats = [
-      new THREE.MeshStandardMaterial({ map: texBuilding('#8f979e', { shop: true, seed: 1 }), roughness: 0.85 }),
-      new THREE.MeshStandardMaterial({ map: texBuilding('#a39b90', { balcony: true, winRatio: 0.8, seed: 2 }), roughness: 0.9 }),
-      new THREE.MeshStandardMaterial({ map: texBuilding('#79828c', { shop: true, winRatio: 0.95, seed: 3 }), roughness: 0.7, metalness: 0.15 }),
-      new THREE.MeshStandardMaterial({ map: texHouse(), roughness: 0.9 }),
+    /* 昼テクスチャと夜テクスチャ(窓明かり)の両方を用意し、夜モードで差し替える */
+    const bldDefs = [
+      ['#8f979e', { shop: true, seed: 1 }, { roughness: 0.85 }],
+      ['#a39b90', { balcony: true, winRatio: 0.8, seed: 2 }, { roughness: 0.9 }],
+      ['#79828c', { shop: true, winRatio: 0.95, seed: 3 }, { roughness: 0.7, metalness: 0.15 }],
     ];
+    this._bldMats = [];
+    const mats = bldDefs.map(([base, o, mo]) => {
+      const day = texBuilding(base, o);
+      const nightT = texBuilding(base, { ...o, night: true });
+      const m = new THREE.MeshStandardMaterial({ map: day, ...mo });
+      this._bldMats.push({ m, day, night: nightT });
+      return m;
+    });
+    {
+      const day = texHouse();
+      const nightT = texHouse({ night: true });
+      const m = new THREE.MeshStandardMaterial({ map: day, roughness: 0.9 });
+      this._bldMats.push({ m, day, night: nightT });
+      mats.push(m);
+    }
     const geo = new THREE.BoxGeometry(1, 1, 1);
     geo.translate(0, 0.5, 0);
     const groups = mats.map((m) => ({ m, list: [] }));
@@ -1548,8 +1638,8 @@ export class RailScene {
     if (vendIm.instanceColor) vendIm.instanceColor.needsUpdate = true;
     vendIm.castShadow = true;
     put(vendIm, vends, 1.87);
-    const frontIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.1, 0.05),
-      new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 }), fronts.length);
+    this._vendFrontMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 });
+    const frontIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.1, 0.05), this._vendFrontMat, fronts.length);
     put(frontIm, fronts, 1.95);
   }
 

@@ -75,7 +75,7 @@ const App = {
   line: null, timetable: null,
   sim: null, scene: null, cab: null, audio: null,
   running: false, paused: false,
-  service: 'local', weather: 'clear', startIdx: 0, quality: 'high',
+  service: 'local', weather: 'clear', daytime: 'day', startIdx: 0, quality: 'high',
   save: { best: {} },
   debug: /[?&]debug=1/.test(location.search),
 
@@ -177,6 +177,10 @@ const App = {
 
     document.querySelectorAll('input[name=weather]').forEach((r) => {
       r.addEventListener('change', () => { this.weather = document.querySelector('input[name=weather]:checked').value; });
+    });
+
+    document.querySelectorAll('input[name=daytime]').forEach((r) => {
+      r.addEventListener('change', () => { this.daytime = document.querySelector('input[name=daytime]:checked').value; });
     });
 
     document.querySelectorAll('input[name=quality]').forEach((r) => {
@@ -302,9 +306,12 @@ const App = {
     this.lastStationIdx = startIdx;
     try {
       if (!this.scene) {
-        this.scene = new RailScene($('#gl'), this.line, this.sim, { quality: this.quality });
+        this.scene = new RailScene($('#gl'), this.line, this.sim, {
+          quality: this.quality, night: this.daytime === 'night',
+        });
       } else {
         this.scene.sim = this.sim;
+        this.scene.night = this.daytime === 'night';
         this.scene.setWeather(this.weather);
       }
     } catch (err) {
@@ -315,6 +322,7 @@ const App = {
     }
     this.scene.setWeather(this.weather);
     if (!this.cab) this.cab = new Cab(this.sim); else this.cab.sim = this.sim;
+    this.cab.baseHour = this.daytime === 'night' ? 19 : 10;   // 夜行路は19時発の表示
     if (!this.rainGlass) this.rainGlass = new RainGlass($('#rain-glass'));
     this.rainGlass.setActive(this.weather === 'rain');
     if (!this.audio) this.audio = new CabAudio();
@@ -463,7 +471,7 @@ const App = {
     $('#res-rank').textContent = res.rank;
     $('#res-rank').className = 'res-rank rk-' + res.rank;
     $('#res-total').textContent = res.total;
-    $('#res-svc').innerHTML = `${rubySvc(SERVICES[this.service].name)}　<ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby>${this.weather === 'rain' ? '　（あめ）' : ''}`;
+    $('#res-svc').innerHTML = `${rubySvc(SERVICES[this.service].name)}　<ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby>${this.weather === 'rain' ? '　（あめ）' : ''}${this.daytime === 'night' ? '　（よる）' : ''}`;
     $('#res-title').textContent = res.total >= 95 ? 'でんせつの うんてんし' : res.total >= 85 ? 'めいじん うんてんし' : res.total >= 70 ? 'いちにんまえ うんてんし' : res.total >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
     const bd = res.breakdown;
     $('#res-breakdown').innerHTML = [

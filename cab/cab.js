@@ -42,8 +42,8 @@ export class Cab {
   }
 
   fmtClock(t) {
-    /* ゲーム内時刻: 10:00発 基準 */
-    const total = Math.floor(t) + 10 * 3600;
+    /* ゲーム内時刻: 昼は10:00発、夜は19:00発 */
+    const total = Math.floor(t) + (this.baseHour || 10) * 3600;
     const h = Math.floor(total / 3600) % 24;
     const m = Math.floor((total % 3600) / 60);
     const s = Math.floor(total % 60);
