@@ -49,6 +49,13 @@
       <label class="sel-label">出発駅</label>
       <select id="start-select"></select>
     </div>
+    <div class="sel-row">
+      <label class="sel-label">画質</label>
+      <label class="radio"><input type="radio" name="quality" value="high"><span>高</span></label>
+      <label class="radio"><input type="radio" name="quality" value="mid"><span>中</span></label>
+      <label class="radio"><input type="radio" name="quality" value="low"><span>低</span></label>
+      <span class="sel-note">重い場合は自動で下がります</span>
+    </div>
     <div class="sel-keys">
       <b>操作</b>　↑/W: ノッチ進め　↓/S: ノッチ戻し　N: 切　Space: 非常　H: 警笛　P/Esc: 一時停止<br>
       タブレットは右端のレバーを上下にドラッグ
@@ -71,6 +78,8 @@
       <p>停止位置を大きく行き過ぎました。<br>直前の駅からやり直します。</p>
       <button id="btn-overrun-retry" class="btn btn-primary">やり直す</button>
     </div>
+    <canvas id="rain-glass"></canvas>
+    <div id="glass-sheen"></div>
     <div id="cab-frame-l"></div><div id="cab-frame-r"></div><div id="cab-frame-t"></div>
   </div>
 

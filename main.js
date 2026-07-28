@@ -9,11 +9,68 @@ import { CabAudio } from './audio/audio.js';
 const $ = (s) => document.querySelector(s);
 const SAVE_KEY = 'trainop_v1';
 
+/* 雨天のフロントガラス演出(水滴+ワイパー) */
+class RainGlass {
+  constructor(canvas) {
+    this.cv = canvas;
+    this.c = canvas.getContext('2d');
+    this.drops = [];
+    this.t = 0;
+    this.active = false;
+  }
+  resize(w, h) { this.cv.width = w; this.cv.height = h; }
+  setActive(on) {
+    this.active = on;
+    this.cv.style.display = on ? 'block' : 'none';
+    if (!on) { this.drops = []; this.c.clearRect(0, 0, this.cv.width, this.cv.height); }
+  }
+  render(dt, v) {
+    if (!this.active) return;
+    const w = this.cv.width, h = this.cv.height, c = this.c;
+    if (!w || !h) return;
+    this.t += dt;
+    for (let i = 0; i < 3; i++) {
+      if (this.drops.length > 240) break;
+      if (Math.random() < 0.8) {
+        this.drops.push({ x: Math.random() * w, y: Math.random() * h, r: 0.9 + Math.random() * 2.4, vy: 0, life: 3 + Math.random() * 6 });
+      }
+    }
+    c.clearRect(0, 0, w, h);
+    /* ワイパー(往復) */
+    const period = 1.4;
+    const ph = (this.t % period) / period;
+    const swing = 0.5 - 0.5 * Math.cos(ph * Math.PI * 2);
+    const ang = -2.45 + swing * 1.7;
+    const px = w * 0.6, py = h * 1.08, len = h * 0.82;
+    this.drops = this.drops.filter((d) => {
+      d.life -= dt;
+      d.vy += dt * (7 + d.r * 8 + v * 0.45);
+      d.y += d.vy * dt;
+      d.x += Math.sin(this.t * 3 + d.y * 0.02) * 0.25;
+      const da = Math.atan2(d.y - py, d.x - px);
+      if (Math.abs(da - ang) < 0.1 && Math.hypot(d.x - px, d.y - py) < len) return false;
+      return d.life > 0 && d.y < h + 12;
+    });
+    c.fillStyle = 'rgba(205,218,228,0.32)';
+    for (const d of this.drops) {
+      c.beginPath(); c.arc(d.x, d.y, d.r, 0, 7); c.fill();
+    }
+    /* ワイパー本体 */
+    const bx = px + Math.cos(ang) * len, by = py + Math.sin(ang) * len;
+    c.strokeStyle = 'rgba(14,17,20,0.88)';
+    c.lineWidth = Math.max(4, h * 0.011);
+    c.beginPath();
+    c.moveTo(px + Math.cos(ang) * len * 0.35, py + Math.sin(ang) * len * 0.35);
+    c.lineTo(bx, by);
+    c.stroke();
+  }
+}
+
 const App = {
   line: null, timetable: null,
   sim: null, scene: null, cab: null, audio: null,
   running: false, paused: false,
-  service: 'local', weather: 'clear', startIdx: 0,
+  service: 'local', weather: 'clear', startIdx: 0, quality: 'high',
   save: { best: {} },
   debug: /[?&]debug=1/.test(location.search),
 
@@ -24,6 +81,8 @@ const App = {
       fetch('./data/timetable.json').then((r) => r.json()),
     ]);
     this.line = line; this.timetable = tt;
+    const touch = matchMedia('(pointer: coarse)').matches;
+    this.quality = localStorage.getItem('trainop_quality') || (touch ? 'mid' : 'high');
     this.buildSelect();
     this.bindUI();
     this.showScreen('title');
@@ -114,6 +173,15 @@ const App = {
     document.querySelectorAll('input[name=weather]').forEach((r) => {
       r.addEventListener('change', () => { this.weather = document.querySelector('input[name=weather]:checked').value; });
     });
+
+    document.querySelectorAll('input[name=quality]').forEach((r) => {
+      r.checked = r.value === this.quality;
+      r.addEventListener('change', () => {
+        this.quality = document.querySelector('input[name=quality]:checked').value;
+        try { localStorage.setItem('trainop_quality', this.quality); } catch (e) { /* 保存不可でも続行 */ }
+        if (this.scene) { this.scene.renderer.dispose(); this.scene = null; }   // 次の出庫で再構築
+      });
+    });
   },
 
   buildStartSelect() {
@@ -173,6 +241,7 @@ const App = {
     if (!this.scene) return;
     const wrap = $('#gl-wrap');
     this.scene.resize(wrap.clientWidth, wrap.clientHeight);
+    if (this.rainGlass) this.rainGlass.resize(wrap.clientWidth, wrap.clientHeight);
   },
 
   /* ---------------- 運転開始 ---------------- */
@@ -187,13 +256,15 @@ const App = {
     this.sim.reset(startIdx);
     this.lastStationIdx = startIdx;
     if (!this.scene) {
-      this.scene = new RailScene($('#gl'), this.line, this.sim);
+      this.scene = new RailScene($('#gl'), this.line, this.sim, { quality: this.quality });
     } else {
       this.scene.sim = this.sim;
       this.scene.setWeather(this.weather);
     }
     this.scene.setWeather(this.weather);
     if (!this.cab) this.cab = new Cab(this.sim); else this.cab.sim = this.sim;
+    if (!this.rainGlass) this.rainGlass = new RainGlass($('#rain-glass'));
+    this.rainGlass.setActive(this.weather === 'rain');
     if (!this.audio) this.audio = new CabAudio();
     this.audio.ensure();   // クリック起点なので自動再生制限もOK
     this.audio.bind(this.sim);
@@ -298,10 +369,20 @@ const App = {
         this.sim.tick(dt);
       }
       if (this.audio) this.audio.update(this.sim, dt);
+      if (this.rainGlass) this.rainGlass.render(dt, this.sim.v);
     }
     if (!this.running) return;
     this.scene.render(this.paused ? 0 : dt);
     this.cab.render();
+    /* fpsが持続的に低ければ自動で描画負荷を下げる(dpr→影) */
+    this._fpsT = (this._fpsT || 0) + dt;
+    if (this._fpsT > 6) {
+      this._fpsT = 0;
+      if (this.scene.fps && this.scene.fps < 33) {
+        const what = this.scene.stepDownQuality();
+        if (what && this.debug) console.log('[auto-quality] step down:', what, 'fps=', Math.round(this.scene.fps));
+      }
+    }
   },
 };
 

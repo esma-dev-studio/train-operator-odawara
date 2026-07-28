@@ -16,8 +16,12 @@
 - エンジン回帰: `node tools/autodrive.mjs local|exp|rapid [clear|rain]`
   → 完走・ATS照査0回・停止誤差±2m以内が合格ライン。
 - ブラウザ検証: ローカルHTTPサーバ必須（ESモジュール+fetch）。`?debug=1` で
-  `__test.fast(倍率)`・`__test.auto(true)` を使い、ヘッドレスEdge(`--enable-unsafe-swiftshader`)で
+  `__test.fast(倍率)`・`__test.auto(true)` を使い、ヘッドレスEdgeで
   成績票までのE2Eとスクリーンショットを確認してからデプロイする。
+  ヘッドレスEdgeは `--enable-gpu --use-angle=d3d11` で**実GPU描画**になる
+  （スクショの見た目確認・fps計測はこちら。`--enable-unsafe-swiftshader` は保険）。
+- 色の注意: three.js r152+ は色管理が有効。`setRGB`/頂点色は**リニア解釈**なので、
+  見た目(sRGB)で指定したい時は `THREE.SRGBColorSpace` を渡すか `pow(x, 2.2)` する。
 
 ## デプロイ
 - `git push origin main` → GitHub Pages（mainブランチ直接公開）。
