@@ -72,6 +72,13 @@
     <div id="drive-head">
       <span id="drive-head-svc">各駅停車　新百合ヶ丘 行</span>
     </div>
+    <button id="btn-pause-touch" class="gl-btn" title="ポーズ">⏸</button>
+    <div id="coach" class="hidden"></div>
+    <div id="touch-btns">
+      <button id="tb-up" class="tb">▲<span>すすむ</span></button>
+      <button id="tb-dn" class="tb">▼<span>ブレーキ</span></button>
+      <button id="tb-horn" class="tb tb-horn">♪<span>けいてき</span></button>
+    </div>
     <div id="msg-center" class="hidden"></div>
     <div id="overrun-modal" class="modal hidden">
       <p>とまるところを 大きくいきすぎました。<br>ひとつまえの<ruby>駅<rt>えき</rt></ruby>から やりなおします。</p>
@@ -100,10 +107,10 @@
       <div id="grade-ind">ー 平坦</div>
     </div>
     <div class="cab-block cab-lamps">
-      <div id="lamp-pattern" class="lamp lamp-amber">パターン<br>接近</div>
-      <div id="lamp-brake" class="lamp lamp-red">ATS<br>ブレーキ</div>
+      <div id="lamp-pattern" class="lamp lamp-amber">スピード<br>ちゅうい</div>
+      <div id="lamp-brake" class="lamp lamp-red">じどう<br>ブレーキ</div>
       <div id="lamp-door" class="lamp lamp-green">ドア</div>
-      <div id="lamp-slip" class="lamp lamp-amber">滑走</div>
+      <div id="lamp-slip" class="lamp lamp-amber">スリップ</div>
     </div>
     <div class="cab-block cab-notch">
       <div id="notch-list"></div>

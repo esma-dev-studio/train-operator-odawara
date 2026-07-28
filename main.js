@@ -210,6 +210,16 @@ const App = {
     $('#btn-res-select').addEventListener('click', () => this.quitDrive());
     $('#btn-overrun-retry').addEventListener('click', () => { $('#overrun-modal').classList.add('hidden'); this.retryStation(); });
 
+    /* タッチ用ボタン(すすむ/ブレーキ/けいてき/ポーズ) */
+    $('#tb-up').addEventListener('click', () => {
+      if (this.running && !this.paused) this.sim.setNotch(Math.min(4, this.sim.notch + 1));
+    });
+    $('#tb-dn').addEventListener('click', () => {
+      if (this.running && !this.paused) this.sim.setNotch(Math.max(-8, this.sim.notch - 1));
+    });
+    $('#tb-horn').addEventListener('click', () => { if (this.running && !this.paused && this.audio) this.audio.horn(); });
+    $('#btn-pause-touch').addEventListener('click', () => { if (this.running) this.setPaused(!this.paused); });
+
     addEventListener('keydown', (ev) => {
       if (!this.running) return;
       if (ev.repeat) return;
@@ -238,6 +248,26 @@ const App = {
     lever.addEventListener('pointerdown', (ev) => { dragging = true; lever.setPointerCapture(ev.pointerId); leverNotch(ev.clientY); });
     lever.addEventListener('pointermove', (ev) => { if (dragging) leverNotch(ev.clientY); });
     lever.addEventListener('pointerup', () => { dragging = false; });
+
+    /* ノッチ表示列(P4〜EB)も直接さわって操作できるようにする
+     * (子どもはレバーよりこちらを触りがち、という実プレイの声から) */
+    const nlist = $('#notch-list');
+    const notchFromPoint = (x, y) => {
+      if (!this.running || this.paused) return;
+      const el = document.elementFromPoint(x, y);
+      if (el && el.classList && el.classList.contains('nt')) {
+        const n = Number(el.dataset.n);
+        if (!Number.isNaN(n)) this.sim.setNotch(n);
+      }
+    };
+    let ndrag = false;
+    nlist.addEventListener('pointerdown', (ev) => {
+      ndrag = true;
+      try { nlist.setPointerCapture(ev.pointerId); } catch (e) { /* 合成イベント等 */ }
+      notchFromPoint(ev.clientX, ev.clientY);
+    });
+    nlist.addEventListener('pointermove', (ev) => { if (ndrag) notchFromPoint(ev.clientX, ev.clientY); });
+    nlist.addEventListener('pointerup', () => { ndrag = false; });
 
     addEventListener('resize', () => this.resizeGL());
   },
@@ -304,7 +334,11 @@ const App = {
     if (type === 'overrun-stop') {
       $('#overrun-modal').classList.remove('hidden');
     }
-    if (type === 'ats-brake') this.flashMsg('⚠ スピードの出しすぎ！ じどうブレーキが かかりました', 2200, true);
+    if (type === 'ats-brake') {
+      const a = this.sim.hud().ats;
+      const why = a && a.kind === 'limit' ? `（このさき ${Math.round(a.target)} のため）` : '';
+      this.flashMsg(`⚠ スピードの出しすぎ！ じどうブレーキが かかりました${why}`, 2400, true);
+    }
     if (type === 'finished') this.finishRun(e);
   },
 
@@ -320,6 +354,42 @@ const App = {
   setPaused(p) {
     this.paused = p;
     $('#screen-pause').classList.toggle('active', p);
+  },
+
+  /* 「いまやること」コーチ(小2でもわかる次の一手を常に出す) */
+  _updateCoach() {
+    const el = this._coachEl || (this._coachEl = $('#coach'));
+    const sim = this.sim;
+    const h = sim.hud();
+    let txt = '';
+    if (h.finished) {
+      txt = '';
+    } else if (h.doorOpen) {
+      const rest = Math.ceil((h.next ? h.next.dep : sim._departTime) - sim.t);
+      txt = rest > 0 ? `おきゃくさんが のりおり中… しゅっぱつまで あと <b>${Math.max(0, rest)}</b> びょう`
+        : 'まもなく ドアがしまります';
+    } else if (sim.v < 0.5 && sim.notch <= 0) {
+      txt = '<b>▲すすむ</b> をおして しゅっぱつ！';
+    } else if (h.atsLamp === 'brake') {
+      txt = '⚠ スピードのだしすぎで じどうブレーキ中… とまるまで まってね';
+    } else if (h.ats && h.ats.kind === 'signal' && (h.ats.at - sim.pos) < 700) {
+      txt = '🔴 しんごうが <b>あか</b>！ ブレーキで とまろう';
+    } else if (h.ats && h.ats.kind === 'limit' && sim.v > h.ats.pattern - 4 && h.ats.target < h.limit) {
+      /* 「いまの制限は守っているのに」の混乱に、理由(この先の低い制限)を示す */
+      const m = Math.max(0, Math.round(h.ats.at - sim.pos));
+      txt = `⚠ このさきは <b>${Math.round(h.ats.target)}</b> までしか だせないよ。いまから おとそう（あと <b>${m}</b> m）`;
+    } else if (h.next && h.next.dist < 550) {
+      txt = `<b>▼ブレーキ</b>で「8」のかんばんに ぴったり！ のこり <b>${Math.max(0, Math.round(h.next.dist))}</b> m`;
+    } else if (h.ats && sim.v > h.ats.pattern - 4) {
+      txt = `⚠ スピードを <b>${Math.round(h.ats.target)}</b> まで おとそう`;
+    } else if (h.next) {
+      txt = `つぎは <b>${kanaOf(h.next.name) || h.next.name}</b> ／ スピードは <b>${h.limit}</b> まで`;
+    }
+    if (txt !== this._coachTxt) {
+      this._coachTxt = txt;
+      el.innerHTML = txt;
+      el.classList.toggle('hidden', !txt);
+    }
   },
 
   retryStation() {
@@ -386,6 +456,7 @@ const App = {
     if (!this.running) return;
     this.scene.render(this.paused ? 0 : dt);
     this.cab.render();
+    this._updateCoach();
     /* fpsが持続的に低ければ自動で描画負荷を下げる(dpr→影) */
     this._fpsT = (this._fpsT || 0) + dt;
     if (this._fpsT > 6) {

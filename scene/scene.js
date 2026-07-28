@@ -346,6 +346,10 @@ export class RailScene {
 
     this.setWeather(sim.weather);
 
+    /* 喜多見の車両基地ゾーン(この右側には建物や木を生やさない) */
+    const kitami = this.line.stations.find((s) => s.name === '喜多見');
+    this.depotZone = kitami ? { a: kitami.s + 300, b: kitami.s + 640 } : null;
+
     this._buildTrack();
     this._buildSleepers();
     this._buildLineside();
@@ -358,6 +362,8 @@ export class RailScene {
     this._buildTunnel();
     this._buildRiver();
     this._buildAiTrain();
+    this._buildStopBeam();
+    this._buildLandmarks();
   }
 
   /* fps低下時に外から段階的に画質を落とす(dpr→影) */
@@ -607,7 +613,8 @@ export class RailScene {
   /* ---------- 駅 ---------- */
   _buildStations() {
     const F = this.frames;
-    const matRoof = new THREE.MeshStandardMaterial({ color: 0x2f363c, metalness: 0.3, roughness: 0.7, side: DS });
+    const matRoof = new THREE.MeshStandardMaterial({ color: 0x525c66, metalness: 0.25, roughness: 0.65, side: DS });
+    matRoof.envMapIntensity = 1.25;
     const matTactile = new THREE.MeshStandardMaterial({ map: texTactile(), roughness: 0.9, side: DS });
     matTactile.map.repeat.set(1, 1);
     const colGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.35, 8);
@@ -763,6 +770,7 @@ export class RailScene {
       const kind = kindAt(s);
       const f = frameAt(F, this.step, s + rng() * 18);
       for (const side of [1, -1]) {
+        if (side < 0 && this.depotZone && s > this.depotZone.a - 40 && s < this.depotZone.b + 40) continue;
         const nBld = kind === 0 ? 3 : kind === 1 ? 2 : kind === 2 ? 2 : 1;
         for (let bi = 0; bi < nBld; bi++) {
           if (rng() < (kind === 3 ? 0.45 : 0.25)) continue;
@@ -898,6 +906,8 @@ export class RailScene {
       /* 線路際の並木(郊外のみ。防音壁区間には置かない) */
       const pNear = k === 3 ? 0.55 : k === 2 ? 0.38 : 0;
       for (const side of [1, -1]) {
+        const inDepot = side < 0 && this.depotZone && s > this.depotZone.a - 40 && s < this.depotZone.b + 40;
+        if (inDepot) continue;
         if (pNear > 0 && rng() < pNear && !nearStation(s)) {
           let base = side > 0 ? 7.2 : 10.4;
           if (side > 0 && s > q.from - 30 && s < q.to + 30) base = 11.4;
@@ -1042,29 +1052,269 @@ export class RailScene {
     });
   }
 
-  /* ---------- 複々線を走る対向/追い抜き列車（演出） ---------- */
-  _buildAiTrain() {
+  /* ---------- 車両(共通ビルダー) ---------- */
+  _trainMats() {
+    if (!this._tm) {
+      this._tm = {
+        side: new THREE.MeshStandardMaterial({ map: texTrainSide(), roughness: 0.35, metalness: 0.4 }),
+        roof: new THREE.MeshStandardMaterial({ color: 0xb0b4b7, roughness: 0.6, metalness: 0.3 }),
+        dark: new THREE.MeshStandardMaterial({ color: 0x24282c, roughness: 0.85 }),
+        front: new THREE.MeshStandardMaterial({ map: texTrainFront(), roughness: 0.4, metalness: 0.3 }),
+      };
+    }
+    return this._tm;
+  }
+
+  _makeTrain(nCars, withFront) {
+    const m = this._trainMats();
     const g = new THREE.Group();
-    const mSide = new THREE.MeshStandardMaterial({ map: texTrainSide(), roughness: 0.35, metalness: 0.4 });
-    const mRoof = new THREE.MeshStandardMaterial({ color: 0xb0b4b7, roughness: 0.6, metalness: 0.3 });
-    const mDark = new THREE.MeshStandardMaterial({ color: 0x24282c, roughness: 0.85 });
-    const mFront = new THREE.MeshStandardMaterial({ map: texTrainFront(), roughness: 0.4, metalness: 0.3 });
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < nCars; i++) {
       /* BoxGeometryの面順: +x,-x,+y,-y,+z,-z。+zが編成の前面 */
-      const mats = [mSide, mSide, mRoof, mDark, i === 0 ? mFront : mDark, mDark];
+      const mats = [m.side, m.side, m.roof, m.dark, i === 0 && withFront ? m.front : m.dark, m.dark];
       const car = new THREE.Mesh(new THREE.BoxGeometry(2.85, 3.5, 19.2), mats);
       car.position.z = -i * 19.9;
       car.position.y = 2.05;
       car.castShadow = true;
       g.add(car);
       [-6.4, 6.4].forEach((dz) => {
-        const bogie = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.8, 3.2), mDark);
+        const bogie = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.8, 3.2), m.dark);
         bogie.position.set(0, 0.4, -i * 19.9 + dz);
         g.add(bogie);
       });
     }
-    this.aiTrain = g;
+    return g;
+  }
+
+  /* ---------- 複々線を走る対向/追い抜き列車（演出） ---------- */
+  _buildAiTrain() {
+    this.aiTrain = this._makeTrain(4, true);
+    this.scene.add(this.aiTrain);
+  }
+
+  /* ---------- 停止位置の光の目印(こどもサポート) ---------- */
+  _buildStopBeam() {
+    const cv = document.createElement('canvas');
+    cv.width = 32; cv.height = 128;
+    const c = cv.getContext('2d');
+    const g = c.createLinearGradient(0, 0, 0, 128);
+    g.addColorStop(0, 'rgba(120,220,255,0)');
+    g.addColorStop(0.75, 'rgba(120,220,255,0.55)');
+    g.addColorStop(1, 'rgba(170,240,255,0.95)');
+    c.fillStyle = g; c.fillRect(0, 0, 32, 128);
+    const tex = new THREE.CanvasTexture(cv);
+    this._beamMat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0.5,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: DS,
+    });
+    const geo = new THREE.PlaneGeometry(1.05, 9);
+    const p1 = new THREE.Mesh(geo, this._beamMat);
+    const p2 = new THREE.Mesh(geo, this._beamMat);
+    p2.rotation.y = Math.PI / 2;
+    this.stopBeam = new THREE.Group();
+    this.stopBeam.add(p1, p2);
+    this.stopBeam.visible = false;
+    this.scene.add(this.stopBeam);
+  }
+
+  /* ---------- 駅ごとの実在風ランドマーク ---------- */
+  _stationS(name) {
+    const st = this.line.stations.find((s) => s.name === name);
+    return st ? st.s : null;
+  }
+
+  _buildLandmarks() {
+    this._buildCanopy();
+    this._buildTorii();
+    this._buildDepot();
+    this._buildWheel();
+    this._buildUmeGrove();
+  }
+
+  /* 新宿: ターミナルの大屋根(照明つきの駅ホール) */
+  _buildCanopy() {
+    const F = this.frames;
+    const s0 = this._stationS('新宿');
+    if (s0 === null) return;
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x5d656e, roughness: 0.55, metalness: 0.35, side: DS,
+      emissive: 0x171b1f,
+    });
+    mat.envMapIntensity = 1.15;
+    for (let s = Math.max(15, s0 - 25); s < s0 + 135; s += 42) {
+      const f = frameAt(F, this.step, s + 21);
+      const geo = new THREE.CylinderGeometry(10.5, 10.5, 44, 20, 1, true, 0, Math.PI);
+      geo.rotateZ(Math.PI / 2);   // 円筒の軸をX(=進行方向に合わせる)へ
+      const shell = new THREE.Mesh(geo, mat);
+      shell.position.copy(f.p).addScaledVector(f.left, -1.9);
+      shell.position.y += 3.4;
+      shell.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.t);
+      this.scene.add(shell);
+    }
+    /* ホールの照明列 */
+    const lampGeo = new THREE.BoxGeometry(0.16, 0.1, 2.4);
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xffeecb });
+    const lampS = [];
+    for (let s = Math.max(18, s0 - 22); s < s0 + 132; s += 9) lampS.push(s);
+    const lamps = new THREE.InstancedMesh(lampGeo, lampMat, lampS.length * 2);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
+    let n = 0;
+    lampS.forEach((s) => {
+      const f = frameAt(F, this.step, s);
+      q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.t);
+      [1.2, -5.0].forEach((off) => {
+        m4.compose(
+          new THREE.Vector3().copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 8.2),
+          q, new THREE.Vector3(1, 1, 1));
+        lamps.setMatrixAt(n++, m4);
+      });
+    });
+    this.scene.add(lamps);
+  }
+
+  /* 代々木八幡: 朱の鳥居と社叢 */
+  _buildTorii() {
+    const F = this.frames;
+    const s0 = this._stationS('代々木八幡');
+    if (s0 === null) return;
+    const f = frameAt(F, this.step, s0 - 190);
+    const g = new THREE.Group();
+    const red = new THREE.MeshStandardMaterial({ color: 0xb5372a, roughness: 0.5 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x2e2a26, roughness: 0.7 });
+    [-2.6, 2.6].forEach((dx) => {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 6.2, 10), red);
+      p.position.set(dx, 3.1, 0);
+      p.castShadow = true;
+      g.add(p);
+    });
+    const kasagi = new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.62, 0.8), red);
+    kasagi.position.y = 6.3; kasagi.castShadow = true; g.add(kasagi);
+    const shimaki = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.34, 0.6), dark);
+    shimaki.position.y = 5.9; g.add(shimaki);
+    const nuki = new THREE.Mesh(new THREE.BoxGeometry(7.0, 0.4, 0.5), red);
+    nuki.position.y = 4.6; g.add(nuki);
+    /* 社叢(濃い緑の木立) */
+    const gm = new THREE.MeshStandardMaterial({ color: 0x35503a, roughness: 0.95 });
+    for (let i = 0; i < 9; i++) {
+      const sp = new THREE.Mesh(new THREE.SphereGeometry(2.4 + (i % 3), 10, 8), gm);
+      sp.position.set(-7 + (i % 3) * 7 + (i * 7) % 4, 2.6 + (i % 3) * 1.3, 4 + Math.floor(i / 3) * 5);
+      sp.castShadow = true;
+      g.add(sp);
+    }
+    /* 小さな築山の上に、少し大きめに立てる(壁ごしでも見えるように) */
+    const mound = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 8.5, 1.4, 12),
+      new THREE.MeshStandardMaterial({ color: 0x6d7a5a, roughness: 1 }));
+    mound.position.y = -0.7;
+    g.add(mound);
+    g.scale.setScalar(1.3);
+    g.position.copy(f.p).addScaledVector(f.left, -14.5);
+    g.position.y += 1.6;
+    g.lookAt(g.position.clone().addScaledVector(f.left, -40));
     this.scene.add(g);
+  }
+
+  /* 喜多見: 車両基地(留置線・止まっている電車・検車庫) */
+  _buildDepot() {
+    const F = this.frames;
+    if (!this.depotZone) return;
+    const a = this.depotZone.a + 20, b = this.depotZone.b - 20;
+    const iA = Math.floor(a / this.step), iB = Math.ceil(b / this.step);
+    [-13.5, -17.5, -21.5].forEach((off) => {
+      this.scene.add(new THREE.Mesh(ribbon(F, iA, iB, off, 3.6, -0.05, 2.5), this.M.sub));
+      [-0.7175, 0.7175].forEach((o) => {
+        this.scene.add(new THREE.Mesh(ribbon(F, iA, iB, off + o, 0.068, 0.1, 8), this.M.railHead));
+      });
+    });
+    [[a + 35, -13.5, 3], [a + 130, -21.5, 4]].forEach(([s, off, n]) => {
+      const t = this._makeTrain(n, true);
+      const f = frameAt(F, this.step, s);
+      t.position.copy(f.p).addScaledVector(f.left, off);
+      t.lookAt(t.position.clone().addScaledVector(f.t, -30));
+      this.scene.add(t);
+    });
+    const fS = frameAt(F, this.step, b - 55);
+    const shed = new THREE.Mesh(new THREE.BoxGeometry(16, 8, 92),
+      new THREE.MeshStandardMaterial({ color: 0x8f959b, roughness: 0.8 }));
+    shed.position.copy(fS.p).addScaledVector(fS.left, -18);
+    shed.position.y += 4;
+    shed.lookAt(shed.position.clone().add(fS.t));
+    shed.castShadow = true;
+    this.scene.add(shed);
+  }
+
+  /* 読売ランド前: まわる観覧車 */
+  _buildWheel() {
+    const F = this.frames;
+    const s0 = this._stationS('読売ランド前');
+    if (s0 === null) return;
+    /* 駅の少し先・左手の丘の上(接近中ずっと前方視界に入る位置) */
+    const f = frameAt(F, this.step, s0 + 280);
+    const root = new THREE.Group();
+    root.position.copy(f.p).addScaledVector(f.left, 145);
+    root.position.y += 34;
+    root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.left.clone().negate());
+    const spin = new THREE.Group();
+    root.add(spin);
+    const white = new THREE.MeshStandardMaterial({ color: 0xe8eaec, roughness: 0.5, metalness: 0.4 });
+    spin.add(new THREE.Mesh(new THREE.TorusGeometry(26, 0.6, 8, 32), white));
+    const spokeGeo = new THREE.BoxGeometry(0.42, 52, 0.42);
+    for (let i = 0; i < 8; i++) {
+      const sp = new THREE.Mesh(spokeGeo, white);
+      sp.rotation.z = (i / 8) * Math.PI;
+      spin.add(sp);
+    }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 3.0, 12), white);
+    hub.rotation.x = Math.PI / 2;
+    spin.add(hub);
+    const cols = [0xd6604d, 0xf2b134, 0x4d9dd6, 0x62b56b, 0xb08bd0];
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      const gm = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.7, 2.4),
+        new THREE.MeshStandardMaterial({ color: cols[i % cols.length], roughness: 0.6 }));
+      gm.position.set(Math.cos(a) * 26, Math.sin(a) * 26, 0);
+      spin.add(gm);
+    }
+    const legMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a5, roughness: 0.6, metalness: 0.4 });
+    [-1, 1].forEach((sgn) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.7, 48, 2.1), legMat);
+      leg.position.set(sgn * 10, -20, 0);
+      leg.rotation.z = sgn * -0.3;
+      root.add(leg);
+    });
+    this.wheelSpin = spin;
+    this.scene.add(root);
+  }
+
+  /* 梅ヶ丘: 梅林の丘(うすもも色の木立) */
+  _buildUmeGrove() {
+    const F = this.frames;
+    const s0 = this._stationS('梅ヶ丘');
+    if (s0 === null) return;
+    const rng = (() => { let x = 4242; return () => (x = (x * 16807) % 2147483647) / 2147483647; })();
+    const folGeo = new THREE.IcosahedronGeometry(1.35, 1);
+    folGeo.scale(1, 0.95, 1);
+    folGeo.translate(0, 2.6, 0);
+    const trunkGeo = new THREE.CylinderGeometry(0.11, 0.16, 2.0, 6);
+    trunkGeo.translate(0, 1.0, 0);
+    const folMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4e4034, roughness: 0.95 });
+    const n = 26;
+    const fols = new THREE.InstancedMesh(folGeo, folMat, n);
+    const trs = new THREE.InstancedMesh(trunkGeo, trunkMat, n);
+    fols.castShadow = true; trs.castShadow = true;
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), col = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const s = s0 - 150 + rng() * 300;
+      const f = frameAt(F, this.step, s);
+      const p = f.p.clone().addScaledVector(f.left, -(12 + rng() * 30));
+      const sc = 0.75 + rng() * 0.5;
+      m4.compose(p, q, new THREE.Vector3(sc, sc, sc));
+      fols.setMatrixAt(i, m4); trs.setMatrixAt(i, m4);
+      const t = 0.9 + rng() * 0.1;
+      col.setRGB(t, t * (0.7 + rng() * 0.1), t * (0.76 + rng() * 0.08), THREE.SRGBColorSpace);
+      fols.setColorAt(i, col);
+    }
+    if (fols.instanceColor) fols.instanceColor.needsUpdate = true;
+    this.scene.add(fols, trs);
   }
 
   /* AI列車: 複々線区間の急行線を周回 */
@@ -1141,6 +1391,21 @@ export class RailScene {
     });
 
     this._updateAiTrain(this.clockT);
+
+    /* 停止位置の光の目印(つぎに とまる駅だけ) */
+    const nxt = sim.stops[sim.stopIdx];
+    if (nxt && !sim.doorOpen && nxt.stopAt - sim.pos < 650 && nxt.stopAt - sim.pos > -2) {
+      const fb = frameAt(this.frames, this.step, Math.min(this.line.meta.length - 2, nxt.stopAt));
+      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, 2.3);
+      this.stopBeam.position.y += 4.4;
+      this._beamMat.opacity = 0.5 + 0.22 * Math.sin(this.clockT * 4);
+      this.stopBeam.visible = true;
+    } else {
+      this.stopBeam.visible = false;
+    }
+    /* 観覧車をゆっくり回す */
+    if (this.wheelSpin) this.wheelSpin.rotation.z += dt * 0.05;
+
     this.renderer.render(this.scene, this.camera);
 
     /* fps計測(自動軽量化・デバッグ用) */

@@ -108,6 +108,47 @@ select {
 button, .radio, select, #lever, .svc-card { touch-action: manipulation; }
 #lever { touch-action: none; }   /* レバーは縦ドラッグを自前処理 */
 
+/* ノッチ表示列もさわって操作できる */
+#notch-list { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
+
+/* いまやることコーチ */
+#coach {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  max-width: 92%; white-space: nowrap;
+  background: rgba(9, 13, 16, 0.82); border: 1px solid rgba(120, 170, 200, 0.35);
+  color: #eef4f8; padding: 9px 22px; border-radius: 999px;
+  font-size: 1.02rem; font-weight: 700; letter-spacing: 0.05em; z-index: 6;
+  pointer-events: none;
+}
+#coach b { color: #7fd8ff; font-size: 1.1em; }
+#coach.hidden { display: none; }
+
+/* GL上の丸ボタン(ポーズ) */
+.gl-btn {
+  position: absolute; top: 10px; right: 12px; z-index: 7;
+  width: 46px; height: 46px; border-radius: 12px;
+  background: rgba(10, 14, 17, 0.75); color: #dfe8ee;
+  border: 1.5px solid rgba(150, 180, 200, 0.4);
+  font-size: 1.25rem; cursor: pointer;
+}
+.gl-btn:active { background: rgba(47, 157, 196, 0.5); }
+
+/* タッチ用 すすむ/ブレーキ/けいてき(タッチ端末のみ表示) */
+#touch-btns { display: none; position: absolute; right: 12px; bottom: 16px; z-index: 7; flex-direction: column; gap: 10px; }
+.tb {
+  width: 76px; height: 66px; border-radius: 14px;
+  background: rgba(10, 14, 17, 0.78); color: #eef4f8;
+  border: 2px solid rgba(150, 190, 215, 0.5);
+  font-size: 1.15rem; font-weight: 800; line-height: 1.15; cursor: pointer;
+}
+.tb span { display: block; font-size: 0.66rem; font-weight: 700; color: #a9becb; }
+.tb:active { background: rgba(47, 157, 196, 0.55); border-color: #7fd8ff; }
+.tb-horn { height: 52px; font-size: 0.95rem; }
+@media (pointer: coarse) {
+  #touch-btns { display: flex; }
+  #lever { width: 58px; }
+}
+
 /* ふりがな */
 ruby rt { font-size: 0.5em; opacity: 0.85; letter-spacing: 0; font-weight: 500; }
 .sel-label { width: auto; min-width: 84px; }
