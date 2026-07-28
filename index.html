@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>TRAIN OPERATOR 小田原線 ─ 新宿→新百合ヶ丘 運転シミュレーター</title>
+<meta name="description" content="実際の線形データ(国土数値情報)で再現した小田原線 新宿—新百合ヶ丘を運転する本格志向のブラウザ運転シミュレーター">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+
+<!-- ============ タイトル ============ -->
+<section id="screen-title" class="screen active">
+  <div class="title-grid"></div>
+  <div class="title-inner">
+    <p class="t-eyebrow">REALISTIC TRAIN DRIVING SIMULATOR</p>
+    <h1 class="t-logo">TRAIN<span>OPERATOR</span></h1>
+    <p class="t-line">小田原線　新宿 — 新百合ヶ丘　21.6 km ／ 23駅</p>
+    <p class="t-desc">
+      国土数値情報の実線形データで再現した本物のカーブ・勾配・駅間を、<br>
+      ワンハンドルマスコンと ATS-P型保安装置で運転する本格志向シミュレーター。
+    </p>
+    <div class="t-btns">
+      <button id="btn-to-select" class="btn btn-primary">乗務を開始する</button>
+    </div>
+    <p class="t-foot">
+      線形・駅位置: 国土数値情報(鉄道データ N02-24, 国土交通省) ／ 標高: 国土地理院<br>
+      本作は個人制作のシミュレーターであり、鉄道事業者とは関係ありません。車両・ダイヤは架空です。
+    </p>
+  </div>
+</section>
+
+<!-- ============ 乗務選択 ============ -->
+<section id="screen-select" class="screen">
+  <div class="sel-inner">
+    <h2 class="sel-title">乗 務 行 路 選 択</h2>
+    <div id="svc-list" class="svc-list"></div>
+    <div class="sel-row">
+      <label class="sel-label">天候</label>
+      <label class="radio"><input type="radio" name="weather" value="clear" checked><span>晴れ</span></label>
+      <label class="radio"><input type="radio" name="weather" value="rain"><span>雨（滑走注意）</span></label>
+    </div>
+    <div class="sel-row">
+      <label class="sel-label">出発駅</label>
+      <select id="start-select"></select>
+    </div>
+    <div class="sel-keys">
+      <b>操作</b>　↑/W: ノッチ進め　↓/S: ノッチ戻し　N: 切　Space: 非常　H: 警笛　P/Esc: 一時停止<br>
+      タブレットは右端のレバーを上下にドラッグ
+    </div>
+    <div class="t-btns">
+      <button id="btn-start" class="btn btn-primary">出庫（運転開始）</button>
+      <button id="btn-back-title" class="btn btn-ghost">タイトルへ</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 運転 ============ -->
+<section id="screen-drive" class="screen">
+  <div id="gl-wrap"><canvas id="gl"></canvas>
+    <div id="drive-head">
+      <span id="drive-head-svc">各駅停車　新百合ヶ丘 行</span>
+    </div>
+    <div id="msg-center" class="hidden"></div>
+    <div id="overrun-modal" class="modal hidden">
+      <p>停止位置を大きく行き過ぎました。<br>直前の駅からやり直します。</p>
+      <button id="btn-overrun-retry" class="btn btn-primary">やり直す</button>
+    </div>
+    <div id="cab-frame-l"></div><div id="cab-frame-r"></div><div id="cab-frame-t"></div>
+  </div>
+
+  <div id="cab">
+    <div class="cab-block cab-speedo">
+      <canvas id="speedo" width="176" height="176"></canvas>
+      <div class="bc-wrap"><span>BC</span><div class="bc-bar"><i id="bc-fill"></i></div></div>
+    </div>
+    <div class="cab-block cab-tims">
+      <div class="tims-row1"><span class="tims-cap">次停車駅</span><span id="tims-clock">10:00:00</span></div>
+      <div id="tims-next">—</div>
+      <div class="tims-row2"><span id="tims-dist">— m</span><span id="tims-sch"></span></div>
+      <div id="tims-delay"></div>
+    </div>
+    <div class="cab-block cab-limit">
+      <div class="lim-cap">制限速度</div>
+      <div id="lim-now">100</div>
+      <div id="lim-next" class="hidden"></div>
+      <div id="grade-ind">ー 平坦</div>
+    </div>
+    <div class="cab-block cab-lamps">
+      <div id="lamp-pattern" class="lamp lamp-amber">パターン<br>接近</div>
+      <div id="lamp-brake" class="lamp lamp-red">ATS<br>ブレーキ</div>
+      <div id="lamp-door" class="lamp lamp-green">ドア</div>
+      <div id="lamp-slip" class="lamp lamp-amber">滑走</div>
+    </div>
+    <div class="cab-block cab-notch">
+      <div id="notch-list"></div>
+    </div>
+    <div id="lever" title="ドラッグでノッチ操作"><div class="lever-grip"></div></div>
+  </div>
+
+  <!-- 一時停止 -->
+  <section id="screen-pause" class="screen overlay">
+    <div class="pause-card">
+      <h3>一時停止</h3>
+      <button id="btn-pause-resume" class="btn btn-primary">運転にもどる</button>
+      <button id="btn-pause-retry" class="btn btn-ghost">直前の駅からやり直す</button>
+      <button id="btn-pause-quit" class="btn btn-ghost">乗務をやめる</button>
+    </div>
+  </section>
+</section>
+
+<!-- ============ 成績票 ============ -->
+<section id="screen-result" class="screen">
+  <div class="res-inner">
+    <p class="res-head">運 転 成 績 票</p>
+    <p id="res-svc" class="res-svc"></p>
+    <div class="res-main">
+      <div id="res-rank" class="res-rank">A</div>
+      <div class="res-score"><span id="res-total">88</span><small>/ 100</small></div>
+      <div id="res-title" class="res-title-badge">運転士級</div>
+    </div>
+    <div id="res-breakdown" class="res-breakdown"></div>
+    <p id="res-best" class="res-best"></p>
+    <div class="res-table-wrap">
+      <table id="res-stops"></table>
+    </div>
+    <div class="t-btns">
+      <button id="btn-res-retry" class="btn btn-primary">同じ行路をもう一度</button>
+      <button id="btn-res-select" class="btn btn-ghost">行路選択へ</button>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
