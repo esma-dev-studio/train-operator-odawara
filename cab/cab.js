@@ -26,6 +26,7 @@ export class Cab {
       limNext: $('#lim-next'),
       grade: $('#grade-ind'),
       bcBar: $('#bc-fill'),
+      leverGrip: $('#lever-grip'),
     };
     this._buildNotch();
   }
@@ -52,6 +53,19 @@ export class Cab {
   render() {
     const sim = this.sim;
     const h = sim.hud();
+
+    /* ---- レバーの持ち手を現在ノッチ位置へ動かす ---- */
+    if (this._lastNotch !== sim.notch) {
+      this._lastNotch = sim.notch;
+      const idx = sim.notch === -8 ? 12 : 4 - sim.notch;
+      const frac = idx / 12;
+      this.els.leverGrip.style.top = `calc(${(frac * 100).toFixed(2)}% - ${(frac * 34).toFixed(1)}px)`;
+      this.els.leverGrip.textContent = sim.notch === -8 ? 'EB'
+        : sim.notch > 0 ? 'P' + sim.notch
+        : sim.notch < 0 ? 'B' + (-sim.notch) : 'N';
+      this.els.leverGrip.className = 'lever-grip ' + (sim.notch === -8 ? 'lg-eb'
+        : sim.notch > 0 ? 'lg-p' : sim.notch < 0 ? 'lg-b' : 'lg-n');
+    }
 
     /* ---- 速度計 ---- */
     const c = this.ctx, W = this.speedo.width, R = W / 2;

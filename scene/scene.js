@@ -350,6 +350,9 @@ export class RailScene {
     const kitami = this.line.stations.find((s) => s.name === '喜多見');
     this.depotZone = kitami ? { a: kitami.s + 300, b: kitami.s + 640 } : null;
 
+    /* 踏切の位置(郊外区間に6箇所。駅・川・トンネル・複々線・基地を避ける) */
+    this.crossSpots = this._pickCrossings();
+
     this._buildTrack();
     this._buildSleepers();
     this._buildLineside();
@@ -364,6 +367,30 @@ export class RailScene {
     this._buildAiTrain();
     this._buildStopBeam();
     this._buildLandmarks();
+    this._buildCrossings();
+    this._buildStationHouses();
+    this._buildPeople();
+  }
+
+  /* 踏切候補の選定 */
+  _pickCrossings() {
+    const L = this.line.meta.length;
+    const q = this.line.sections.quad;
+    const bad = (s) =>
+      this._inTunnel(s) ||
+      this.line.stations.some((st) => Math.abs(st.s - s) < 230) ||
+      this.line.sections.river.some((r) => s > r.from - 130 && s < r.to + 130) ||
+      (this.depotZone && s > this.depotZone.a - 70 && s < this.depotZone.b + 70) ||
+      (s > q.from - 60 && s < q.to + 60);
+    const spots = [];
+    for (let s = 8600; s < L - 400 && spots.length < 6; s += 1150) {
+      let x = s;
+      for (let k = 0; k < 9; k++) {
+        if (!bad(x)) { spots.push(x); break; }
+        x += 140;
+      }
+    }
+    return spots;
   }
 
   /* fps低下時に外から段階的に画質を落とす(dpr→影) */
@@ -828,17 +855,25 @@ export class RailScene {
     if (houseTf.length) {
       const roofGeo = new THREE.ConeGeometry(0.74, 1, 4);
       roofGeo.rotateY(Math.PI / 4);
-      const roofMat = new THREE.MeshStandardMaterial({ color: 0x4e4438, roughness: 0.9 });
+      const roofMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
       const roofs = new THREE.InstancedMesh(roofGeo, roofMat, houseTf.length);
       roofs.castShadow = true;
+      /* 屋根の色に瓦らしいバリエーションを付ける(街の見分けやすさ) */
+      const roofCols = [0x6e4438, 0x44546a, 0x4e6248, 0x5c4f42, 0x4c5258];
       const mat4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+      const rcol = new THREE.Color();
       houseTf.forEach((b, i) => {
         e.set(0, b.rot, 0); q.setFromEuler(e);
         mat4.compose(
           new THREE.Vector3(b.p.x, b.p.y - 1.5 + b.h + 0.9, b.p.z), q,
           new THREE.Vector3(b.w * 1.04, 2.0, b.dpt * 1.04));
         roofs.setMatrixAt(i, mat4);
+        rcol.setHex(roofCols[i % roofCols.length]);
+        const jit = 0.85 + rng() * 0.3;
+        rcol.multiplyScalar(jit);
+        roofs.setColorAt(i, rcol);
       });
+      if (roofs.instanceColor) roofs.instanceColor.needsUpdate = true;
       this.scene.add(roofs);
     }
   }
@@ -867,11 +902,12 @@ export class RailScene {
         this.scene.add(new THREE.Mesh(vribbon(F, i0, i1, run.off, -0.25, 1.05, 2), matFence));
       }
     };
+    const nearCross = (s) => this.crossSpots.some((c) => Math.abs(c - s) < 14);
     for (const side of [1, -1]) {
       let cur = null;
       for (let s = 25; s < L - 25; s += 5) {
         let type = null;
-        if (!this._inTunnel(s) && !nearStation(s) && !inRiver(s)) {
+        if (!this._inTunnel(s) && !nearStation(s) && !inRiver(s) && !nearCross(s)) {
           type = kindAt(s) <= 1 ? 'wall' : 'fence';
         }
         let off = side > 0 ? 5.4 : -8.9;
@@ -905,6 +941,7 @@ export class RailScene {
       const f = frameAt(F, this.step, s + rng() * 20);
       /* 線路際の並木(郊外のみ。防音壁区間には置かない) */
       const pNear = k === 3 ? 0.55 : k === 2 ? 0.38 : 0;
+      if (this.crossSpots.some((c) => Math.abs(c - s) < 24)) continue;
       for (const side of [1, -1]) {
         const inDepot = side < 0 && this.depotZone && s > this.depotZone.a - 40 && s < this.depotZone.b + 40;
         if (inDepot) continue;
@@ -1337,6 +1374,216 @@ export class RailScene {
     this.aiTrain.lookAt(ahead);
   }
 
+  /* ---------- 踏切(遮断機・警報灯つき) ---------- */
+  _buildCrossings() {
+    const F = this.frames;
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x3f4245, roughness: 0.95 });
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xcfcfc8 });
+    const stripeTex = canvasTex(64, 16, (c) => {
+      c.fillStyle = '#e8e13a'; c.fillRect(0, 0, 64, 16);
+      c.fillStyle = '#16161a';
+      for (let x = 0; x < 64; x += 16) c.fillRect(x, 0, 8, 16);
+    });
+    const armMat = new THREE.MeshStandardMaterial({ map: stripeTex, roughness: 0.6 });
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x565e63, roughness: 0.6, metalness: 0.4 });
+    const boxMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.7 });
+    this.crossings = [];
+    this.crossSpots.forEach((s) => {
+      const f = frameAt(F, this.step, s);
+      /* 道路(線路を横切る) */
+      const road = new THREE.Group();
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(56, 0.08, 5.2), roadMat);
+      slab.material = new THREE.MeshStandardMaterial({ color: 0x54585c, roughness: 0.95 });
+      slab.receiveShadow = true;
+      road.add(slab);
+      [-2.35, 2.35].forEach((dz) => {
+        const ln = new THREE.Mesh(new THREE.BoxGeometry(56, 0.02, 0.22), lineMat);
+        ln.position.set(0, 0.05, dz);
+        road.add(ln);
+      });
+      road.position.copy(f.p).addScaledVector(f.left, -1.9);
+      road.position.y += 0.1;
+      road.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.left);
+      this.scene.add(road);
+      /* 遮断機(両側)。腕は列車接近で下りる */
+      const arms = [], lamps = [];
+      [[7.6, 3.4], [-11.2, -3.4]].forEach(([off, roadSide]) => {
+        const g = new THREE.Group();
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.0, 8), poleMat);
+        pole.position.y = 1.5;
+        pole.castShadow = true;
+        g.add(pole);
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.5, 0.2), boxMat);
+        head.position.y = 2.6;
+        g.add(head);
+        /* 踏切警標(×印) */
+        const buckMat = new THREE.MeshStandardMaterial({ map: stripeTex, roughness: 0.7 });
+        [-0.6, 0.6].forEach((rot) => {
+          const buck = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.2, 0.06), buckMat);
+          buck.position.set(0, 3.25, 0);
+          buck.rotation.z = rot;
+          g.add(buck);
+        });
+        /* 警報灯2つ(交互点滅) */
+        const lampGeo = new THREE.CircleGeometry(0.15, 10);
+        const la = new THREE.Mesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0x33110e }));
+        const lb = new THREE.Mesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0x33110e }));
+        la.position.set(-0.2, 2.6, 0.11);
+        lb.position.set(0.2, 2.6, 0.11);
+        g.add(la, lb);
+        lamps.push(la, lb);
+        /* 腕(根元を軸に回転) */
+        const armGeo = new THREE.BoxGeometry(5.6, 0.2, 0.2);
+        armGeo.translate(2.8, 0, 0);
+        const arm = new THREE.Mesh(armGeo, armMat);
+        arm.position.y = 1.05;
+        arm.rotation.z = 1.25;
+        arms.push(arm);
+        g.add(arm);
+        const p = f.p.clone().addScaledVector(f.left, off).addScaledVector(f.t, roadSide);
+        g.position.copy(p);
+        /* 腕が道路をふさぐ向き(=線路と平行)に置く */
+        g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.t.clone().multiplyScalar(off > 0 ? 1 : -1));
+        this.scene.add(g);
+      });
+      this.crossings.push({ s, arms, lamps });
+    });
+  }
+
+  _updateCrossings(dt) {
+    if (!this.crossings) return;
+    const pos = this.sim.pos;
+    this.crossings.forEach((cr) => {
+      const d = Math.abs(cr.s - pos);
+      if (d > 1500) return;
+      const closed = d < 420;
+      const target = closed ? 0 : 1.25;
+      cr.arms.forEach((a) => {
+        a.rotation.z += (target - a.rotation.z) * Math.min(1, dt * 2.6);
+      });
+      const blink = closed && (this.clockT * 2.4) % 1 < 0.5;
+      const blink2 = closed && !blink;
+      cr.lamps.forEach((l, i) => {
+        const on = i % 2 === 0 ? blink : blink2;
+        l.material.color.setHex(on ? 0xff3b30 : 0x33110e);
+      });
+    });
+  }
+
+  /* ---------- 駅舎(駅名看板つき) ---------- */
+  _buildStationHouses() {
+    const F = this.frames;
+    const wallMat = new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xd8d5cc, roughness: 0.9 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x3d4a56, roughness: 0.8 });
+    this.line.stations.forEach((st) => {
+      if (this._inTunnel(st.s)) return;
+      if (st.name === '新宿') return;   // 新宿は大屋根ターミナルがあるので省略
+      const f = frameAt(F, this.step, st.s - 55);
+      const g = new THREE.Group();
+      const bld = new THREE.Mesh(new THREE.BoxGeometry(15, 4.4, 6.5), wallMat);
+      bld.position.y = 2.2;
+      bld.castShadow = true;
+      g.add(bld);
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(16, 0.5, 7.5), roofMat);
+      roof.position.y = 4.65;
+      roof.castShadow = true;
+      g.add(roof);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3),
+        new THREE.MeshBasicMaterial({
+          map: boardTexture([
+            [`${st.name} 駅`, 36, 34],
+            [STATION_KANA[st.name] || '', 70, 18, 'normal'],
+          ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 96 }),
+        }));
+      sign.position.set(0, 3.4, 3.3);
+      g.add(sign);
+      g.position.copy(f.p).addScaledVector(f.left, -14.5);
+      g.position.y += 0.1;
+      g.lookAt(g.position.clone().addScaledVector(f.left, 30));   // 正面(+z)を線路側へ
+      this.scene.add(g);
+    });
+  }
+
+  /* ---------- 駅の人々(待つ・乗る・降りる) ---------- */
+  _buildPeople() {
+    const palette = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0x2e6e62, 0x714a71, 0x4f6636];
+    this.people = [];
+    for (let i = 0; i < 12; i++) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.19, 0.95, 7),
+        new THREE.MeshStandardMaterial({ color: palette[i % palette.length], roughness: 0.9 }));
+      body.position.y = 0.68;
+      body.castShadow = true;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 7),
+        new THREE.MeshStandardMaterial({ color: 0xd8b49a, roughness: 0.8 }));
+      head.position.y = 1.34;
+      head.castShadow = true;
+      g.add(body, head);
+      g.scale.setScalar(0.82 + (i % 5) * 0.055);
+      g.visible = false;
+      this.scene.add(g);
+      this.people.push(g);
+    }
+  }
+
+  _updatePeople() {
+    if (!this.people) return;
+    const sim = this.sim;
+    /* ドア開放中は「いま停まっている駅」(到着でstopIdxはもう次を指している) */
+    const cur = sim.doorOpen ? sim.stops[sim.stopIdx - 1] : null;
+    const next = cur || sim.stops[sim.stopIdx];
+    const d = next ? next.stopAt - sim.pos : 1e9;
+    if (!next || d > 430 || d < -40) {
+      this.people.forEach((p) => { p.visible = false; });
+      return;
+    }
+    const F = this.frames;
+    /* ドア開放中の進行度(0→1)。dwellはおよそ20秒とみなす */
+    const f01 = sim.doorOpen ? Math.min(1, Math.max(0, 1 - (this._departOf() - sim.t) / 20)) : 0;
+    /* 自ホーム(進行左側)の6人: 0-1=降りる人, 2-5=乗る人 */
+    for (let i = 0; i < 6; i++) {
+      const p = this.people[i];
+      const s = next.stopAt + 8 - i * 13;
+      const fr = frameAt(F, this.step, Math.max(2, s));
+      let lat;
+      let vis = true;
+      if (!sim.doorOpen) {
+        lat = 3.5 + (i % 3) * 0.35;   // 待っている
+        if (i < 2) vis = false;        // 降りる人はドアが開くまでいない
+      } else if (i < 2) {
+        const pk = Math.min(1, Math.max(0, f01 * 1.7 - i * 0.25));
+        lat = 1.95 + pk * 2.3;         // 電車から降りて離れる
+      } else {
+        const pk = Math.min(1, Math.max(0, f01 * 1.6 - (i - 2) * 0.18));
+        lat = 3.6 - pk * 1.65;         // 電車へ歩いて乗る
+        if (pk >= 1) vis = false;      // 乗車済み
+      }
+      p.position.copy(fr.p).addScaledVector(fr.left, lat);
+      p.position.y += 1.02;
+      p.visible = vis;
+    }
+    /* 向かいホームの6人: 接近中は立って待ち、停車中は歩く人の流れになる
+     * (停車時は運転台が先頭=ホームの端なので、動きが前方に見えるように) */
+    for (let i = 6; i < 12; i++) {
+      const p = this.people[i];
+      const k = i - 6;
+      let s;
+      if (sim.doorOpen) {
+        s = next.stopAt + 12 - ((this.clockT * 8 + k * 29) % 172);   // ホームを歩く流れ
+      } else {
+        s = next.stopAt - 12 - k * 21;                               // 待っている
+      }
+      const fr = frameAt(F, this.step, Math.max(2, s));
+      p.position.copy(fr.p).addScaledVector(fr.left, -6.4 - (i % 3) * 0.3);
+      p.position.y += 1.02 + Math.sin(this.clockT * 1.8 + i) * 0.012;
+      p.visible = true;
+    }
+  }
+
+  _departOf() {
+    return this.sim._departTime || this.sim.t;
+  }
+
   resize(w, h) {
     this._w = w; this._h = h;
     this.renderer.setSize(w, h, false);
@@ -1405,6 +1652,9 @@ export class RailScene {
     }
     /* 観覧車をゆっくり回す */
     if (this.wheelSpin) this.wheelSpin.rotation.z += dt * 0.05;
+    /* 踏切と駅の人々 */
+    this._updateCrossings(dt);
+    this._updatePeople();
 
     this.renderer.render(this.scene, this.camera);
 

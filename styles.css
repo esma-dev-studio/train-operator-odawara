@@ -263,20 +263,45 @@ ruby rt { font-size: 0.5em; opacity: 0.85; letter-spacing: 0; font-weight: 500; 
 .nt.on.nt-b { background: var(--amber); color: #35270a; }
 .nt.on.nt-eb { background: var(--red); color: #fff; }
 
+/* ワンハンドルレバー: ゾーン色分けトラック + 実際に動く持ち手 */
 #lever {
-  background: linear-gradient(180deg, #232b31, #171d22);
+  background:
+    linear-gradient(180deg,
+      rgba(47, 157, 196, 0.30) 0%, rgba(47, 157, 196, 0.14) 29.2%,
+      rgba(96, 106, 114, 0.32) 29.2%, rgba(96, 106, 114, 0.32) 37.5%,
+      rgba(217, 144, 63, 0.16) 37.5%, rgba(217, 144, 63, 0.30) 95.8%,
+      rgba(214, 69, 69, 0.5) 95.8%, rgba(214, 69, 69, 0.6) 100%),
+    linear-gradient(180deg, #232b31, #171d22);
   border: 1px solid var(--line); border-radius: 10px;
   position: relative; touch-action: none; cursor: grab;
 }
-#lever::before {
-  content: 'P4\A\A\A N\A\A\A\A EB';
-  white-space: pre; position: absolute; inset: 8px auto 8px 6px;
-  font-size: 0.5rem; color: #4c5860; line-height: 1.5;
+.lv-lab {
+  position: absolute; left: 0; right: 0; text-align: center;
+  font-size: 0.52rem; font-weight: 700; pointer-events: none;
+  letter-spacing: 0.04em; color: #9fb1bc;
 }
+.lv-p { top: 5px; color: #8fd4f0; }
+.lv-n { top: calc(33.3% - 6px); color: #c2ccd4; }
+.lv-b { top: calc(66% - 6px); color: #eec18a; }
+.lv-eb { bottom: 3px; color: #f2a0a0; }
 .lever-grip {
-  position: absolute; left: 24%; right: 10%; top: 46%; height: 22px;
-  background: #39434b; border-radius: 6px; border: 1px solid #4d5860;
+  position: absolute; left: -9px; right: -9px; height: 34px; top: 0;
+  background: linear-gradient(180deg, #4a545d, #39434b);
+  border-radius: 9px; border: 2px solid #5a656e;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.82rem; font-weight: 900; color: #eef4f8;
+  transition: top 0.09s ease-out;
+  pointer-events: none;   /* ドラッグはトラック側で受ける */
 }
+.lever-grip::after {
+  content: ''; position: absolute; left: 9px; right: 9px; top: 4px;
+  height: 2px; background: rgba(255, 255, 255, 0.20);
+  box-shadow: 0 24px 0 rgba(0, 0, 0, 0.28);
+}
+.lever-grip.lg-p { background: linear-gradient(180deg, #3aa9d0, #2b7fa0); border-color: #6fc7e8; }
+.lever-grip.lg-b { background: linear-gradient(180deg, #e0a050, #b87a2e); border-color: #f2c58a; color: #2b1d08; }
+.lever-grip.lg-eb { background: linear-gradient(180deg, #e05555, #b13a3a); border-color: #ff9a9a; }
 
 /* ---------------- 一時停止 ---------------- */
 .pause-card {
