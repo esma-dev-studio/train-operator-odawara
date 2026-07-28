@@ -118,33 +118,52 @@ function canvasTex(w, h, draw, repeatY) {
   return tex;
 }
 
-/* ビル外壁: 低彩度+ガラス窓(空の映り込み)+下層のAO */
+/* ビル外壁v3: 1階店舗・階スラブ影・窓の空映りグラデ・バルコニーまで描き込む */
 const texBuilding = (base, opt = {}) => canvasTex(128, 256, (c) => {
+  const seed = opt.seed || 0;
   c.fillStyle = base;
   c.fillRect(0, 0, 128, 256);
   const ao = c.createLinearGradient(0, 0, 0, 256);
-  ao.addColorStop(0, 'rgba(255,255,255,0.07)');
-  ao.addColorStop(0.75, 'rgba(0,0,0,0.10)');
-  ao.addColorStop(1, 'rgba(0,0,0,0.34)');
+  ao.addColorStop(0, 'rgba(255,255,255,0.09)');
+  ao.addColorStop(0.7, 'rgba(0,0,0,0.07)');
+  ao.addColorStop(1, 'rgba(0,0,0,0.30)');
   c.fillStyle = ao; c.fillRect(0, 0, 128, 256);
-  for (let y = 12; y < 246; y += 20) {
-    for (let x = 7; x < 120; x += 17) {
-      const lit = Math.random();
+  const bottom = opt.shop ? 204 : 246;
+  for (let y = 12; y < bottom - 8; y += 20) {
+    /* 階スラブの影とハイライト */
+    c.fillStyle = 'rgba(0,0,0,0.22)'; c.fillRect(0, y + 15, 128, 3);
+    c.fillStyle = 'rgba(255,255,255,0.07)'; c.fillRect(0, y + 18, 128, 1.5);
+    for (let x = 7; x < 118; x += 17) {
+      const lit = ((x * 7 + y * 13 + seed * 5) % 23) / 23;
       if (lit < (opt.winRatio || 0.86)) {
-        const lum = 92 + Math.random() * 68;
-        c.fillStyle = `rgb(${Math.round(lum * 0.74)},${Math.round(lum * 0.84)},${Math.round(lum * 0.95)})`;
+        const g = c.createLinearGradient(0, y, 0, y + 12);
+        g.addColorStop(0, `rgba(${Math.round(150 + lit * 45)},${Math.round(175 + lit * 30)},210,0.95)`);
+        g.addColorStop(1, `rgba(${Math.round(58 + lit * 30)},${Math.round(78 + lit * 30)},104,0.95)`);
+        c.fillStyle = g;
       } else {
-        c.fillStyle = 'rgba(26,32,38,0.95)';
+        c.fillStyle = 'rgba(24,30,36,0.95)';
       }
-      c.fillRect(x, y, 11, 12);
-      c.fillStyle = 'rgba(235,244,250,0.30)';
-      c.fillRect(x, y, 11, 3.5);
-      c.fillStyle = 'rgba(0,0,0,0.20)';
-      c.fillRect(x, y + 10.5, 11, 1.5);
+      c.fillRect(x, y, 12, 12);
+      c.fillStyle = 'rgba(0,0,0,0.28)'; c.fillRect(x, y + 11, 12, 1.6);
+      if (opt.balcony) { c.fillStyle = 'rgba(255,255,255,0.34)'; c.fillRect(x - 2, y + 13, 15, 2); }
     }
   }
-  c.fillStyle = 'rgba(0,0,0,0.30)'; c.fillRect(0, 0, 128, 7);
-  c.fillStyle = 'rgba(255,255,255,0.10)'; c.fillRect(0, 7, 128, 2);
+  if (opt.shop) {
+    /* 1階: ガラスの店先+色ちがいのひさし+看板 */
+    c.fillStyle = '#18222e'; c.fillRect(3, 214, 122, 40);
+    c.fillStyle = 'rgba(160,190,215,0.22)';
+    c.beginPath(); c.moveTo(12, 254); c.lineTo(44, 214); c.lineTo(62, 214); c.lineTo(30, 254); c.fill();
+    const awn = ['#a8503e', '#3e64a8', '#3e8a58', '#b08a3a'];
+    for (let x = 3, i = 0; x < 120; x += 41, i++) {
+      c.fillStyle = awn[(seed + i) % awn.length];
+      c.fillRect(x, 206, 36, 9);
+    }
+    c.fillStyle = '#ece8de'; c.fillRect(26, 191, 76, 12);
+    c.fillStyle = 'rgba(40,50,60,0.8)';
+    for (let x = 32; x < 96; x += 9) c.fillRect(x, 194, 5, 6);
+  }
+  c.fillStyle = 'rgba(0,0,0,0.32)'; c.fillRect(0, 0, 128, 7);
+  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(0, 7, 128, 2);
 });
 
 /* 戸建て外壁 */
@@ -369,6 +388,8 @@ export class RailScene {
     this._buildLandmarks();
     this._buildCrossings();
     this._buildStationHouses();
+    this._buildRailsideDetails();
+    this._buildPlatformFurniture();
     this._buildPeople();
   }
 
@@ -780,14 +801,16 @@ export class RailScene {
     const F = this.frames;
     const rng = (() => { let x = 12345; return () => (x = (x * 16807) % 2147483647) / 2147483647; })();
     const mats = [
-      new THREE.MeshStandardMaterial({ map: texBuilding('#8f979e'), roughness: 0.85 }),
-      new THREE.MeshStandardMaterial({ map: texBuilding('#a39b90'), roughness: 0.9 }),
-      new THREE.MeshStandardMaterial({ map: texBuilding('#79828c', { winRatio: 0.93 }), roughness: 0.7, metalness: 0.15 }),
+      new THREE.MeshStandardMaterial({ map: texBuilding('#8f979e', { shop: true, seed: 1 }), roughness: 0.85 }),
+      new THREE.MeshStandardMaterial({ map: texBuilding('#a39b90', { balcony: true, winRatio: 0.8, seed: 2 }), roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({ map: texBuilding('#79828c', { shop: true, winRatio: 0.95, seed: 3 }), roughness: 0.7, metalness: 0.15 }),
       new THREE.MeshStandardMaterial({ map: texHouse(), roughness: 0.9 }),
     ];
     const geo = new THREE.BoxGeometry(1, 1, 1);
     geo.translate(0, 0.5, 0);
     const groups = mats.map((m) => ({ m, list: [] }));
+    const aoList = [];      // 建物の接地影(擬似AO)
+    const roofUnits = [];   // 屋上の室外機・機械
     const urban = this.line.sections.urban;
     const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
     for (let s = 40; s < this.line.meta.length - 40; s += 26) {
@@ -810,7 +833,26 @@ export class RailScene {
           const dpt = kind === 3 ? 7 + rng() * 3 : 9 + rng() * 14;
           const p = f.p.clone().addScaledVector(f.left, side * (dist + (side > 0 ? 0 : 4)));
           const mi = kind === 3 && h < 9 ? 3 : Math.floor(rng() * 3);
-          groups[mi].list.push({ p, h, w, dpt, rot: rng() * 0.5 - 0.25 });
+          const rot = rng() * 0.5 - 0.25;
+          groups[mi].list.push({ p, h, w, dpt, rot });
+          aoList.push({ p, w, dpt, rot });
+          /* 屋上の機械(近いビルだけ) */
+          if (mi < 3 && dist < 80 && h > 10) {
+            const nu = 1 + Math.floor(rng() * 2);
+            for (let u = 0; u < nu; u++) {
+              roofUnits.push({
+                x: p.x + (rng() - 0.5) * w * 0.5, y: p.y - 1.5 + h + 0.45,
+                z: p.z + (rng() - 0.5) * dpt * 0.5,
+                sx: 1.1 + rng() * 1.8, sy: 0.8 + rng() * 1.0, sz: 1.0 + rng() * 1.5, rot,
+              });
+            }
+          }
+          /* 超高層はセットバック(上に細い塔を重ねる) */
+          if (kind === 0 && h > 60 && rng() < 0.55) {
+            const p2 = p.clone();
+            p2.y += h * 0.7;
+            groups[mi].list.push({ p: p2, h: h * 0.42, w: w * 0.72, dpt: dpt * 0.72, rot });
+          }
         }
       }
     }
@@ -826,10 +868,10 @@ export class RailScene {
           if (rng() < 0.3) continue;
           const dist = 150 + rng() * 270;
           const h = kind === 0 ? 25 + rng() * 70 : 10 + rng() * 20;
-          groups[Math.floor(rng() * 3)].list.push({
-            p: f.p.clone().addScaledVector(f.left, side * dist),
-            h, w: 18 + rng() * 26, dpt: 16 + rng() * 22, rot: rng() * 0.6 - 0.3,
-          });
+          const bp = f.p.clone().addScaledVector(f.left, side * dist);
+          const bw = 18 + rng() * 26, bd = 16 + rng() * 22, brot = rng() * 0.6 - 0.3;
+          groups[Math.floor(rng() * 3)].list.push({ p: bp, h, w: bw, dpt: bd, rot: brot });
+          aoList.push({ p: bp, w: bw, dpt: bd, rot: brot });
         }
       }
     }
@@ -851,6 +893,34 @@ export class RailScene {
       if (im.instanceColor) im.instanceColor.needsUpdate = true;
       this.scene.add(im);
     });
+    /* 建物の接地影(擬似AO。地面に薄黒い板を敷いて「浮き」を消す) */
+    if (aoList.length) {
+      const aoGeo = new THREE.PlaneGeometry(1, 1);
+      aoGeo.rotateX(-Math.PI / 2);
+      const aoMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.24, depthWrite: false });
+      const aoIm = new THREE.InstancedMesh(aoGeo, aoMat, aoList.length);
+      const m4a = new THREE.Matrix4(), qa = new THREE.Quaternion(), ea = new THREE.Euler();
+      aoList.forEach((a, i) => {
+        ea.set(0, a.rot, 0); qa.setFromEuler(ea);
+        m4a.compose(new THREE.Vector3(a.p.x, a.p.y - 0.46, a.p.z), qa, new THREE.Vector3(a.w * 1.28, 1, a.dpt * 1.28));
+        aoIm.setMatrixAt(i, m4a);
+      });
+      this.scene.add(aoIm);
+    }
+    /* 屋上の室外機・機械 */
+    if (roofUnits.length) {
+      const ruGeo = new THREE.BoxGeometry(1, 1, 1);
+      ruGeo.translate(0, 0.5, 0);
+      const ruMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.7, metalness: 0.3 });
+      const ruIm = new THREE.InstancedMesh(ruGeo, ruMat, roofUnits.length);
+      const m4r = new THREE.Matrix4(), qr = new THREE.Quaternion(), er = new THREE.Euler();
+      roofUnits.forEach((u, i) => {
+        er.set(0, u.rot, 0); qr.setFromEuler(er);
+        m4r.compose(new THREE.Vector3(u.x, u.y, u.z), qr, new THREE.Vector3(u.sx, u.sy, u.sz));
+        ruIm.setMatrixAt(i, m4r);
+      });
+      this.scene.add(ruIm);
+    }
     /* 戸建ての寄棟屋根 */
     if (houseTf.length) {
       const roofGeo = new THREE.ConeGeometry(0.74, 1, 4);
@@ -967,26 +1037,38 @@ export class RailScene {
     }
     const trunkGeo = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6);
     trunkGeo.translate(0, 1.45, 0);
-    const folGeo = new THREE.IcosahedronGeometry(1.7, 1);
-    folGeo.scale(1, 1.25, 1);
-    folGeo.translate(0, 3.7, 0);
+    /* 葉は大中小3つの球のクラスタにして「まんまる玉」を脱却 */
+    const mkFol = (r, ox, oy, oz) => {
+      const g = new THREE.IcosahedronGeometry(r, 1);
+      g.scale(1, 1.18, 1);
+      g.translate(ox, oy, oz);
+      return g;
+    };
+    const folGeos = [mkFol(1.5, 0, 3.65, 0), mkFol(1.05, 0.85, 3.05, 0.35), mkFol(0.92, -0.8, 3.25, -0.3)];
     const trunkMat = new THREE.MeshStandardMaterial({ color: 0x584736, roughness: 0.95 });
-    const folMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 });
     const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, list.length);
-    const fols = new THREE.InstancedMesh(folGeo, folMat, list.length);
-    trunks.castShadow = true; fols.castShadow = true;
+    trunks.castShadow = true;
+    const folIms = folGeos.map((g) => {
+      const im = new THREE.InstancedMesh(
+        g, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 }), list.length);
+      im.castShadow = true;
+      return im;
+    });
     const m4 = new THREE.Matrix4(), qt = new THREE.Quaternion(), e = new THREE.Euler();
     const col = new THREE.Color();
+    const shade = [1.0, 0.88, 0.8];
     list.forEach((t, i) => {
       e.set(0, rng() * Math.PI, 0); qt.setFromEuler(e);
       m4.compose(t.p, qt, new THREE.Vector3(t.sc, t.sc * (0.9 + rng() * 0.3), t.sc));
       trunks.setMatrixAt(i, m4);
-      fols.setMatrixAt(i, m4);
-      col.setRGB(t.tint * 0.38, t.tint * 0.46, t.tint * 0.30, THREE.SRGBColorSpace);
-      fols.setColorAt(i, col);
+      folIms.forEach((im, gi) => {
+        im.setMatrixAt(i, m4);
+        col.setRGB(t.tint * 0.38 * shade[gi], t.tint * 0.46 * shade[gi], t.tint * 0.30 * shade[gi], THREE.SRGBColorSpace);
+        im.setColorAt(i, col);
+      });
     });
-    if (fols.instanceColor) fols.instanceColor.needsUpdate = true;
-    this.scene.add(trunks, fols);
+    folIms.forEach((im) => { if (im.instanceColor) im.instanceColor.needsUpdate = true; this.scene.add(im); });
+    this.scene.add(trunks);
   }
 
   /* ---------- トンネル（下北沢地下区間） ---------- */
@@ -1173,10 +1255,10 @@ export class RailScene {
     const s0 = this._stationS('新宿');
     if (s0 === null) return;
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x5d656e, roughness: 0.55, metalness: 0.35, side: DS,
-      emissive: 0x171b1f,
+      color: 0x6d7680, roughness: 0.5, metalness: 0.3, side: DS,
+      emissive: 0x1c2126,
     });
-    mat.envMapIntensity = 1.15;
+    mat.envMapIntensity = 1.35;
     for (let s = Math.max(15, s0 - 25); s < s0 + 135; s += 42) {
       const f = frameAt(F, this.step, s + 21);
       const geo = new THREE.CylinderGeometry(10.5, 10.5, 44, 20, 1, true, 0, Math.PI);
@@ -1372,6 +1454,103 @@ export class RailScene {
     this.aiTrain.position.copy(f.p).addScaledVector(f.left, off);
     const ahead = f.p.clone().addScaledVector(f.t, dir * 30).addScaledVector(f.left, off);
     this.aiTrain.lookAt(ahead);
+  }
+
+  /* ---------- 線路ぎわの小物(ケーブルトラフ・継電箱・キロポスト) ---------- */
+  _buildRailsideDetails() {
+    const F = this.frames, N = F.length - 1, L = this.line.meta.length;
+    /* ケーブルトラフ(線路脇を走る細いコンクリの列) */
+    const trough = new THREE.Mesh(ribbon(F, 0, N, 2.62, 0.36, 0.05, 3),
+      new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xb2afa7, roughness: 0.95, side: DS }));
+    this.scene.add(trough);
+    /* 継電箱(信号機器の箱) */
+    const nearStation = (s) => this.line.stations.some((st) => Math.abs(st.s - s) < 90);
+    const inRiver = (s) => this.line.sections.river.some((r) => s > r.from - 60 && s < r.to + 60);
+    const boxes = [];
+    for (let s = 140; s < L - 100; s += 173) {
+      if (this._inTunnel(s) || nearStation(s) || inRiver(s)) continue;
+      boxes.push(s);
+    }
+    const bGeo = new THREE.BoxGeometry(0.85, 1.05, 0.5);
+    bGeo.translate(0, 0.52, 0);
+    const bMat = new THREE.MeshStandardMaterial({ color: 0x8f959b, roughness: 0.6, metalness: 0.25 });
+    const bIm = new THREE.InstancedMesh(bGeo, bMat, boxes.length);
+    bIm.castShadow = true;
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
+    boxes.forEach((s, i) => {
+      const f = frameAt(F, this.step, s);
+      q.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.left);
+      m4.compose(f.p.clone().addScaledVector(f.left, -7.7), q, new THREE.Vector3(1, 1, 1));
+      bIm.setMatrixAt(i, m4);
+    });
+    this.scene.add(bIm);
+    /* キロポスト(1kmごと。数字を数えながら走れる) */
+    const postGeo = new THREE.CylinderGeometry(0.045, 0.05, 1.15, 6);
+    const postMat = new THREE.MeshStandardMaterial({ color: 0xe8e6de, roughness: 0.8 });
+    for (let km = 1; km <= Math.floor((L - 100) / 1000); km++) {
+      const s = km * 1000;
+      if (this._inTunnel(s)) continue;
+      const f = frameAt(F, this.step, s);
+      const g = new THREE.Group();
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.y = 0.57;
+      g.add(post);
+      const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4),
+        new THREE.MeshBasicMaterial({
+          map: boardTexture([[String(km), 40, 40]], { bg: '#f2f2ee', fg: '#16283a', border: '#16283a', w: 64, h: 64 }),
+        }));
+      plate.position.y = 1.05;
+      g.add(plate);
+      g.position.copy(f.p).addScaledVector(f.left, 2.35);
+      g.lookAt(g.position.clone().addScaledVector(f.t, -10));
+      this.scene.add(g);
+    }
+  }
+
+  /* ---------- ホームの備品(ベンチ・自販機) ---------- */
+  _buildPlatformFurniture() {
+    const F = this.frames;
+    const seats = [], backs = [], vends = [], fronts = [];
+    const vendCols = [0xc23b2e, 0x2e5fc2, 0xe8e6e0];
+    this.line.stations.forEach((st, si) => {
+      if (this._inTunnel(st.s)) return;
+      [[3.8, 1], [-7.55, -1]].forEach(([off, dir]) => {
+        [-45, -95].forEach((ds) => {
+          const f = frameAt(F, this.step, st.s + ds);
+          seats.push({ f, off });
+          backs.push({ f, off: off + dir * 0.2 });
+        });
+        const fv = frameAt(F, this.step, st.s - 68);
+        vends.push({ f: fv, off, col: vendCols[(si + (dir > 0 ? 0 : 1)) % vendCols.length] });
+        fronts.push({ f: fv, off: off - dir * 0.36 });
+      });
+    });
+    const X = new THREE.Vector3(1, 0, 0);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+    const put = (im, arr, y) => {
+      arr.forEach((a, i) => {
+        q.setFromUnitVectors(X, a.f.t);
+        m4.compose(a.f.p.clone().addScaledVector(a.f.left, a.off).setY(a.f.p.y + y), q, one);
+        im.setMatrixAt(i, m4);
+      });
+      this.scene.add(im);
+    };
+    const seatIm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.08, 0.42),
+      new THREE.MeshStandardMaterial({ color: 0x2e5245, roughness: 0.7 }), seats.length);
+    put(seatIm, seats, 1.44);
+    const backIm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.4, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x376050, roughness: 0.7 }), backs.length);
+    put(backIm, backs, 1.72);
+    const vendIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.85, 1.7, 0.68),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15 }), vends.length);
+    const vc = new THREE.Color();
+    vends.forEach((v, i) => { vc.setHex(v.col); vendIm.setColorAt(i, vc); });
+    if (vendIm.instanceColor) vendIm.instanceColor.needsUpdate = true;
+    vendIm.castShadow = true;
+    put(vendIm, vends, 1.87);
+    const frontIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.1, 0.05),
+      new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 }), fronts.length);
+    put(frontIm, fronts, 1.95);
   }
 
   /* ---------- 踏切(遮断機・警報灯つき) ---------- */
@@ -1592,10 +1771,10 @@ export class RailScene {
     const F = this.frames;
     const f01 = sim.doorOpen ? Math.min(1, Math.max(0, 1 - (this._departOf() - sim.t) / 20)) : 0;
     const P = new THREE.Vector3();
-    /* 自ホーム(進行左側)の6人: 0-1=降りる人, 2-5=乗る人 */
+    /* 自ホーム(進行左側)の6人: 0-1=降りる人(すこし先), 2-5=乗る人(後方寄り) */
     for (let i = 0; i < 6; i++) {
       const fig = this.people[i];
-      const s = next.stopAt + 8 - i * 13;
+      const s = i < 2 ? next.stopAt + 14 + i * 9 : next.stopAt + 2 - (i - 2) * 13;
       const fr = frameAt(F, this.step, Math.max(2, s));
       let lat, walking = 0, dir = null;
       if (!sim.doorOpen) {

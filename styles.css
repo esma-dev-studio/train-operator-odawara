@@ -144,6 +144,19 @@ button, .radio, select, #lever, .svc-card { touch-action: manipulation; }
   #bh-ctx-num { font-size: 1.5rem; }
 }
 
+/* しゅっぱつスキップ */
+.skip-btn {
+  position: absolute; left: 50%; bottom: 66px; transform: translateX(-50%);
+  z-index: 6; cursor: pointer;
+  background: linear-gradient(180deg, #3aa9d0, #2b7fa0);
+  color: #04222e; border: 2px solid #7fd8ff; border-radius: 999px;
+  font-size: 1.0rem; font-weight: 900; padding: 10px 26px;
+  letter-spacing: 0.05em;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+.skip-btn:active { transform: translateX(-50%) scale(0.96); }
+.skip-btn.hidden { display: none; }
+
 /* GL上の丸ボタン(ポーズ) */
 .gl-btn {
   position: absolute; top: 10px; right: 12px; z-index: 7;

@@ -19,10 +19,10 @@ export const TRAIN = {
 };
 
 export const SERVICES = {
-  local:  { name: '各駅停車', stops: null, dwell: 25 },
-  exp:    { name: '急行', dwell: 30,
+  local:  { name: '各駅停車', stops: null, dwell: 15 },
+  exp:    { name: '急行', dwell: 15,
     stops: ['新宿', '代々木上原', '下北沢', '経堂', '成城学園前', '登戸', '向ヶ丘遊園', '新百合ヶ丘'] },
-  rapid:  { name: '快速急行', dwell: 30,
+  rapid:  { name: '快速急行', dwell: 15,
     stops: ['新宿', '代々木上原', '下北沢', '登戸', '新百合ヶ丘'] },
 };
 
@@ -403,6 +403,19 @@ export class TrainSim {
     const dep = this.timetable[this.stopIdx - 1].dep;
     this._departTime = Math.max(dep, this.t + this.service.dwell);
     this._emit('door-open', { departAt: this._departTime });
+  }
+
+  /* 停車スキップ: 4秒後にドアを閉める。
+   * ただしダイヤより120秒以上の早発はしない(先行列車の閉塞に追いつかないための保護) */
+  skipDwell() {
+    if (!this.doorOpen || this.finished) return false;
+    const schedDep = this.timetable[Math.max(0, this.stopIdx - 1)].dep;
+    const target = Math.max(this.t + 4, schedDep - 120);
+    if (target < this._departTime - 0.5) {
+      this._departTime = target;
+      return true;
+    }
+    return false;
   }
 
   /* ============ 評定 ============ */

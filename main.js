@@ -226,6 +226,9 @@ const App = {
     });
     $('#tb-horn').addEventListener('click', () => { if (this.running && !this.paused && this.audio) this.audio.horn(); });
     $('#btn-pause-touch').addEventListener('click', () => { if (this.running) this.setPaused(!this.paused); });
+    $('#btn-skip').addEventListener('click', () => {
+      if (this.running && !this.paused && this.sim.skipDwell()) this.flashMsg('ドアが しまります！', 1600);
+    });
 
     addEventListener('keydown', (ev) => {
       if (!this.running) return;
@@ -426,6 +429,10 @@ const App = {
     if (this._bh.cap.textContent !== cap) this._bh.cap.textContent = cap;
     if (this._bh.unit.textContent !== unit) this._bh.unit.textContent = unit;
     this._bh.row.classList.toggle('bh-warn', warn);
+
+    /* しゅっぱつスキップボタン(まだ待ち時間があるときだけ) */
+    const canSkip = h.doorOpen && ((h.next ? h.next.dep : sim._departTime) - sim.t) > 6;
+    $('#btn-skip').classList.toggle('hidden', !canSkip);
   },
 
   retryStation() {
