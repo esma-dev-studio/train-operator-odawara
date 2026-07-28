@@ -104,6 +104,17 @@ select {
 #gl-wrap { position: absolute; inset: 0 0 178px 0; background: #000; overflow: hidden; }
 #gl { width: 100%; height: 100%; display: block; }
 
+/* タッチ端末: ダブルタップ拡大や300ms遅延で「押しても反応しない」感を防ぐ */
+button, .radio, select, #lever, .svc-card { touch-action: manipulation; }
+#lever { touch-action: none; }   /* レバーは縦ドラッグを自前処理 */
+
+/* ふりがな */
+ruby rt { font-size: 0.5em; opacity: 0.85; letter-spacing: 0; font-weight: 500; }
+.sel-label { width: auto; min-width: 84px; }
+.key-item { display: inline-block; margin-right: 14px; }
+.tims-kana { display: block; font-size: 0.6rem; color: var(--ink-2); letter-spacing: 0.08em; margin-top: 1px; }
+.st-kana { margin-left: 6px; font-size: 0.66em; color: var(--ink-2); }
+
 /* フロントガラスの映り込み・雨滴 */
 #glass-sheen {
   position: absolute; inset: 0; pointer-events: none;

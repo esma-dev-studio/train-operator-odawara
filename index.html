@@ -10,7 +10,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
-<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
 </head>
 <body>
 
@@ -20,13 +19,13 @@
   <div class="title-inner">
     <p class="t-eyebrow">REALISTIC TRAIN DRIVING SIMULATOR</p>
     <h1 class="t-logo">TRAIN<span>OPERATOR</span></h1>
-    <p class="t-line">小田原線　新宿 — 新百合ヶ丘　21.6 km ／ 23駅</p>
+    <p class="t-line">小田原線　<ruby>新宿<rt>しんじゅく</rt></ruby> — <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby>　21.6 km ／ 23<ruby>駅<rt>えき</rt></ruby></p>
     <p class="t-desc">
-      国土数値情報の実線形データで再現した本物のカーブ・勾配・駅間を、<br>
-      ワンハンドルマスコンと ATS-P型保安装置で運転する本格志向シミュレーター。
+      ほんものの<ruby>線路<rt>せんろ</rt></ruby>のデータでつくった、カーブ・<ruby>坂<rt>さか</rt></ruby>・<ruby>駅<rt>えき</rt></ruby>。<br>
+      きみが<ruby>運転士<rt>うんてんし</rt></ruby>。レバーでスピードをあやつって、<ruby>駅<rt>えき</rt></ruby>にぴったりとめよう。
     </p>
     <div class="t-btns">
-      <button id="btn-to-select" class="btn btn-primary">乗務を開始する</button>
+      <button id="btn-to-select" class="btn btn-primary"><ruby>運転<rt>うんてん</rt></ruby>をはじめる</button>
     </div>
     <p class="t-foot">
       線形・駅位置: 国土数値情報(鉄道データ N02-24, 国土交通省) ／ 標高: 国土地理院<br>
@@ -38,31 +37,31 @@
 <!-- ============ 乗務選択 ============ -->
 <section id="screen-select" class="screen">
   <div class="sel-inner">
-    <h2 class="sel-title">乗 務 行 路 選 択</h2>
+    <h2 class="sel-title"><ruby>列車<rt>れっしゃ</rt></ruby>を えらぶ</h2>
     <div id="svc-list" class="svc-list"></div>
     <div class="sel-row">
-      <label class="sel-label">天候</label>
-      <label class="radio"><input type="radio" name="weather" value="clear" checked><span>晴れ</span></label>
-      <label class="radio"><input type="radio" name="weather" value="rain"><span>雨（滑走注意）</span></label>
+      <label class="sel-label"><ruby>天気<rt>てんき</rt></ruby></label>
+      <label class="radio"><input type="radio" name="weather" value="clear" checked><span>はれ</span></label>
+      <label class="radio"><input type="radio" name="weather" value="rain"><span>あめ（すべりやすい）</span></label>
     </div>
     <div class="sel-row">
-      <label class="sel-label">出発駅</label>
+      <label class="sel-label">スタートの<ruby>駅<rt>えき</rt></ruby></label>
       <select id="start-select"></select>
     </div>
     <div class="sel-row">
-      <label class="sel-label">画質</label>
-      <label class="radio"><input type="radio" name="quality" value="high"><span>高</span></label>
-      <label class="radio"><input type="radio" name="quality" value="mid"><span>中</span></label>
-      <label class="radio"><input type="radio" name="quality" value="low"><span>低</span></label>
-      <span class="sel-note">重い場合は自動で下がります</span>
+      <label class="sel-label"><ruby>画質<rt>がしつ</rt></ruby></label>
+      <label class="radio"><input type="radio" name="quality" value="high"><span>きれい</span></label>
+      <label class="radio"><input type="radio" name="quality" value="mid"><span>ふつう</span></label>
+      <label class="radio"><input type="radio" name="quality" value="low"><span>かるい</span></label>
+      <span class="sel-note">うごきがおもいときは、じどうでかるくなります</span>
     </div>
     <div class="sel-keys">
-      <b>操作</b>　↑/W: ノッチ進め　↓/S: ノッチ戻し　N: 切　Space: 非常　H: 警笛　P/Esc: 一時停止<br>
-      タブレットは右端のレバーを上下にドラッグ
+      <b>そうさ</b>　<span class="key-item">↑ = すすむ</span><span class="key-item">↓ = ブレーキ</span><span class="key-item">スペース = きんきゅうブレーキ</span><span class="key-item">H = けいてき</span><span class="key-item">P = ポーズ</span><br>
+      iPadは、みぎはしの<b>レバー</b>をゆびで上下にうごかしてね
     </div>
     <div class="t-btns">
-      <button id="btn-start" class="btn btn-primary">出庫（運転開始）</button>
-      <button id="btn-back-title" class="btn btn-ghost">タイトルへ</button>
+      <button id="btn-start" class="btn btn-primary"><ruby>出発<rt>しゅっぱつ</rt></ruby>する！</button>
+      <button id="btn-back-title" class="btn btn-ghost">もどる</button>
     </div>
   </div>
 </section>
@@ -75,8 +74,8 @@
     </div>
     <div id="msg-center" class="hidden"></div>
     <div id="overrun-modal" class="modal hidden">
-      <p>停止位置を大きく行き過ぎました。<br>直前の駅からやり直します。</p>
-      <button id="btn-overrun-retry" class="btn btn-primary">やり直す</button>
+      <p>とまるところを 大きくいきすぎました。<br>ひとつまえの<ruby>駅<rt>えき</rt></ruby>から やりなおします。</p>
+      <button id="btn-overrun-retry" class="btn btn-primary">やりなおす</button>
     </div>
     <canvas id="rain-glass"></canvas>
     <div id="glass-sheen"></div>
@@ -89,7 +88,7 @@
       <div class="bc-wrap"><span>BC</span><div class="bc-bar"><i id="bc-fill"></i></div></div>
     </div>
     <div class="cab-block cab-tims">
-      <div class="tims-row1"><span class="tims-cap">次停車駅</span><span id="tims-clock">10:00:00</span></div>
+      <div class="tims-row1"><span class="tims-cap">つぎのえき</span><span id="tims-clock">10:00:00</span></div>
       <div id="tims-next">—</div>
       <div class="tims-row2"><span id="tims-dist">— m</span><span id="tims-sch"></span></div>
       <div id="tims-delay"></div>
@@ -115,10 +114,10 @@
   <!-- 一時停止 -->
   <section id="screen-pause" class="screen overlay">
     <div class="pause-card">
-      <h3>一時停止</h3>
-      <button id="btn-pause-resume" class="btn btn-primary">運転にもどる</button>
-      <button id="btn-pause-retry" class="btn btn-ghost">直前の駅からやり直す</button>
-      <button id="btn-pause-quit" class="btn btn-ghost">乗務をやめる</button>
+      <h3>ポーズ（きゅうけい）</h3>
+      <button id="btn-pause-resume" class="btn btn-primary"><ruby>運転<rt>うんてん</rt></ruby>にもどる</button>
+      <button id="btn-pause-retry" class="btn btn-ghost">まえの<ruby>駅<rt>えき</rt></ruby>から やりなおす</button>
+      <button id="btn-pause-quit" class="btn btn-ghost"><ruby>運転<rt>うんてん</rt></ruby>をやめる</button>
     </div>
   </section>
 </section>
@@ -126,7 +125,7 @@
 <!-- ============ 成績票 ============ -->
 <section id="screen-result" class="screen">
   <div class="res-inner">
-    <p class="res-head">運 転 成 績 票</p>
+    <p class="res-head"><ruby>運転成績票<rt>うんてんせいせきひょう</rt></ruby></p>
     <p id="res-svc" class="res-svc"></p>
     <div class="res-main">
       <div id="res-rank" class="res-rank">A</div>
@@ -139,8 +138,8 @@
       <table id="res-stops"></table>
     </div>
     <div class="t-btns">
-      <button id="btn-res-retry" class="btn btn-primary">同じ行路をもう一度</button>
-      <button id="btn-res-select" class="btn btn-ghost">行路選択へ</button>
+      <button id="btn-res-retry" class="btn btn-primary">もういちど はしる</button>
+      <button id="btn-res-select" class="btn btn-ghost"><ruby>列車<rt>れっしゃ</rt></ruby>えらびに もどる</button>
     </div>
   </div>
 </section>

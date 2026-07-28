@@ -2,6 +2,7 @@
  * cab/cab.js — 運転台の計器盤（DOM+Canvas 2D）
  * 針式速度計 / ノッチ表示 / ATS表示灯 / TIMS風モニタ
  * ========================================================= */
+import { STATION_KANA } from '../sim/kana.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -123,17 +124,21 @@ export class Cab {
 
     /* ---- TIMS ---- */
     if (h.next) {
-      this.els.timsNext.textContent = `${h.next.name}`;
+      if (this._nextName !== h.next.name) {
+        this._nextName = h.next.name;
+        this.els.timsNext.innerHTML = `${h.next.name}<span class="tims-kana">${STATION_KANA[h.next.name] || ''}</span>`;
+      }
       const d = Math.max(0, h.next.dist);
       this.els.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
       this.els.timsSch.textContent = '着 ' + this.fmtClock(h.next.arr);
       const delta = Math.round(sim.t - h.next.arr + Math.min(0, 0));
       const early = h.next.arr - sim.t;
       this.els.timsDelay.textContent = early >= 0
-        ? `定時まで ${Math.floor(early / 60)}:${String(Math.floor(early % 60)).padStart(2, '0')}`
-        : `遅延 ${Math.floor(-early / 60)}:${String(Math.floor(-early % 60)).padStart(2, '0')}`;
+        ? `じかんまで ${Math.floor(early / 60)}:${String(Math.floor(early % 60)).padStart(2, '0')}`
+        : `おくれ ${Math.floor(-early / 60)}:${String(Math.floor(-early % 60)).padStart(2, '0')}`;
       this.els.timsDelay.classList.toggle('late', early < 0);
     } else {
+      this._nextName = null;
       this.els.timsNext.textContent = '—';
       this.els.timsDist.textContent = '';
       this.els.timsSch.textContent = '';

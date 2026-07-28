@@ -4,8 +4,10 @@
  * v2: PBR+HDRI環境光+太陽影+実写テクスチャ(CC0)による描画基盤。
  * ゲームロジックは持たない（simの状態を毎フレーム描くだけ）。
  * ========================================================= */
-import * as THREE from 'three';
+/* importmapは使わない(古いiPadのSafariが非対応のため、相対パスで読み込む) */
+import * as THREE from '../vendor/three.module.min.js';
 import { RGBELoader } from '../vendor/RGBELoader.js';
+import { STATION_KANA } from '../sim/kana.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -640,11 +642,13 @@ export class RailScene {
           }
         }
       });
-      /* 駅名標 */
+      /* 駅名標(漢字+ひらがな。実物の駅名標もかな併記) */
       const prev = this.line.stations[si - 1], next = this.line.stations[si + 1];
       const tex = boardTexture([
-        [st.name, 46, 42], [st.code, 88, 20, 'normal'],
-        [`${prev ? '◀ ' + prev.name : ''}    ${next ? next.name + ' ▶' : ''}`, 112, 15, 'normal'],
+        [st.name, 38, 36],
+        [STATION_KANA[st.name] || '', 70, 17, 'normal'],
+        [st.code, 92, 13, 'normal'],
+        [`${prev ? '◀ ' + prev.name : ''}    ${next ? next.name + ' ▶' : ''}`, 114, 14, 'normal'],
       ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 128 });
       const board = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.85),
         new THREE.MeshBasicMaterial({ map: tex }));

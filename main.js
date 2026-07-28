@@ -5,6 +5,11 @@ import { TrainSim, SERVICES } from './sim/engine.js';
 import { RailScene } from './scene/scene.js';
 import { Cab } from './cab/cab.js';
 import { CabAudio } from './audio/audio.js';
+import { kanaOf, rubyStation } from './sim/kana.js';
+
+/* 種別名のふりがな */
+const SVC_KANA = { '各駅停車': 'かくえきていしゃ', '急行': 'きゅうこう', '快速急行': 'かいそくきゅうこう' };
+const rubySvc = (name) => SVC_KANA[name] ? `<ruby>${name}<rt>${SVC_KANA[name]}</rt></ruby>` : name;
 
 const $ = (s) => document.querySelector(s);
 const SAVE_KEY = 'trainop_v1';
@@ -155,9 +160,9 @@ const App = {
       const stops = s.stops ? s.stops.length : this.line.stations.length;
       const best = this.save.best[key + '_' + 'clear'] || this.save.best[key + '_rain'];
       return `<button class="svc-card" data-svc="${key}">
-        <span class="svc-name">${s.name}</span>
-        <span class="svc-meta">停車 ${stops}駅 ／ 基準 ${durOf(key)}分</span>
-        <span class="svc-best">${best ? `BEST ${best.total}点 (${best.rank})` : '記録なし'}</span>
+        <span class="svc-name">${rubySvc(s.name)}</span>
+        <span class="svc-meta">とまる<ruby>駅<rt>えき</rt></ruby> ${stops} ／ めやす ${durOf(key)}ぷん</span>
+        <span class="svc-best">${best ? `ベスト ${best.total}てん (${best.rank})` : 'まだ きろくなし'}</span>
       </button>`;
     }).join('');
     wrap.querySelectorAll('.svc-card').forEach((b) => {
@@ -189,7 +194,7 @@ const App = {
     const stops = this.line.stations.filter((st) => !svc.stops || svc.stops.includes(st.name));
     const sel = $('#start-select');
     sel.innerHTML = stops.slice(0, -1).map((st, i) =>
-      `<option value="${i}">${st.name} から (${stops.length - 1 - i}駅先まで)</option>`).join('');
+      `<option value="${i}">${st.name}（${kanaOf(st.name)}）から ・ のこり${stops.length - 1 - i}えき</option>`).join('');
     sel.value = '0';
   },
 
@@ -255,11 +260,18 @@ const App = {
     this.sim = new TrainSim(this.line, { service: this.service, weather: this.weather, timetable: this.timetable });
     this.sim.reset(startIdx);
     this.lastStationIdx = startIdx;
-    if (!this.scene) {
-      this.scene = new RailScene($('#gl'), this.line, this.sim, { quality: this.quality });
-    } else {
-      this.scene.sim = this.sim;
-      this.scene.setWeather(this.weather);
+    try {
+      if (!this.scene) {
+        this.scene = new RailScene($('#gl'), this.line, this.sim, { quality: this.quality });
+      } else {
+        this.scene.sim = this.sim;
+        this.scene.setWeather(this.weather);
+      }
+    } catch (err) {
+      /* WebGLが使えない等。無反応にせず、必ず画面に理由を出す */
+      this.showScreen('select');
+      alert('3Dがひょうじ できませんでした。\nブラウザを さいしんに してから もういちど ためしてね。\n(' + (err && err.message ? err.message : err) + ')');
+      return;
     }
     this.scene.setWeather(this.weather);
     if (!this.cab) this.cab = new Cab(this.sim); else this.cab.sim = this.sim;
@@ -269,7 +281,7 @@ const App = {
     this.audio.ensure();   // クリック起点なので自動再生制限もOK
     this.audio.bind(this.sim);
     this.sim.onEvent((type, e) => this.onSimEvent(type, e));
-    $('#drive-head-svc').textContent = SERVICES[this.service].name + '　新百合ヶ丘 行';
+    $('#drive-head-svc').innerHTML = rubySvc(SERVICES[this.service].name) + '　<ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby> いき';
     $('#msg-center').classList.add('hidden');
     $('#overrun-modal').classList.add('hidden');
     this.setPaused(false);
@@ -283,22 +295,22 @@ const App = {
       this.lastStationIdx = this.sim.stopIdx - 1;
       const last = this.sim.score.stops[this.sim.score.stops.length - 1];
       const abs = Math.abs(last.err);
-      const grade = abs <= 0.35 ? '◎ 見事' : abs <= 1 ? '○ 良好' : abs <= 2 ? '△ もう少し' : '× 不良';
-      const lateTxt = last.late > 3 ? `／ ${last.late}秒遅れ` : last.early > 30 ? '／ 早着' : '／ 定時';
-      this.flashMsg(`${e.name} 停車　誤差 ${last.err > 0 ? '+' : ''}${last.err.toFixed(2)}m ${grade} ${lateTxt}`);
+      const grade = abs <= 0.35 ? '◎ みごと！' : abs <= 1 ? '○ いいね' : abs <= 2 ? '△ おしい' : '× ざんねん';
+      const lateTxt = last.late > 3 ? `／ ${last.late}びょう おくれ` : last.early > 30 ? '／ はやすぎ' : '／ じかん ぴったり';
+      this.flashMsg(`${rubyStation(e.name)} にとうちゃく　ずれ ${last.err > 0 ? '+' : ''}${last.err.toFixed(2)}m ${grade} ${lateTxt}`);
     }
-    if (type === 'door-closed') this.flashMsg('ドア閉扉よし ── 出発進行', 1800);
-    if (type === 'overrun') this.flashMsg('⚠ オーバーラン！ 停止位置を過ぎています', 2600, true);
+    if (type === 'door-closed') this.flashMsg('ドアがしまりました ── <ruby>出発進行<rt>しゅっぱつしんこう</rt></ruby>！', 1800);
+    if (type === 'overrun') this.flashMsg('⚠ いきすぎ！ とまるところを すぎています', 2600, true);
     if (type === 'overrun-stop') {
       $('#overrun-modal').classList.remove('hidden');
     }
-    if (type === 'ats-brake') this.flashMsg('⚠ ATS パターン超過 ── 常用最大ブレーキ', 2200, true);
+    if (type === 'ats-brake') this.flashMsg('⚠ スピードの出しすぎ！ じどうブレーキが かかりました', 2200, true);
     if (type === 'finished') this.finishRun(e);
   },
 
   flashMsg(text, ms = 2600, warn = false) {
     const el = $('#msg-center');
-    el.textContent = text;
+    el.innerHTML = text;
     el.classList.toggle('warn', warn);
     el.classList.remove('hidden');
     clearTimeout(this._msgT);
@@ -314,7 +326,7 @@ const App = {
     this.sim.reset(this.lastStationIdx);
     this.setPaused(false);
     $('#overrun-modal').classList.add('hidden');
-    this.flashMsg(`${this.sim.stops[this.lastStationIdx].name} からやり直します`, 2000);
+    this.flashMsg(`${rubyStation(this.sim.stops[this.lastStationIdx].name)} から やりなおし`, 2000);
   },
 
   quitDrive() {
@@ -338,20 +350,20 @@ const App = {
     $('#res-rank').textContent = res.rank;
     $('#res-rank').className = 'res-rank rk-' + res.rank;
     $('#res-total').textContent = res.total;
-    $('#res-svc').textContent = `${SERVICES[this.service].name}　新宿 → 新百合ヶ丘${this.weather === 'rain' ? '　（雨天）' : ''}`;
-    $('#res-title').textContent = res.total >= 95 ? '指導運転士級' : res.total >= 85 ? '主任運転士級' : res.total >= 70 ? '運転士級' : res.total >= 55 ? '見習運転士' : '再教育';
+    $('#res-svc').innerHTML = `${rubySvc(SERVICES[this.service].name)}　<ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby>${this.weather === 'rain' ? '　（あめ）' : ''}`;
+    $('#res-title').textContent = res.total >= 95 ? 'でんせつの うんてんし' : res.total >= 85 ? 'めいじん うんてんし' : res.total >= 70 ? 'いちにんまえ うんてんし' : res.total >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
     const bd = res.breakdown;
     $('#res-breakdown').innerHTML = [
-      ['停止位置精度', bd.stop, 30], ['定時運転', bd.time, 30], ['制限・信号遵守', bd.comp, 25], ['乗り心地', bd.ride, 15],
+      ['えきに ぴったり とまれた？', bd.stop, 30], ['じかんどおりに はしれた？', bd.time, 30], ['スピードを まもれた？', bd.comp, 25], ['のりごこち', bd.ride, 15],
     ].map(([label, got, max]) => `
       <div class="rb-row"><span class="rb-l">${label}</span>
       <span class="rb-bar"><i style="width:${(got / max) * 100}%"></i></span>
       <span class="rb-n">${got.toFixed(1)} / ${max}</span></div>`).join('');
-    $('#res-stops').innerHTML = '<tr><th>駅</th><th>停止誤差</th><th>遅延</th></tr>' +
-      res.stops.map((st) => `<tr><td>${st.name}</td>
+    $('#res-stops').innerHTML = '<tr><th>えき</th><th>とまった ずれ</th><th>おくれ</th></tr>' +
+      res.stops.map((st) => `<tr><td>${st.name}<span class="st-kana">${kanaOf(st.name)}</span></td>
         <td class="${Math.abs(st.err) <= 1 ? 'good' : Math.abs(st.err) > 2 ? 'bad' : ''}">${st.err > 0 ? '+' : ''}${st.err.toFixed(2)}m</td>
-        <td class="${st.late > 30 ? 'bad' : ''}">${st.late > 0 ? '+' + st.late + 's' : '定時'}</td></tr>`).join('');
-    $('#res-best').textContent = isBest && this.startIdx === 0 ? '★ 自己ベスト更新' : (prev ? `ベスト ${prev.total}点(${prev.rank})` : '');
+        <td class="${st.late > 30 ? 'bad' : ''}">${st.late > 0 ? '+' + st.late + 'びょう' : 'ぴったり'}</td></tr>`).join('');
+    $('#res-best').textContent = isBest && this.startIdx === 0 ? '★ じこベスト こうしん！' : (prev ? `ベスト ${prev.total}てん (${prev.rank})` : '');
     this.showScreen('result');
   },
 
