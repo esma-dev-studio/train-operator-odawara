@@ -26,6 +26,9 @@ export const SERVICES = {
     stops: ['新宿', '代々木上原', '下北沢', '登戸', '新百合ヶ丘'] },
 };
 
+/* 天候ごとの粘着限界（これを超えるブレーキは滑走する） km/h/s */
+export const ADHESION = { clear: 4.4, rain: 3.3, snow: 2.9 };
+
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 export class TrainSim {
@@ -36,25 +39,35 @@ export class TrainSim {
     this.service = SERVICES[opts.service || 'local'];
     this.serviceKey = opts.service || 'local';
     this.weather = opts.weather || 'clear';
+    /* 進行方向: 'down'=新宿→新百合ヶ丘 / 'up'=新百合ヶ丘→新宿（lineは sim/line.js で方向変換済み） */
+    this.direction = (line.meta && line.meta.direction) || opts.direction || 'down';
 
     /* 停車駅リスト（各停は全駅） */
     const stopNames = this.service.stops;
     this.stops = line.stations.filter((st) => !stopNames || stopNames.includes(st.name));
     this.allStations = line.stations;
 
-    /* 停止位置: ホーム新宿方端から120m地点を目標（8両=160mだが見た目上一律） */
-    this.stops = this.stops.map((st) => ({ ...st, stopAt: st.s }));
+    /* 停止位置: 駅の s に先頭を合わせる（停止位置目標「8」の位置） */
+    this.stops = this.stops.map((st) => ({ ...st, stopAt: st.s, lineIdx: line.stations.indexOf(st) }));
 
     /* ダイヤ: 校正済みテーブル(data/timetable.json)があればそれを使う */
-    this.timetable = (opts.timetable && opts.timetable[this.serviceKey])
-      ? opts.timetable[this.serviceKey].map((x) => ({ arr: x[0], dep: x[1] }))
+    const ttKey = this.serviceKey + (this.direction === 'up' ? '_up' : '');
+    this.timetable = (opts.timetable && opts.timetable[ttKey] && opts.timetable[ttKey].length === this.stops.length)
+      ? opts.timetable[ttKey].map((x) => ({ arr: x[0], dep: x[1] }))
       : this._buildTimetable();
+
+    /* 区間運転: endIdx(停車駅リストの番号)で終点を手前にできる（小2向けの短い運転） */
+    if (opts.endIdx != null && opts.endIdx > 0 && opts.endIdx < this.stops.length - 1) {
+      this.stops = this.stops.slice(0, opts.endIdx + 1);
+      this.timetable = this.timetable.slice(0, opts.endIdx + 1);
+    }
 
     /* 信号機の配置: 各駅ホーム先端(出発)+駅間の閉塞（約1km毎） */
     this.signals = this._placeSignals();
 
-    /* 仮想先行列車（同種別・3分前を走る）*/
-    this.leadOffset = 180;
+    /* 仮想先行列車（同種別・5分前を走る）。
+     * 3分だと駅停車中の先行に追いついて黄・赤信号ばかりになるため5分間隔に */
+    this.leadOffset = 300;
 
     this.reset(0);
   }
@@ -95,6 +108,12 @@ export class TrainSim {
     this._doorPhase = 'boarding';  // boarding→closing→ready→run
     this._stopEval = null;
     this._departTime = this.timetable[stopIdx].dep;
+    this._melodyAt = this._departTime - 16;   // 発車メロディの合図
+    this._melodyDone = false;
+    this._approachDone = -1;                  // 「まもなく」を出した停車駅index
+    this._departDone = false;                 // 「つぎは」を出したか
+    this._left = false;
+    this._pastWarn = -1;
     this._eventCb = null;
   }
 
@@ -166,6 +185,7 @@ export class TrainSim {
       if (this.t < this._departTime - 15) return 0;
     }
     const lead = this._leadPos(this.t);
+    if (lead >= 1e8) return 3;   // 先行列車はもう終点に着いた
     const tail = lead - TRAIN.length;
     /* この信号の防護区間 = この信号から次の信号まで */
     const idx = this.signals.indexOf(sig);
@@ -199,13 +219,15 @@ export class TrainSim {
 
   /* 前方の速度制限（現在位置から先の最初の「より低い」制限） */
   nextRestriction() {
+    /* 前方3km以内の「いまより低い」制限をすべて見て、パターンが一番きついものを採る
+     * （連続カーブで、手前の制限の直後にさらに低い制限が続く場合も先読みできるように） */
     const cur = this.limitAt(this.pos);
-    let best = null;
+    let best = null, bestPat = 1e9;
     for (const z of this.line.limits) {
-      if (z.from > this.pos && z.v < cur) {
-        if (!best || z.from < best.from) best = z;
-      }
-      if (best && z.from > best.from + 2500) break;
+      if (z.from <= this.pos || z.v >= cur) continue;
+      if (z.from > this.pos + 3000) break;
+      const p = this.patternSpeed(z);
+      if (p < bestPat) { bestPat = p; best = z; }
     }
     /* 停止目標（停車駅）と信号Rも制限として扱う */
     const stopTarget = this.stops[this.stopIdx] && this.pos < this.stops[this.stopIdx].stopAt
@@ -265,6 +287,11 @@ export class TrainSim {
     /* --- ドア・発車フロー --- */
     if (this.doorOpen) {
       const dep = this._departTime;
+      if (!this._melodyDone && this.t >= this._melodyAt) {
+        this._melodyDone = true;
+        const here = this.stops[this.stopIdx - 1];
+        this._emit('melody', { seed: here ? here.lineIdx : 0 });
+      }
       if (this._doorPhase === 'boarding' && this.t >= dep - 10) {
         this._doorPhase = 'closing';
         this._emit('door-closing');
@@ -322,7 +349,7 @@ export class TrainSim {
     }
 
     /* --- 粘着（雨） --- */
-    const adhesionCap = this.weather === 'rain' ? 3.3 : 4.4;
+    const adhesionCap = ADHESION[this.weather] || ADHESION.clear;
     let effB = Math.max(this.brakeCur, atsBrake);
     this.slipping = effB > adhesionCap;
     if (this.slipping) effB = adhesionCap * 0.92;
@@ -346,6 +373,19 @@ export class TrainSim {
     this.v = Math.max(0, this.v + a * dt);
     this.pos += (this.v / 3.6) * dt;
 
+    /* --- 案内用イベント（「つぎは」「まもなく」） --- */
+    const nx = this.stops[this.stopIdx];
+    if (nx) {
+      if (!this.doorOpen && !this._departDone && this.v > 3) {
+        this._departDone = true;
+        this._emit('depart', { name: nx.name, last: this.stopIdx === this.stops.length - 1 });
+      }
+      if (this._approachDone !== this.stopIdx && this.v > 5 && nx.stopAt - this.pos < 520 && nx.stopAt - this.pos > 60) {
+        this._approachDone = this.stopIdx;
+        this._emit('approach', { name: nx.name, last: this.stopIdx === this.stops.length - 1 });
+      }
+    }
+
     /* --- 停車判定 --- */
     const target = this.stops[this.stopIdx] ? this.stops[this.stopIdx].stopAt : null;
     if (this.v > 0.5) this._left = true;   // 一度動き出してから停まったら「到着」扱いにする
@@ -364,7 +404,7 @@ export class TrainSim {
       this._emit('overrun', { err: this.pos - target });
     }
 
-    /* 終端防護（新百合ヶ丘の先） */
+    /* 終端防護（線路の終わりの手前） */
     if (this.pos > this.line.meta.length - 60 && this.stopIdx >= this.stops.length - 1 && this.stoppedAt == null) {
       /* 過走で車止めに接近 → 強制EB */
       if (this.pos > this.line.meta.length - 30) {
@@ -402,6 +442,9 @@ export class TrainSim {
     /* 発車時刻: ダイヤ or 遅延時は最短折返し（停車時分確保） */
     const dep = this.timetable[this.stopIdx - 1].dep;
     this._departTime = Math.max(dep, this.t + this.service.dwell);
+    this._melodyAt = Math.max(this.t + 1.0, this._departTime - 16);
+    this._melodyDone = false;
+    this._departDone = false;
     this._emit('door-open', { departAt: this._departTime });
   }
 
@@ -413,6 +456,7 @@ export class TrainSim {
     const target = Math.max(this.t + 4, schedDep - 120);
     if (target < this._departTime - 0.5) {
       this._departTime = target;
+      this._melodyDone = true;   // メロディは省略（すぐドアチャイム）
       return true;
     }
     return false;
@@ -428,9 +472,11 @@ export class TrainSim {
       stopPts += e <= 0.35 ? 1 : e <= 1 ? 0.85 : e <= 2 ? 0.6 : e <= 5 ? 0.35 : 0;
     });
     stopPts = S.stops.length ? (stopPts / S.stops.length) * 30 : 0;
-    /* 定時 30点（駅平均遅延: 5秒以内満点、60秒で0） */
+    /* 定時 30点（駅平均遅延: 晴れ5秒以内満点、そこから55秒で0）。
+     * 雨・雪は実際の鉄道でも慎重運転になるので、その分だけ許容を広げる */
     const avgLate = S.stops.length ? S.lateSum / S.stops.length : 60;
-    const timePts = clamp(1 - Math.max(0, avgLate - 5) / 55, 0, 1) * 30;
+    const tol = this.weather === 'snow' ? 35 : this.weather === 'rain' ? 20 : 5;
+    const timePts = clamp(1 - Math.max(0, avgLate - tol) / 55, 0, 1) * 30;
     /* 遵守 25点 */
     const compPts = clamp(1 - S.overspeed * 0.34 - S.overspeedTime * 0.02 - S.ebUsed * 0.5, 0, 1) * 25;
     /* 乗り心地 15点 */
@@ -450,6 +496,43 @@ export class TrainSim {
       ebUsed: S.ebUsed,
       jerkEvents: S.jerkEvents,
     };
+  }
+
+  /* ============ 停止位置予測（ブレーキめやす） ============
+   * いまのノッチのまま保持したら、あと何mで止まるか。
+   * 力行・惰行中や停止中は null。ATSは考えない（運転士の目安）。 */
+  predictStop() {
+    if (this.v < 0.5 || this.notch >= 0 || this.doorOpen) return null;
+    const wantB = this.notch === -8 ? TRAIN.ebDecel : TRAIN.maxServiceB * (-this.notch / TRAIN.brakeSteps);
+    const cap = (ADHESION[this.weather] || ADHESION.clear) * 0.92;
+    let v = this.v, b = this.brakeCur, a = this.accelCur, d = 0, s = this.pos;
+    const dt = 0.1;
+    for (let i = 0; i < 1200 && v > 0; i++) {
+      b += (wantB - b) * (1 - Math.exp(-dt / (wantB > b ? TRAIN.brakeFill : TRAIN.brakeRelease)));
+      a *= Math.exp(-dt / TRAIN.tractionRise);
+      const g = this.gradeAt(s);
+      const acc = a - Math.min(b, b > cap + 0.08 ? cap : b) - 9.81 * (g / 1000) * 3.6
+        - (0.06 + 0.0006 * v + 0.000013 * v * v);
+      const v2 = Math.max(0, v + acc * dt);
+      const ds = ((v + v2) / 2 / 3.6) * dt;
+      d += ds; s += ds; v = v2;
+      if (acc >= 0 && i > 30) return null;   // 下り勾配で減速しない
+    }
+    return d;
+  }
+
+  /* 曲線半径(m)。直線は Infinity（きしり音などに使う） */
+  radiusAt(s) {
+    const k = 4;
+    const n = this.line.pts.length;
+    const i = clamp(Math.round(s / this.step), k, n - 1 - k);
+    const a = this.line.pts[i - k], b = this.line.pts[i], c = this.line.pts[i + k];
+    const h1 = Math.atan2(b[1] - a[1], b[0] - a[0]);
+    const h2 = Math.atan2(c[1] - b[1], c[0] - b[0]);
+    let dh = Math.abs(h2 - h1);
+    if (dh > Math.PI) dh = Math.PI * 2 - dh;
+    if (dh < 1e-4) return Infinity;
+    return (k * this.step) / dh;
   }
 
   /* ============ 表示用ヘルパー ============ */

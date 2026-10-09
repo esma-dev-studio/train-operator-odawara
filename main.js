@@ -6,6 +6,8 @@ import { RailScene } from './scene/scene.js';
 import { Cab } from './cab/cab.js';
 import { CabAudio } from './audio/audio.js';
 import { kanaOf, rubyStation } from './sim/kana.js';
+import { prepareLine } from './sim/line.js';
+import { makeAutopilot } from './sim/autopilot.js';
 
 /* 種別名のふりがな */
 const SVC_KANA = { '各駅停車': 'かくえきていしゃ', '急行': 'きゅうこう', '快速急行': 'かいそくきゅうこう' };
@@ -85,7 +87,7 @@ const App = {
       fetch('./data/line.json').then((r) => r.json()),
       fetch('./data/timetable.json').then((r) => r.json()),
     ]);
-    this.line = line; this.timetable = tt;
+    this.rawLine = line; this.line = prepareLine(line, 'down'); this.timetable = tt;
     const touch = matchMedia('(pointer: coarse)').matches;
     this.quality = localStorage.getItem('trainop_quality') || (touch ? 'mid' : 'high');
     this.buildSelect();
@@ -100,49 +102,11 @@ const App = {
     }
   },
 
-  /* デバッグ用の自動運転（tools/autodrive.mjs と同じ制御則） */
+  /* デバッグ用の自動運転（tools/autodrive.mjs と同じ制御則: sim/autopilot.js） */
   _makeAutopilot() {
-    let lastChange = -9, lastNotch = 0;
-    return () => {
-      const sim = this.sim;
-      const set = (n) => {
-        if (n === lastNotch) return;
-        if (sim.t - lastChange < 0.6 && !(n < lastNotch && n <= -4)) return;
-        lastChange = sim.t; lastNotch = n; sim.setNotch(n);
-      };
-      const h = sim.hud();
-      if (h.doorOpen) { set(0); return; }
-      const v = h.v;
-      const target = sim.stops[sim.stopIdx];
-      const d = target ? target.stopAt - sim.pos : 1e9;
-      const bGrade = 9.81 * (h.grade / 1000) * 3.6;
-      const bNeed = d > 0.3 ? ((v / 3.6) ** 2 / (2 * d)) * 3.6 : 9;
-      let bRest = 0;
-      if (h.ats && h.ats.kind !== 'stop' && v > h.ats.target - 1) {
-        const lag = 22 + (v / 3.6) * 1.7;
-        const dr = h.ats.at - sim.pos - lag;
-        const vt = Math.max(0, h.ats.target - 1);
-        if (dr > 1) bRest = (((v / 3.6) ** 2 - (vt / 3.6) ** 2) / (2 * dr)) * 3.6;
-        else if (v > h.ats.target + 0.5) bRest = 2.2;
-      }
-      const bWant = Math.max(bNeed > 0.8 && d < 1000 ? bNeed : 0, bRest > 0.72 ? bRest : 0);
-      if (bWant > 0) {
-        const b = bWant * (d < 45 ? 1.0 : 1.1) - Math.min(0, bGrade);
-        const step = Math.ceil((b / 4.0) * 7 + 0.25);
-        if (d < 2.2 && v < 3.5) { set(-3); return; }
-        if (d < 12 && v < 8 && bNeed < 1.6) { set(-1); return; }
-        set(-Math.min(7, Math.max(1, step)));
-        return;
-      }
-      if (d > 1.4 && d < 60 && v < 4 && bNeed < 1.2) { set(1); return; }
-      let cruise = h.limit - 2;
-      if (h.ats && h.ats.kind !== 'stop') cruise = Math.min(cruise, Math.max(h.ats.target - 1, h.ats.pattern - 5));
-      cruise = Math.max(20, cruise);
-      if (v > cruise + 0.5) { set(v > cruise + 5 ? -2 : -1); return; }
-      if (v < cruise - 6 && d > 250) { set(4); return; }
-      if (v < cruise - 1.5 && d > 250) { set(2); return; }
-      set(0);
-    };
+    const sim = this.sim;
+    const ap = makeAutopilot(sim);
+    return () => { if (this.sim === sim) ap(); };
   },
 
   showScreen(name) {
