@@ -59,7 +59,8 @@ export class Cab {
       this._lastNotch = sim.notch;
       const idx = sim.notch === -8 ? 12 : 4 - sim.notch;
       const frac = idx / 12;
-      this.els.leverGrip.style.top = `calc(${(frac * 100).toFixed(2)}% - ${(frac * 34).toFixed(1)}px)`;
+      const gh = (this.els.leverGrip.offsetHeight || 40) - 6;   // 画面サイズで持ち手の高さが変わる
+      this.els.leverGrip.style.top = `calc(${(frac * 100).toFixed(2)}% - ${(frac * gh).toFixed(1)}px)`;
       this.els.leverGrip.textContent = sim.notch === -8 ? 'EB'
         : sim.notch > 0 ? 'P' + sim.notch
         : sim.notch < 0 ? 'B' + (-sim.notch) : 'N';

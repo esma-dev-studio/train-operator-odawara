@@ -151,7 +151,7 @@ const App = {
       document.body.classList.toggle('cam-cab', seq[A.camI] === 'cab');
     }
     const nx = sim.stops[sim.stopIdx];
-    const txt = `LIVE ・ ${SERVICES.exp.name} ${nx ? kanaOf(nx.name) + ' ゆき' : ''} ・ ${CAM_NAME[this.scene.camMode] || ''}`;
+    const txt = `LIVE ・ ${SERVICES.exp.name} しんゆりがおか ゆき ・ ${nx ? 'つぎは ' + kanaOf(nx.name) + ' ・ ' : ''}${CAM_NAME[this.scene.camMode] || ''}`;
     if (txt !== this._liveTxt) { this._liveTxt = txt; $('#live-txt').textContent = txt; }
   },
 

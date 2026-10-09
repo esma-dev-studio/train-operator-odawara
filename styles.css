@@ -610,3 +610,47 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .res-badges .rb-badge { display: flex; align-items: center; gap: 8px; background: #1e1a10; border: 1px solid #6a5420; border-radius: 999px; padding: 4px 14px 4px 4px; font-size: 0.8rem; font-weight: 800; color: #ffe9a8; }
 .res-badges .bd-ico { width: 34px; height: 34px; font-size: 0.95rem; }
 .res-badges p { width: 100%; text-align: center; font-weight: 800; color: #ffe08a; }
+
+/* ---------------- 横向きのスマホなど、背の低い画面 ---------------- */
+@media (max-height: 540px) and (orientation: landscape) {
+  :root { --cab-h: 118px; }
+  #cab { grid-template-columns: 112px 1fr 84px 64px 56px; grid-template-rows: 1fr; gap: 6px; padding: 6px 8px calc(6px + var(--safe-b)); }
+  .cab-speedo { grid-row: auto; padding: 4px; }
+  #speedo { width: 84px; height: 84px; }
+  .bc-wrap { display: none; }
+  .cab-tims { grid-column: auto; grid-row: auto; padding: 4px 10px; gap: 1px; }
+  #tims-next { font-size: 1.05rem; }
+  .tims-kana { display: none; }
+  #tims-dist { font-size: 0.9rem; }
+  .cab-limit { grid-column: auto; grid-row: auto; padding: 4px; }
+  .lim-cap, #grade-ind { display: none; }
+  #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 2px; }
+  #lim-next { font-size: 0.62rem; }
+  .cab-lamps { display: none; }
+  .cab-notch { grid-column: auto; grid-row: auto; padding: 3px; }
+  .nt { font-size: 0.5rem; }
+  #lever { grid-column: auto; grid-row: auto; width: auto; }
+  .lever-grip { height: 28px; font-size: 0.8rem; left: -8px; right: -8px; }
+  #drive-head { top: 6px; font-size: 0.68rem; padding: 3px 12px 4px; min-width: 42vw; }
+  #route-strip { height: 12px; margin-top: 2px; }
+  #bighud { top: 6px; left: 8px; min-width: 0; padding: 4px 10px 5px; border-radius: 10px; }
+  .bh-cap { font-size: 0.6rem; min-width: 48px; }
+  #bh-v { font-size: 1.6rem; }
+  #bh-ctx-num { font-size: 1.2rem; }
+  .gl-btns { top: 6px; right: 8px; gap: 6px; }
+  .gl-btn { width: 44px; height: 40px; border-radius: 10px; }
+  #coach { bottom: 6px; font-size: 0.8rem; padding: 6px 14px; }
+  .skip-btn { bottom: 40px; font-size: 0.82rem; padding: 7px 18px; }
+  #msg-center { top: 18%; font-size: 0.82rem; padding: 8px 16px; }
+  #touch-btns { bottom: 8px; right: 8px; gap: 6px; }
+  .tb { width: 62px; height: 46px; font-size: 0.95rem; border-radius: 11px; }
+  .tb-horn { height: 38px; }
+  .tb-cap { display: none; }
+  #brake-guide { width: 66px; padding: 5px; }
+  .bg-scale { height: 84px; margin: 4px auto; }
+  .bg-txt { font-size: 0.62rem; }
+  #stamp-pop canvas { width: 110px !important; height: 110px !important; }
+  .title-inner { padding: 14px 24px calc(14px + var(--safe-b)); }
+  .t-logo { font-size: 2.4rem; }
+  .t-desc { display: none; }
+}
