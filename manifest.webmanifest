@@ -1,0 +1,17 @@
+{
+  "name": "TRAIN OPERATOR 小田原線 運転シミュレーター",
+  "short_name": "運転シミュ",
+  "description": "実際の線形データで再現した小田原線 新宿⇔新百合ヶ丘を運転するシミュレーター",
+  "lang": "ja",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#0e1418",
+  "theme_color": "#0e1418",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
