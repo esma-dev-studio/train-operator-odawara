@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>音響テストベンチ</title>
+<style>
+  :root {
+    --bg: #101317; --panel: #181d23; --line: #2a323c; --fg: #d8dee6; --dim: #8693a3;
+    --acc: #4fb3ff; --ok: #5fd38a; --warn: #ffb347; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: .04em; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; min-width: 0; }
+  section h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); font-weight: 600; letter-spacing: .06em; }
+  label.row { display: grid; grid-template-columns: 110px 1fr 64px; align-items: center; gap: 8px; margin: 6px 0; }
+  label.row span.v { text-align: right; font-variant-numeric: tabular-nums; color: var(--acc); }
+  input[type=range] { width: 100%; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  button {
+    background: #222a33; color: var(--fg); border: 1px solid #3a4552; border-radius: 4px;
+    padding: 7px 10px; font: inherit; font-size: 13px; cursor: pointer; touch-action: manipulation;
+  }
+  button:hover { border-color: var(--acc); }
+  button.primary { background: #1d4f78; border-color: #2f7ab5; }
+  button:disabled { opacity: .45; cursor: default; }
+  select { background: #222a33; color: var(--fg); border: 1px solid #3a4552; border-radius: 4px; padding: 5px; font: inherit; }
+  #status { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; color: var(--fg); }
+  #status b { color: var(--acc); font-weight: 600; }
+  canvas { width: 100%; height: 180px; display: block; background: #000; border-radius: 4px; }
+  #log { font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; max-height: 220px; overflow: auto; white-space: pre-wrap; color: var(--dim); }
+  table { border-collapse: collapse; width: 100%; font: 12px ui-monospace, Menlo, Consolas, monospace; }
+  th, td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .tablewrap { overflow-x: auto; }
+  @media (max-width: 480px) { label.row { grid-template-columns: 90px 1fr 54px; } }
+</style>
+</head>
+<body>
+<h1>TRAIN OPERATOR — 音響テストベンチ</h1>
+<div class="sub">audio/audio.js（CabAudio）・vvvf-worklet.js・announce.js の試聴と自動検証。すべて合成音（外部ファイルなし）。</div>
+
+<div class="btns" style="margin-bottom:12px">
+  <button id="b-start" class="primary">▶ 音を有効にする (ensure)</button>
+  <button id="b-drive" class="primary">運転サイクル (0→100→停止)</button>
+  <button id="b-offline">オフライン解析</button>
+</div>
+
+<div class="grid">
+  <section>
+    <h2>車両（にせsim）</h2>
+    <label class="row">速度 km/h <input id="s-speed" type="range" min="0" max="110" step="0.5" value="0"><span class="v" id="o-speed">0</span></label>
+    <label class="row">力行ノッチ P <input id="s-power" type="range" min="0" max="4" step="1" value="0"><span class="v" id="o-power">N</span></label>
+    <label class="row">ブレーキ B <input id="s-brake" type="range" min="0" max="8" step="1" value="0"><span class="v" id="o-brake">0</span></label>
+    <div class="checks">
+      <label><input id="c-hold" type="checkbox"> 速度固定</label>
+      <label><input id="c-door" type="checkbox"> ドア開</label>
+      <label><input id="c-slip" type="checkbox"> 滑走</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>環境（env）</h2>
+    <label class="row">曲線半径 m <input id="s-curve" type="range" min="150" max="1000" step="10" value="1000"><span class="v" id="o-curve">直線</span></label>
+    <label class="row">踏切距離 m <input id="s-cross" type="range" min="-400" max="400" step="5" value="120"><span class="v" id="o-cross">—</span></label>
+    <div class="checks">
+      <label><input id="c-cross" type="checkbox"> 踏切（固定距離）</label>
+      <label><input id="c-tunnel" type="checkbox"> トンネル</label>
+      <label><input id="c-ext" type="checkbox"> 車外カメラ</label>
+      <label>天気 <select id="sel-weather"><option value="clear">晴れ</option><option value="rain">雨</option><option value="snow">雪</option></select></label>
+    </div>
+    <div class="btns">
+      <button id="b-crossing">踏切を前方600mに置く</button>
+      <button id="b-pass">すれ違い列車</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>イベント</h2>
+    <div class="btns" id="ev-btns">
+      <button data-ev="door-open">door-open</button>
+      <button data-ev="door-closing">door-closing</button>
+      <button data-ev="door-closed">door-closed</button>
+      <button data-ev="ats-chime">ats-chime</button>
+      <button data-ev="ats-brake">ats-brake</button>
+      <button data-ev="eb">eb</button>
+      <button data-ev="overrun">overrun</button>
+      <button data-ev="overrun-stop">overrun-stop</button>
+      <button data-ev="arrived">arrived</button>
+      <button data-ev="finished">finished</button>
+      <button data-ev="unknown-xyz">未知イベント</button>
+    </div>
+    <div class="btns" style="margin-top:8px">
+      <select id="sel-mel"></select>
+      <button id="b-melody">発車メロディ</button>
+      <button id="b-horn">警笛</button>
+      <button id="b-announce">放送テスト</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>制御</h2>
+    <label class="row">音量 <input id="s-vol" type="range" min="0" max="1" step="0.05" value="0.8"><span class="v" id="o-vol">0.80</span></label>
+    <div class="checks">
+      <label><input id="c-mute" type="checkbox"> ミュート</label>
+      <label><input id="c-pause" type="checkbox"> 一時停止 (pause)</label>
+    </div>
+    <div class="btns">
+      <button id="b-stop">stop()</button>
+      <button id="b-rebind">新しいsimでbind</button>
+    </div>
+    <div id="status" style="margin-top:10px">未起動</div>
+  </section>
+</div>
+
+<section style="margin-top:12px">
+  <h2>スペクトログラム（マスター出力 0–6kHz）</h2>
+  <canvas id="spec" width="800" height="180"></canvas>
+</section>
+
+<section style="margin-top:12px">
+  <h2>オフライン解析</h2>
+  <canvas id="spec-off" width="1200" height="260" style="height:auto;aspect-ratio:1200/260;margin-bottom:8px"></canvas>
+  <div class="tablewrap" id="report">「オフライン解析」を押すと、VVVF単体の速度スイープと運転サイクル全体を OfflineAudioContext で描き出して数値を出します。</div>
+</section>
+
+<section style="margin-top:12px">
+  <h2>ログ</h2>
+  <div id="log"></div>
+</section>
+
+<script type="module">
+import { CabAudio, vvvfPattern } from '../audio/audio.js';
+import { Announcer } from '../audio/announce.js';
+
+const $ = (s) => document.querySelector(s);
+const logEl = $('#log');
+function log(msg) {
+  const t = (performance.now() / 1000).toFixed(1).padStart(6);
+  logEl.textContent = `${t}  ${msg}\n` + logEl.textContent.slice(0, 6000);
+}
+
+/* ---------------- にせ sim（engine.js と同じフィールド名） ---------------- */
+class FakeSim {
+  constructor() {
+    this.v = 0; this.pos = 1000; this.notch = 0; this.accelCur = 0; this.brakeCur = 0;
+    this.doorOpen = false; this.weather = 'clear'; this.slipping = false; this.forceSlip = false;
+    this.atsLamp = 'normal'; this.t = 0; this.ended = false; this.holdSpeed = false;
+    this._cbs = [];
+  }
+  onEvent(cb) { this._cbs.push(cb); }
+  emit(type, data) { this._cbs.forEach((cb) => cb(type, data || {})); }
+  tick(dt) {
+    this.t += dt;
+    const n = this.notch;
+    const wantA = n > 0 && !this.doorOpen ? 3.3 * (n / 4) * (this.v <= 42 ? 1 : 42 / this.v) : 0;
+    this.accelCur += (wantA - this.accelCur) * (1 - Math.exp(-dt / 1.15));
+    const wantB = n === -8 ? 4.6 : n < 0 ? 4.0 * (-n / 7) : 0;
+    this.brakeCur += (wantB - this.brakeCur) * (1 - Math.exp(-dt / (wantB > this.brakeCur ? 1.1 : 1.5)));
+    const res = this.v > 0 ? 0.06 + 0.0006 * this.v + 0.000013 * this.v * this.v : 0;
+    let a = this.accelCur - this.brakeCur - res;
+    if (this.holdSpeed) a = 0;
+    if (this.v <= 0 && a < 0) a = 0;
+    this.v = Math.max(0, Math.min(130, this.v + a * dt));
+    this.pos += (this.v / 3.6) * dt;
+    this.slipping = this.forceSlip || (this.weather === 'rain' && this.brakeCur > 3.3);
+  }
+}
+
+/* 外部の環境（踏切・すれ違い列車）: 絶対位置で持って毎フレーム距離に直す */
+class World {
+  constructor() { this.crossAbs = []; this.trains = []; }
+  env(sim, ui) {
+    const crossings = [];
+    if (ui.crossOn) crossings.push(ui.crossDist);
+    this.crossAbs = this.crossAbs.filter((x) => x - sim.pos > -500);
+    for (const x of this.crossAbs) crossings.push(x - sim.pos);
+    const vms = sim.v / 3.6;
+    const passing = this.trains.map((o) => {
+      const dist = o.pos - sim.pos;
+      return { dist, relSpeed: -Math.sign(dist || 1) * (o.speed - vms) };
+    });
+    return {
+      inTunnel: ui.tunnel, external: ui.external,
+      curveRadius: ui.curve >= 1000 ? Infinity : ui.curve,
+      crossings, passing,
+    };
+  }
+  tick(sim, dt) {
+    for (const o of this.trains) o.pos += o.speed * dt;
+    this.trains = this.trains.filter((o) => Math.abs(o.pos - sim.pos) < 900 || o.age++ < 10);
+  }
+}
+
+/* ---------------- シナリオ（運転サイクル）: 状態機械。リアルタイムとオフラインで共用 ---------------- */
+function makeScenario() {
+  let ph = 0, t = 0;
+  const names = ['start', 'melody', 'chime', 'closed', 'power', 'coast', 'brake', 'brake-low', 'stopped', 'released', 'door', 'done'];
+  return {
+    get phase() { return names[ph]; },
+    step(sim, world, env, dt) {
+      t += dt;
+      switch (ph) {
+        case 0: sim.doorOpen = true; sim.notch = -4; sim.emit('melody', { seed: 2 }); ph = 1; t = 0; break;
+        case 1: if (t > 2.2) { sim.emit('door-closing'); ph = 2; t = 0; } break;
+        case 2: if (t > 3.2) { sim.doorOpen = false; sim.emit('door-closed'); ph = 3; t = 0; } break;
+        case 3: if (t > 1.5) { sim.notch = 4; ph = 4; t = 0; } break;
+        case 4: if (sim.v >= 100) { sim.notch = 0; ph = 5; t = 0; } break;
+        case 5: if (t > 6) { sim.notch = -4; ph = 6; t = 0; } break;
+        case 6: if (sim.v <= 30) { sim.notch = -3; ph = 7; t = 0; } break;
+        case 7: if (sim.v <= 0.01) { ph = 8; t = 0; } break;
+        case 8: if (t > 2.0) { sim.emit('arrived', { name: 'テスト', err: 0.2, late: 0 }); sim.notch = 0; ph = 9; t = 0; } break;
+        case 9: if (t > 2.0) { sim.doorOpen = true; sim.emit('door-open', { departAt: sim.t + 20 }); ph = 10; t = 0; } break;
+        case 10: if (t > 3.0) { ph = 11; } break;
+        default: break;
+      }
+      /* 環境の演出: 加速中の50km/h付近で急曲線、惰行でトンネル、制動の初めに踏切とすれ違い */
+      env.curveRadius = ph === 4 && sim.v > 46 && sim.v < 60 ? 260 : env.curveRadius;
+      env.inTunnel = env.inTunnel || ph === 5;
+      if (ph === 6 && !this._x) { this._x = true; world.crossAbs.push(sim.pos + 260); world.trains.push({ pos: sim.pos + 700, speed: -25, age: 0 }); }
+      return ph >= 11;
+    },
+  };
+}
+
+/* ---------------- 本体 ---------------- */
+let audio = null, sim = new FakeSim(), world = new World(), analyser = null, ann = null;
+let scenario = null, fast = 1;
+const ui = { crossOn: false, crossDist: 120, tunnel: false, external: false, curve: 1000 };
+
+function setNotchFromUI() {
+  const p = +$('#s-power').value, b = +$('#s-brake').value;
+  sim.notch = p > 0 ? p : -b;
+  $('#o-power').textContent = p ? 'P' + p : 'N';
+  $('#o-brake').textContent = b === 8 ? 'EB' : b ? 'B' + b : '0';
+}
+
+function start() {
+  if (!audio) audio = new CabAudio();
+  audio.ensure();
+  audio.bind(sim);
+  if (!analyser && audio.ctx) {
+    analyser = audio.ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.5;
+    audio.master.connect(analyser);
+  }
+  if (!ann) { ann = new Announcer(); ann.unlock(); }
+  log('ensure(): ctx=' + (audio.ctx ? audio.ctx.state + ' ' + audio.ctx.sampleRate + 'Hz' : 'なし'));
+  audio.ready.then((ok) => log('worklet: ' + (ok ? 'ready' : 'fallback') + ' (' + audio.info.worklet + ')'));
+  return audio.ready;
+}
+
+function bindUI() {
+  $('#b-start').onclick = () => start();
+  $('#s-speed').oninput = (e) => { sim.v = +e.target.value; };
+  $('#s-power').oninput = () => { if (+$('#s-power').value > 0) $('#s-brake').value = 0; setNotchFromUI(); };
+  $('#s-brake').oninput = () => {
+    if (+$('#s-brake').value > 0) $('#s-power').value = 0;
+    const was = sim.notch;
+    setNotchFromUI();
+    if (sim.notch === -8 && was !== -8) sim.emit('eb');
+  };
+  $('#c-hold').onchange = (e) => { sim.holdSpeed = e.target.checked; };
+  $('#c-door').onchange = (e) => { sim.doorOpen = e.target.checked; };
+  $('#c-slip').onchange = (e) => { sim.forceSlip = e.target.checked; };
+  $('#s-curve').oninput = (e) => { ui.curve = +e.target.value; $('#o-curve').textContent = ui.curve >= 1000 ? '直線' : 'R' + ui.curve; };
+  $('#s-cross').oninput = (e) => { ui.crossDist = +e.target.value; $('#o-cross').textContent = ui.crossOn ? ui.crossDist : '—'; };
+  $('#c-cross').onchange = (e) => { ui.crossOn = e.target.checked; $('#o-cross').textContent = ui.crossOn ? ui.crossDist : '—'; };
+  $('#c-tunnel').onchange = (e) => { ui.tunnel = e.target.checked; };
+  $('#c-ext').onchange = (e) => { ui.external = e.target.checked; };
+  $('#sel-weather').onchange = (e) => { sim.weather = e.target.value; };
+  $('#b-crossing').onclick = () => { world.crossAbs.push(sim.pos + 600); log('踏切を前方600mに設置'); };
+  $('#b-pass').onclick = () => { world.trains.push({ pos: sim.pos + 600, speed: -22, age: 0 }); log('すれ違い列車: 前方600m・対向80km/h'); };
+  document.querySelectorAll('[data-ev]').forEach((b) => {
+    b.onclick = () => { start(); sim.emit(b.dataset.ev, { seed: 0, departAt: sim.t + 20, name: 'テスト', err: 0, late: 0 }); log('event: ' + b.dataset.ev); };
+  });
+  const sel = $('#sel-mel');
+  for (let i = 0; i < 8; i++) sel.insertAdjacentHTML('beforeend', `<option value="${i}">メロディ ${i}</option>`);
+  $('#b-melody').onclick = () => { start(); sim.emit('melody', { seed: +sel.value }); log('melody seed=' + sel.value); };
+  $('#b-horn').onclick = () => { start(); audio.horn(); log('horn()'); };
+  $('#b-announce').onclick = () => {
+    start();
+    const ok = ann.speak('まもなく、しもきたざわです。おでぐちは、みぎがわです。', { priority: true });
+    log('Announcer: available=' + ann.available + ' voice=' + (ann.voice ? ann.voice.name : 'なし') + ' speak=' + ok);
+  };
+  $('#s-vol').oninput = (e) => { $('#o-vol').textContent = (+e.target.value).toFixed(2); audio && audio.setVolume(+e.target.value); };
+  $('#c-mute').onchange = (e) => audio && audio.setMuted(e.target.checked);
+  $('#c-pause').onchange = (e) => audio && audio.pause(e.target.checked);
+  $('#b-stop').onclick = () => { audio && audio.stop(); log('stop()'); };
+  $('#b-rebind').onclick = () => {
+    const old = sim;
+    sim = new FakeSim();
+    sim.weather = old.weather;
+    if (audio) audio.bind(sim);
+    log('新しいsimをbind（古いsimのイベントは無視されるはず）');
+    old.emit('ats-brake');   // 無視されること
+  };
+  $('#b-drive').onclick = () => runDrive(1);
+  $('#b-offline').onclick = () => offlineAnalysis();
+}
+
+function runDrive(f = 1) {
+  start();
+  sim = new FakeSim();
+  sim.weather = $('#sel-weather').value;
+  world = new World();
+  audio.bind(sim);
+  scenario = makeScenario();
+  fast = f;
+  log('運転サイクル開始 x' + f);
+  return new Promise((res) => { scenario.onDone = res; });
+}
+
+/* ---------------- ループ ---------------- */
+let lastT = performance.now();
+function frame() {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastT) / 1000);
+  lastT = now;
+  const env = world.env(sim, ui);
+  for (let i = 0; i < fast; i++) {
+    if (scenario) {
+      if (scenario.step(sim, world, env, dt)) {
+        const done = scenario.onDone; scenario = null; fast = 1;
+        log('運転サイクル終了'); if (done) done();
+        break;
+      }
+    }
+    sim.tick(dt);
+    world.tick(sim, dt);
+  }
+  if (audio) audio.update(sim, $('#c-pause').checked ? 0 : dt, env);
+  if (document.activeElement !== $('#s-speed')) { $('#s-speed').value = sim.v; }
+  $('#o-speed').textContent = sim.v.toFixed(1);
+  if (scenario) {
+    $('#s-power').value = Math.max(0, sim.notch); $('#s-brake').value = Math.max(0, -sim.notch);
+  }
+  drawStatus(env);
+  drawSpec();
+}
+setInterval(frame, 16);
+
+function drawStatus(env) {
+  if (!audio) return;
+  const i = audio.info;
+  $('#status').innerHTML =
+    `ctx <b>${audio.ctx ? audio.ctx.state : '—'}</b>  worklet <b>${i.worklet}</b>  voices <b>${i.voices}</b>\n` +
+    `VVVF <b>${i.mode}</b>  fm <b>${i.fm.toFixed(1)}</b>Hz  fc <b>${i.fc.toFixed(0)}</b>Hz  gate <b>${i.gate.toFixed(3)}</b>\n` +
+    `v <b>${sim.v.toFixed(1)}</b>  notch <b>${sim.notch}</b>  accel <b>${sim.accelCur.toFixed(2)}</b>  brake <b>${sim.brakeCur.toFixed(2)}</b>\n` +
+    `踏切 ${env.crossings.map((d) => d.toFixed(0)).join(',') || '—'}  すれ違い ${env.passing.map((p) => p.dist.toFixed(0)).join(',') || '—'}` +
+    (scenario ? `\nシナリオ: <b>${scenario.phase}</b>` : '');
+}
+
+const spec = $('#spec'), sctx = spec.getContext('2d');
+let fbuf = null;
+function drawSpec() {
+  if (!analyser) return;
+  if (!fbuf) fbuf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(fbuf);
+  const w = spec.width, h = spec.height;
+  sctx.drawImage(spec, -2, 0);
+  const binHz = analyser.context.sampleRate / analyser.fftSize;
+  for (let y = 0; y < h; y++) {
+    const f = ((h - 1 - y) / h) * 6000;
+    const v = fbuf[Math.min(fbuf.length - 1, Math.round(f / binHz))] / 255;
+    const c = Math.round(v * 255);
+    sctx.fillStyle = `rgb(${Math.min(255, c * 1.6)},${Math.round(c * 0.9)},${Math.round(80 + c * 0.6)})`;
+    sctx.fillRect(w - 2, y, 2, 1);
+  }
+}
+
+/* ---------------- オフライン解析 ---------------- */
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    for (let i = 0; i < n; i += len) {
+      for (let k = 0; k < len / 2; k++) {
+        const wr = Math.cos(ang * k), wi = Math.sin(ang * k);
+        const ar = re[i + k + len / 2], ai = im[i + k + len / 2];
+        const xr = ar * wr - ai * wi, xi = ar * wi + ai * wr;
+        re[i + k + len / 2] = re[i + k] - xr; im[i + k + len / 2] = im[i + k] - xi;
+        re[i + k] += xr; im[i + k] += xi;
+      }
+    }
+  }
+}
+
+/* data[start..] から 8192点のHann窓FFT → [lo,hi]Hzでの最大ピーク周波数とスペクトル重心 */
+function peakFreq(data, start, sr, lo = 300, hi = 3000) {
+  const N = 8192;
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let i = 0; i < N; i++) re[i] = (data[start + i] || 0) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1)));
+  fft(re, im);
+  let best = 0, bf = 0, num = 0, den = 0;
+  for (let k = Math.floor((lo * N) / sr); k < Math.min(N / 2, Math.ceil((hi * N) / sr)); k++) {
+    const m = Math.hypot(re[k], im[k]);
+    num += m * (k * sr) / N; den += m;
+    if (m > best) { best = m; bf = (k * sr) / N; }
+  }
+  return { peak: bf, centroid: den ? num / den : 0 };
+}
+
+function rmsDb(data, a, b) {
+  let s = 0, n = 0;
+  for (let i = Math.max(0, a); i < Math.min(data.length, b); i++) { s += data[i] * data[i]; n++; }
+  return n ? 10 * Math.log10(s / n + 1e-20) : -200;
+}
+
+/* 1) VVVFワークレット単体: 0→110km/h を22秒でスイープ（mode/fc を記録） */
+async function vvvfSweep() {
+  const sr = 48000, T = 22.5;
+  const oc = new OfflineAudioContext(1, Math.round(sr * T), sr);
+  await oc.audioWorklet.addModule(new URL('../audio/vvvf-worklet.js', import.meta.url).href);
+  const node = new AudioWorkletNode(oc, 'vvvf-pwm', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+  node.connect(oc.destination);
+  const P = (n) => node.parameters.get(n);
+  const step = 0.02;
+  let prev = null;
+  for (let k = 1; k * step < T - 0.05; k++) {
+    const tt = k * step;
+    oc.suspend(Math.round(tt * sr / 128) * 128 / sr).then(() => {
+      const v = Math.min(110, tt * 5);
+      const p = vvvfPattern(v, 2, prev); prev = p.mode;
+      P('fm').setValueAtTime(p.fm, oc.currentTime); P('fc').setValueAtTime(p.fc, oc.currentTime);
+      P('mi').setValueAtTime(p.mi, oc.currentTime); P('pulses').setValueAtTime(p.pulses, oc.currentTime);
+      oc.resume();
+    }).catch(() => {});
+  }
+  const buf = await oc.startRendering();
+  const d = buf.getChannelData(0);
+  const rows = [];
+  for (const v of [2, 8, 12, 16, 20, 24, 28, 32, 36, 44, 55, 70, 90, 105]) {
+    const t = v / 5;
+    const p = vvvfPattern(v, 2, null);
+    const st = Math.round(t * sr) - 4096;
+    const pf = peakFreq(d, st, sr, 300, 3000);
+    const fcExp = p.pulses === 1 ? 0 : p.pulses >= 2 ? p.pulses * p.fm : p.fc;
+    rows.push({ v, mode: p.name, fc: Math.round(fcExp), peak: Math.round(pf.peak), centroid: Math.round(pf.centroid), rms: +rmsDb(d, st, st + 8192).toFixed(1) });
+  }
+  let peakAbs = 0;
+  for (let i = 0; i < d.length; i++) peakAbs = Math.max(peakAbs, Math.abs(d[i]));
+  return { rows, peakAbs };
+}
+
+/* オフライン用のエンジンを作る（'new' / 'fallback'=ワークレット無し / 'old'=比較用の旧エンジン） */
+async function makeEngine(kind, oc) {
+  if (kind === 'fallback') Object.defineProperty(oc, 'audioWorklet', { value: undefined });
+  if (kind === 'old') {
+    const Old = window.OldCabAudio;
+    if (!Old) return null;
+    const eng = new Old();
+    const AC = window.AudioContext;
+    window.AudioContext = function () { return oc; };
+    try { eng.ensure(); } finally { window.AudioContext = AC; }
+    return eng;
+  }
+  const eng = new CabAudio();
+  await eng._useContext(oc);
+  return eng;
+}
+
+/* 定常状態ごとの音量（RMS dBFS）。一発ものは鳴っている区間で測る */
+const STEADY = [
+  { id: '停車(B4保持)', v: 0, b: 2.3 },
+  { id: '起動 P4 3km/h', v: 3, a: 3.3 },
+  { id: '力行 P4 25km/h', v: 25, a: 3.3 },
+  { id: '力行 P4 45km/h', v: 45, a: 3.1 },
+  { id: '力行 P4 80km/h', v: 80, a: 1.7 },
+  { id: '惰行 30km/h', v: 30 },
+  { id: '惰行 60km/h', v: 60 },
+  { id: '惰行 100km/h', v: 100 },
+  { id: '惰行 100 トンネル', v: 100, env: { inTunnel: true } },
+  { id: '回生 B4 60km/h', v: 60, b: 2.3, notch: -4 },
+  { id: '曲線 R200 40km/h', v: 40, env: { curveRadius: 200 } },
+  { id: '踏切 30m 40km/h', v: 40, env: { crossings: [30] } },
+  { id: '雨 惰行 60km/h', v: 60, weather: 'rain' },
+  { id: '警笛', v: 0, horn: true, win: 0.9 },
+  { id: 'ドアチャイム', v: 0, ev: 'door-closing', win: 3.0 },
+  { id: 'ATSベル', v: 0, ev: 'ats-brake', win: 1.2 },
+  { id: '発車メロディ', v: 0, ev: 'melody', win: 4.2 },
+];
+async function steady(kind = 'new') {
+  const out = [];
+  for (const c of STEADY) {
+    const sr = 48000, T = 6;
+    const oc = new OfflineAudioContext(2, sr * T, sr);
+    const eng = await makeEngine(kind, oc);
+    if (!eng) return null;
+    const fs = new FakeSim();
+    Object.assign(fs, { v: c.v, weather: c.weather || 'clear', notch: c.notch != null ? c.notch : c.a ? 4 : c.b ? -4 : 0 });
+    eng.bind(fs);
+    const step = 1 / 30, t0 = 1.5;
+    let fired = false;
+    for (let k = 1; k * step < T - 0.1; k++) {
+      const tt = k * step;
+      oc.suspend(Math.round(tt * sr / 128) * 128 / sr).then(() => {
+        fs.accelCur = c.a || 0; fs.brakeCur = c.b || 0;
+        fs.t += step; fs.pos += (fs.v / 3.6) * step;
+        if (!fired && tt >= t0) {
+          fired = true;
+          if (c.horn) eng.horn();
+          if (c.ev) fs.emit(c.ev, { seed: 1 });
+        }
+        eng.update(fs, step, c.env || {});
+        oc.resume();
+      }).catch(() => {});
+    }
+    const buf = await oc.startRendering();
+    const L = buf.getChannelData(0), R = buf.getChannelData(1);
+    const a = Math.round((t0 + 0.05) * sr), b = Math.round((c.win ? t0 + c.win : T) * sr);
+    let s = 0, pk = 0;
+    for (let i = a; i < b; i++) { const m = (L[i] + R[i]) * 0.5; s += m * m; pk = Math.max(pk, Math.abs(L[i]), Math.abs(R[i])); }
+    out.push({ id: c.id, rms: +(10 * Math.log10(s / (b - a) + 1e-20)).toFixed(1), peak: +pk.toFixed(3) });
+  }
+  return out;
+}
+
+/* ライフサイクル: stop()→新simでbind→復帰 / pause / 古いsimのイベント無視 / dt=0 / 未知イベント */
+async function lifecycle() {
+  const sr = 48000, T = 9;
+  const oc = new OfflineAudioContext(2, sr * T, sr);
+  const eng = await makeEngine('new', oc);
+  let s1 = new FakeSim();
+  Object.assign(s1, { v: 60 });
+  eng.bind(s1);
+  const res = {};
+  let cur = s1;
+  const step = 1 / 30;
+  for (let k = 1; k * step < T - 0.1; k++) {
+    const tt = k * step;
+    oc.suspend(Math.round(tt * sr / 128) * 128 / sr).then(() => {
+      if (Math.abs(tt - 2) < step / 2) eng.stop();
+      if (Math.abs(tt - 3) < step / 2) {
+        const s2 = new FakeSim(); Object.assign(s2, { v: 60 });
+        eng.bind(s2); cur = s2;
+        const v0 = eng._voices; s1.emit('ats-brake'); res.staleIgnored = eng._voices === v0;
+        s2.emit('unknown-event-xyz', null); s2.emit('ats-chime'); res.newHeard = eng._voices === v0 + 1;
+      }
+      if (Math.abs(tt - 6) < step / 2) eng.pause(true);
+      if (Math.abs(tt - 7) < step / 2) { eng.pause(false); eng.update(cur, 0, {}); eng.update(cur, NaN, null); }
+      /* 2〜3秒は stop() 後なので update しない（main.js と同じ） */
+      if (tt < 2 || tt >= 3) { cur.pos += (cur.v / 3.6) * step; eng.update(cur, step, {}); }
+      oc.resume();
+    }).catch(() => {});
+  }
+  const buf = await oc.startRendering();
+  const L = buf.getChannelData(0);
+  const r = (a, b) => +rmsDb(L, Math.round(a * sr), Math.round(b * sr)).toFixed(1);
+  Object.assign(res, { running: r(1, 2), afterStop: r(2.6, 3), revived: r(4.5, 5.5), paused: r(6.4, 7), resumed: r(7.8, 8.8) });
+  res.ok = res.staleIgnored && res.newHeard && res.afterStop < res.running - 30 && Math.abs(res.revived - res.running) < 4
+    && res.paused < res.running - 30 && Math.abs(res.resumed - res.running) < 4;
+  return res;
+}
+
+/* 2) エンジン全体: 運転サイクルをオフラインで描画（engine: 'new' / 'old' / 'fallback'） */
+async function renderDrive(kind = 'new') {
+  const sr = 48000, T = 120;
+  const oc = new OfflineAudioContext(2, Math.round(sr * T), sr);
+  const eng = await makeEngine(kind, oc);
+  if (!eng) return null;
+  const fsim = new FakeSim(), fworld = new World();
+  eng.bind(fsim);
+  const sc = makeScenario();
+  const step = 1 / 30;
+  const marks = [];
+  let done = false, lastPh = '';
+  const info = { modes: new Set(), worklet: eng.info ? eng.info.worklet : 'old' };
+  for (let k = 1; k * step < T - 0.1; k++) {
+    const tt = k * step;
+    oc.suspend(Math.round(tt * sr / 128) * 128 / sr).then(() => {
+      if (!done) {
+        const env = fworld.env(fsim, { crossOn: false, tunnel: false, external: false, curve: 1000 });
+        done = sc.step(fsim, fworld, env, step);
+        fsim.tick(step); fworld.tick(fsim, step);
+        eng.update(fsim, step, env);
+        if (sc.phase !== lastPh) { lastPh = sc.phase; marks.push({ ph: sc.phase, t: oc.currentTime, v: fsim.v }); }
+        if (eng.info) info.modes.add(eng.info.mode);
+      }
+      oc.resume();
+    }).catch(() => {});
+  }
+  const buf = await oc.startRendering();
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  const mono = new Float32Array(L.length);
+  let peak = 0, clip = 0;
+  for (let i = 0; i < L.length; i++) {
+    mono[i] = (L[i] + R[i]) * 0.5;
+    const a = Math.max(Math.abs(L[i]), Math.abs(R[i]));
+    if (a > peak) peak = a;
+    if (a >= 0.999) clip++;
+  }
+  const endT = marks.find((m) => m.ph === 'done')?.t || T;
+  const phases = marks.map((m, i) => {
+    const t1 = (marks[i + 1] ? marks[i + 1].t : endT);
+    return { ph: m.ph, t0: +m.t.toFixed(1), t1: +t1.toFixed(1), rms: +rmsDb(mono, Math.round(m.t * sr), Math.round(t1 * sr)).toFixed(1) };
+  }).filter((p) => p.t1 > p.t0 + 0.2);
+  return {
+    kind, peak: +peak.toFixed(3), clip, rmsAll: +rmsDb(mono, 0, Math.round(endT * sr)).toFixed(1),
+    phases, modes: [...info.modes], worklet: eng.info ? eng.info.worklet : 'old', duration: +endT.toFixed(1), mono, sr,
+  };
+}
+
+async function offlineAnalysis() {
+  log('オフライン解析: VVVFスイープ…');
+  const sweep = await vvvfSweep();
+  log('オフライン解析: 運転サイクル(新)…');
+  const nu = await renderDrive('new');
+  drawOfflineSpec(nu.mono, nu.sr, nu.phases);
+  log('オフライン解析: 運転サイクル(フォールバック)…');
+  const fb = await renderDrive('fallback');
+  let old = null, oldSteady = null;
+  if (window.OldCabAudio) { log('オフライン解析: 運転サイクル(旧エンジン)…'); old = await renderDrive('old'); }
+  log('オフライン解析: ライフサイクル…');
+  const life = await lifecycle();
+  log('オフライン解析: 定常レベル…');
+  const lv = await steady('new');
+  if (window.OldCabAudio) oldSteady = await steady('old');
+  /* 判定: 非同期域(8–36km/h)でピーク周波数がほぼ単調増加し、期待fcの±30%に入る */
+  const asyncRows = sweep.rows.filter((r) => r.v >= 8 && r.v <= 36);
+  let mono = true;
+  for (let i = 1; i < asyncRows.length; i++) if (asyncRows[i].peak < asyncRows[i - 1].peak - 40) mono = false;
+  const near = asyncRows.every((r) => Math.abs(r.peak - r.fc) / r.fc < 0.3);
+  const nonSilent = sweep.rows.every((r) => r.rms > -40);
+  /* 力行区間は惰行区間より大きい（VVVFが鳴っている） */
+  const ph = (rep, n) => rep && rep.phases.find((p) => p.ph === n);
+  const res = {
+    sweep, nu: strip(nu), fb: strip(fb), old: strip(old), levels: lv, oldLevels: oldSteady, life,
+    checks: {
+      asyncRising: mono, asyncNearFc: near, sweepNonSilent: nonSilent,
+      sweepNoClip: sweep.peakAbs < 1.0,
+      newNoClip: nu.clip === 0, fallbackNoClip: fb.clip === 0,
+      levelsNoClip: lv.every((x) => x.peak < 0.99),
+      lifecycle: life.ok,
+      driveFinished: nu.phases.some((p) => p.ph === 'door'),
+      workletReady: nu.worklet === 'ready', fallbackUsed: fb.worklet === 'fallback',
+      powerAudible: ph(nu, 'power') && ph(nu, 'power').rms > -45,
+      fallbackPowerAudible: ph(fb, 'power') && ph(fb, 'power').rms > -45,
+      loudnessVsOld: old ? +(nu.rmsAll - old.rmsAll).toFixed(1) : null,
+    },
+  };
+  window.__lastReport = res;
+  showReport(res);
+  return res;
+}
+function strip(r) { if (!r) return null; const { mono, sr, ...rest } = r; return rest; }
+
+/* 運転サイクル全体のスペクトログラム（0–4kHz、縦線=区間の境目） */
+function drawOfflineSpec(mono, sr, phases) {
+  const cv = $('#spec-off'), c = cv.getContext('2d');
+  const W = cv.width, H = cv.height, N = 4096, fmax = 4000;
+  const img = c.createImageData(W, H);
+  const hop = Math.floor((mono.length - N) / W);
+  const win = new Float64Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1));
+  const re = new Float64Array(N), im = new Float64Array(N);
+  for (let x = 0; x < W; x++) {
+    const st = x * hop;
+    for (let i = 0; i < N; i++) { re[i] = mono[st + i] * win[i]; im[i] = 0; }
+    fft(re, im);
+    for (let y = 0; y < H; y++) {
+      const k = Math.round((((H - 1 - y) / H) * fmax * N) / sr);
+      const db = 20 * Math.log10(Math.hypot(re[k], im[k]) / N + 1e-12);
+      const u = Math.max(0, Math.min(1, (db + 110) / 70));
+      const o = (y * W + x) * 4;
+      img.data[o] = Math.min(255, u * 400); img.data[o + 1] = Math.max(0, u * 300 - 70); img.data[o + 2] = 60 + u * 120; img.data[o + 3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 0);
+  const T = mono.length / sr;
+  c.font = '11px system-ui'; c.fillStyle = '#fff'; c.strokeStyle = 'rgba(255,255,255,.5)';
+  for (const p of phases) {
+    const x = (p.t0 / T) * W;
+    c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke();
+    c.fillText(p.ph, x + 3, 12);
+  }
+  for (const f of [500, 1000, 2000, 3000]) { const y = H - (f / fmax) * H; c.fillText(f + 'Hz', W - 46, y - 2); }
+}
+
+function showReport(r) {
+  const rows = r.sweep.rows.map((x) => `<tr><td>${x.v}</td><td>${x.mode}</td><td>${x.fc}</td><td>${x.peak}</td><td>${x.centroid}</td><td>${x.rms}</td></tr>`).join('');
+  const phase = (rep) => rep ? rep.phases.map((p) => `<tr><td>${p.ph}</td><td>${p.t0}–${p.t1}s</td><td>${p.rms} dB</td></tr>`).join('') : '';
+  const lvRows = (r.levels || []).map((x, i) => `<tr><td>${x.id}</td><td>${x.rms}</td><td>${x.peak}</td><td>${r.oldLevels ? r.oldLevels[i].rms : '—'}</td></tr>`).join('');
+  const checks = Object.entries(r.checks).map(([k, v]) => `<tr><td>${k}</td><td class="${v === false ? 'bad' : 'ok'}">${v}</td></tr>`).join('');
+  $('#report').innerHTML = `
+    <table><tr><th>判定</th><th>結果</th></tr>${checks}</table><br>
+    <table><tr><th>定常状態</th><th>RMS dB（新）</th><th>peak</th><th>RMS dB（旧）</th></tr>${lvRows}</table><br>
+    <table><tr><th>v km/h</th><th>モード</th><th>期待fc</th><th>ピークHz</th><th>重心Hz</th><th>RMS dB</th></tr>${rows}</table><br>
+    <table><tr><th>区間（新）</th><th>時刻</th><th>RMS</th></tr>${phase(r.nu)}
+      <tr><td>全体</td><td>peak ${r.nu.peak}</td><td>${r.nu.rmsAll} dB</td></tr></table><br>
+    ${r.old ? `<table><tr><th>区間（旧）</th><th>時刻</th><th>RMS</th></tr>${phase(r.old)}<tr><td>全体</td><td>peak ${r.old.peak}</td><td>${r.old.rmsAll} dB</td></tr></table>` : ''}`;
+  log('オフライン解析 完了');
+}
+
+bindUI();
+setNotchFromUI();
+window.__bench = {
+  start, runDrive, offlineAnalysis, vvvfSweep, renderDrive, steady, lifecycle,
+  get audio() { return audio; }, get sim() { return sim; }, world: () => world, ui,
+};
+window.__drawSpec = drawOfflineSpec;
+log('テストベンチ準備OK。「音を有効にする」を押してください。');
+</script>
+</body>
+</html>
