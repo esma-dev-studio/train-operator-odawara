@@ -561,7 +561,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   .cab-notch { grid-column: 4; grid-row: 1; }
   #lever { grid-column: 4; grid-row: 2; }
   .sel-grid { grid-template-columns: 1fr; }
-  .route-list { max-height: 44vh; }
+  .route-list { max-height: 36vh; }
+  /* 縦長画面: 出発ボタンは常に画面下に見えるように */
+  .sel-go { position: fixed; left: 16px; right: 16px; bottom: calc(10px + var(--safe-b)); z-index: 3; margin: 0; }
+  .sel-wrap { padding-bottom: calc(90px + var(--safe-b)); }
+  .sel-go .btn { box-shadow: 0 6px 20px rgba(0,0,0,0.6); }
   .title-inner { padding: 20px 22px calc(22px + var(--safe-b)); }
   .title-shade { background: linear-gradient(0deg, rgba(6,10,13,0.92) 0%, rgba(6,10,13,0.55) 55%, rgba(6,10,13,0.1) 100%); }
   #bighud { min-width: 150px; padding: 6px 12px 8px; }
