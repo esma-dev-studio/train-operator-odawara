@@ -97,15 +97,13 @@ class AiTrain {
   }
 
   /* 自列車との位置関係(音用): 0=横にいる、±=前後の距離、相対速度 */
+  /* 音用: 相手の編成中心までの距離(+前方)と、近づく速さ(+接近/−遠ざかる) */
   passing(me, vMe) {
-    const tail = this.s - this.dir * this.nCars * CAR;
-    const lo = Math.min(this.s, tail), hi = Math.max(this.s, tail);
-    const meTail = me - 160;
-    let dist = 0;
-    if (lo > me) dist = lo - me;
-    else if (hi < meTail) dist = hi - meTail;
-    const rel = this.dir < 0 ? vMe + this.v : Math.abs(this.v - vMe);
-    return { dist, relSpeed: rel, offset: this.offset };
+    const center = this.s - this.dir * this.nCars * CAR * 0.5;
+    const dist = center - (me - 80);
+    const vRel = this.dir * this.v - vMe;
+    const closing = dist === 0 ? 0 : -Math.sign(dist) * vRel;
+    return { dist, relSpeed: closing, offset: this.offset };
   }
 
   dispose() {
@@ -205,7 +203,7 @@ export class Traffic {
 
   passingInfo() {
     const sim = this.rs.sim;
-    return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 600);
+    return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 700);
   }
 
   dispose() {

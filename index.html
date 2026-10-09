@@ -63,6 +63,7 @@
         <button id="tb-horn" class="tb tb-horn">♪<span>けいてき</span></button>
       </div>
       <div id="msg-center" class="hidden"></div>
+      <div id="badge-toast" class="hidden"><span class="bt-ico"></span><span class="bt-txt"></span></div>
       <div id="stamp-pop" class="hidden"><canvas id="stamp-pop-cv"></canvas><p id="stamp-pop-txt"></p></div>
       <div id="overrun-modal" class="modal hidden">
         <p>とまるところを 大きくいきすぎました。<br>ひとつまえの<ruby>駅<rt>えき</rt></ruby>から やりなおします。</p>
@@ -226,6 +227,7 @@
     <div id="res-breakdown" class="res-breakdown"></div>
     <p id="res-best" class="res-best"></p>
     <div id="res-stamps" class="res-stamps hidden"></div>
+    <div id="res-badges" class="res-badges hidden"></div>
     <div class="res-table-wrap">
       <table id="res-stops"></table>
     </div>
@@ -246,6 +248,8 @@
     </header>
     <p class="stamps-help">「8」のかんばんに <b>ぴったり(±35cm)</b> とまると、その<ruby>駅<rt>えき</rt></ruby>のスタンプがもらえるよ。</p>
     <div id="stamps-grid" class="stamps-grid"></div>
+    <h3 class="badge-h">くんしょう <span id="badges-count" class="pill">0</span></h3>
+    <div id="badges-grid" class="badges-grid"></div>
   </div>
 </section>
 

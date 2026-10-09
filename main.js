@@ -14,6 +14,7 @@ import { prepareLine } from './sim/line.js';
 import { makeAutopilot } from './sim/autopilot.js';
 import { drawStamp, stampColor } from './ui/stamps.js';
 import { RainGlass } from './ui/rainglass.js';
+import { BADGES, badgeById } from './ui/badges.js';
 
 /* 種別名のふりがな */
 const SVC_KANA = { '各駅停車': 'かくえきていしゃ', '急行': 'きゅうこう', '快速急行': 'かいそくきゅうこう' };
@@ -101,7 +102,7 @@ const App = {
   },
 
   loadSave() {
-    this.save = Object.assign({ best: {}, stamps: {}, runs: 0 }, store.get(SAVE_KEY, {}));
+    this.save = Object.assign({ best: {}, stamps: {}, badges: {}, runs: 0, perfect: 0, cams: {} }, store.get(SAVE_KEY, {}));
     /* v1(くだり・全区間のみ)のベストを引き継ぐ */
     const old = store.get('trainop_v1', null);
     if (old && old.best && !this.save._migrated) {
@@ -349,6 +350,15 @@ const App = {
       grid.appendChild(cell);
     });
     $('#stamps-count').textContent = `${got} / ${names.length}`;
+    const bg = $('#badges-grid');
+    let nb = 0;
+    bg.innerHTML = BADGES.map((b) => {
+      const has = !!this.save.badges[b.id];
+      if (has) nb++;
+      return `<div class="badge${has ? '' : ' no'}"><span class="bd-ico">${has ? b.icon : '？'}</span>
+        <span><div class="bd-name">${b.name}</div><div class="bd-desc">${b.desc}</div></span></div>`;
+    }).join('');
+    $('#badges-count').textContent = `${nb} / ${BADGES.length}`;
   },
 
   /* ================= せってい ================= */
@@ -380,7 +390,7 @@ const App = {
     });
     $('#set-reset').addEventListener('click', () => {
       if (!confirm('きろくと スタンプを ぜんぶ けしますか？')) return;
-      this.save = { best: {}, stamps: {}, runs: 0, _migrated: true };
+      this.save = { best: {}, stamps: {}, badges: {}, runs: 0, perfect: 0, cams: {}, _migrated: true };
       this.writeSave();
       this.updateStampCount();
       this.renderSvcCards(); this.renderRoute();
@@ -437,7 +447,7 @@ const App = {
     const canOp = () => this.mode === 'drive' && this.running && !this.paused;
     $('#tb-up').addEventListener('click', () => { if (canOp()) { this.sim.setNotch(Math.min(4, this.sim.notch + 1)); flashGrip(); } });
     $('#tb-dn').addEventListener('click', () => { if (canOp()) { this.sim.setNotch(Math.max(-8, this.sim.notch - 1)); flashGrip(); } });
-    $('#tb-horn').addEventListener('click', () => { if (canOp() && this.audio) this.audio.horn(); });
+    $('#tb-horn').addEventListener('click', () => { if (canOp() && this.audio) { this.audio.horn(); this.grantBadge('horn'); } });
     $('#btn-pause-touch').addEventListener('click', () => { if (this.mode === 'drive' && this.running) this.setPaused(!this.paused); });
     $('#btn-skip').addEventListener('click', () => {
       if (canOp() && this.sim.skipDwell()) this.flashMsg('ドアが しまります！', 1600);
@@ -454,7 +464,7 @@ const App = {
       else if (ev.code === 'ArrowDown' || ev.code === 'KeyS') this.sim.setNotch(Math.max(-8, n === -8 ? -8 : n - 1));
       else if (ev.code === 'Space') this.sim.setNotch(-8);
       else if (ev.code === 'KeyN' || ev.code === 'Digit0') this.sim.setNotch(0);
-      else if (ev.code === 'KeyH') this.audio && this.audio.horn();
+      else if (ev.code === 'KeyH') { if (this.audio) this.audio.horn(); this.grantBadge('horn'); }
       else if (ev.code === 'KeyC') this.cycleCam();
       else if (ev.code === 'KeyM') { this._muted = !this._muted; if (this.audio && this.audio.setMuted) this.audio.setMuted(this._muted); }
     });
@@ -500,6 +510,7 @@ const App = {
   },
 
   _unlockAudio() {
+    if (this.announcer && this.announcer.unlock) this.announcer.unlock();   // iOSは最初の発話をタップの中で
     if (!this.audio) return;
     this.audio.ensure();
     this.applyVolume();
@@ -509,6 +520,9 @@ const App = {
     if (!this.scene || this.mode !== 'drive') return;
     this.camIdx = (this.camIdx + 1) % CAM_MODES.length;
     this._setCam(CAM_MODES[this.camIdx]);
+    this.save.cams = this.save.cams || {};
+    this.save.cams[CAM_MODES[this.camIdx]] = 1;
+    if (CAM_MODES.every((m) => m === 'cab' || this.save.cams[m])) this.grantBadge('camera');
     const lab = $('#cam-label');
     lab.textContent = 'してん: ' + CAM_NAME[CAM_MODES[this.camIdx]];
     lab.classList.remove('hidden');
@@ -548,6 +562,7 @@ const App = {
     this.sim.reset(startIdx);
     this.lastStationIdx = startIdx;
     this.runStamps = [];
+    this.runBadges = [];
     this.scene.setWorld(this.line, this.sim);
     this.scene.setTimeOfDay(this.daytime);
     this.scene.setWeather(this.weather);
@@ -606,10 +621,34 @@ const App = {
     if (type === 'finished') this.finishRun(e);
   },
 
+  /* くんしょう: 新しくもらえたらトーストで知らせる */
+  grantBadge(id) {
+    if (this.save.badges[id]) return;
+    const b = badgeById(id);
+    if (!b) return;
+    this.save.badges[id] = Date.now();
+    this.writeSave();
+    if (this.runBadges) this.runBadges.push(id);
+    const t = $('#badge-toast');
+    t.querySelector('.bt-ico').textContent = b.icon;
+    t.querySelector('.bt-txt').textContent = `くんしょう ゲット！「${b.name}」`;
+    t.classList.remove('hidden');
+    t.style.animation = 'none'; void t.offsetWidth; t.style.animation = '';
+    clearTimeout(this._badgeT);
+    this._badgeT = setTimeout(() => t.classList.add('hidden'), 3200);
+  },
+
   awardStamp(name) {
     const first = !this.save.stamps[name];
     this.save.stamps[name] = (this.save.stamps[name] || 0) + 1;
+    this.save.perfect = (this.save.perfect || 0) + 1;
     this.writeSave();
+    this.grantBadge('perfect');
+    if (this.save.perfect >= 10) this.grantBadge('perfect10');
+    if (this.save.perfect >= 30) this.grantBadge('perfect30');
+    const kinds = Object.keys(this.save.stamps).length;
+    if (kinds >= 10) this.grantBadge('stamp10');
+    if (kinds >= 23) this.grantBadge('stampAll');
     if (!this.runStamps.includes(name)) this.runStamps.push(name);
     const pop = $('#stamp-pop');
     drawStamp($('#stamp-pop-cv'), name, { got: true, size: 150, seed: name.length });
@@ -792,6 +831,19 @@ const App = {
     const isBest = full && (!prev || res.total > prev.total);
     if (isBest) this.save.best[key] = { total: res.total, rank: res.rank };
     this.writeSave();
+    const nSt = res.stops.length;
+    this.grantBadge('first');
+    if (nSt >= 3 && res.overspeed === 0) this.grantBadge('safe');
+    if (nSt >= 3 && res.stops.every((st) => st.late <= 5)) this.grantBadge('ontime');
+    if (full) this.grantBadge(this.direction === 'up' ? 'fullUp' : 'fullDown');
+    if (this.service === 'exp') this.grantBadge('exp');
+    if (this.service === 'rapid') this.grantBadge('rapid');
+    if (this.daytime === 'evening') this.grantBadge('evening');
+    if (this.daytime === 'night') this.grantBadge('night');
+    if (this.weather === 'rain') this.grantBadge('rain');
+    if (this.weather === 'snow') this.grantBadge('snow');
+    if (res.rank === 'S' || res.rank === 'A') this.grantBadge('rankA');
+    if (res.rank === 'S') this.grantBadge('rankS');
     /* 背景は外から列車を眺める */
     this._setCam('drone');
     setTimeout(() => this._showResult(res, prev, isBest, full), 1400);
@@ -826,6 +878,14 @@ const App = {
       this.runStamps.slice(0, 8).forEach((n, i) => { const cv = document.createElement('canvas'); drawStamp(cv, n, { size: 72, seed: i }); rs.appendChild(cv); });
       rs.classList.remove('hidden');
     } else rs.classList.add('hidden');
+    const rb = $('#res-badges');
+    if (this.runBadges.length) {
+      rb.innerHTML = '<p>あたらしい くんしょう</p>' + this.runBadges.map((id) => {
+        const b = badgeById(id);
+        return `<span class="rb-badge"><span class="bd-ico">${b.icon}</span>${b.name}</span>`;
+      }).join('');
+      rb.classList.remove('hidden');
+    } else rb.classList.add('hidden');
     this.go('result');
     /* 点数をカウントアップ・ランクをポンと押す */
     const tot = $('#res-total');
@@ -850,6 +910,7 @@ const App = {
     if (!this.scene) return;
     const m = this.mode;
     if (m === 'drive') {
+      if (!this.sim || !this.running && !this.sim.ended) { this.scene.render(0); return; }
       if (this.running && !this.paused) {
         const mult = this._fast || 1;
         for (let i = 0; i < mult && this.running; i++) {

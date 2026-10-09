@@ -132,6 +132,79 @@ function vribbon(frames, i0, i1, offset, y0, y1, uvScale) {
   return g;
 }
 
+/* ---- 木の形(葉のかたまりを凸凹させ、下ほど暗い頂点色で立体感を出す) ---- */
+function mergeNonIndexed(geos) {
+  const parts = geos.map((g) => (g.index ? g.toNonIndexed() : g));
+  const n = parts.reduce((a, g) => a + g.attributes.position.count, 0);
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  let o = 0;
+  parts.forEach((g) => {
+    pos.set(g.attributes.position.array, o * 3);
+    nor.set(g.attributes.normal.array, o * 3);
+    if (g.attributes.color) col.set(g.attributes.color.array, o * 3); else col.fill(1, o * 3, (o + g.attributes.position.count) * 3);
+    o += g.attributes.position.count;
+  });
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return out;
+}
+
+function makeTreeGeos() {
+  let seed = 31;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const blob = (r, x, y, z, sy = 1.15) => {
+    const g = new THREE.IcosahedronGeometry(r, 1);
+    const p = g.attributes.position;
+    /* 同じ頂点(面ごとに複製されている)は同じだけ動かして、すき間を作らない */
+    const salt = rnd() * 1000;
+    for (let i = 0; i < p.count; i++) {
+      const hx = Math.round(p.getX(i) * 1000), hy = Math.round(p.getY(i) * 1000), hz = Math.round(p.getZ(i) * 1000);
+      const h = Math.sin(hx * 12.9898 + hy * 78.233 + hz * 37.719 + salt) * 43758.5453;
+      const k = 0.82 + (h - Math.floor(h)) * 0.32;
+      p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * sy, p.getZ(i) * k);
+    }
+    /* 法線は球の中心から外向き(なめらかな陰影) */
+    const nr = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const vx = p.getX(i), vy = p.getY(i) / sy, vz = p.getZ(i);
+      const l = Math.hypot(vx, vy, vz) || 1;
+      nr[i * 3] = vx / l; nr[i * 3 + 1] = vy / l; nr[i * 3 + 2] = vz / l;
+    }
+    g.setAttribute('normal', new THREE.BufferAttribute(nr, 3));
+    g.translate(x, y, z);
+    return g;
+  };
+  /* 頂点色: 下(幹側)ほど暗く、上ほど明るい */
+  const shade = (g, y0, y1) => {
+    const p = g.attributes.position;
+    const c = new Float32Array(p.count * 3);
+    for (let i = 0; i < p.count; i++) {
+      const t = Math.min(1, Math.max(0, (p.getY(i) - y0) / (y1 - y0)));
+      const v = Math.pow(0.55 + 0.5 * t, 2.2);
+      c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+    return g;
+  };
+  const broadA = shade(mergeNonIndexed([blob(1.55, 0, 3.7, 0), blob(1.1, 0.95, 3.1, 0.35), blob(1.0, -0.85, 3.25, -0.3), blob(0.9, 0.1, 4.6, -0.5)]), 2.2, 5.4);
+  const broadB = shade(mergeNonIndexed([blob(1.25, 0, 3.3, 0, 1.3), blob(1.15, 0.2, 4.4, 0.2, 1.2), blob(0.85, -0.7, 3.0, 0.5), blob(0.8, 0.75, 3.6, -0.55)]), 2.2, 5.6);
+  /* 針葉樹: 円錐を3段に重ねる */
+  const cones = [];
+  [[1.5, 2.2, 2.6], [1.15, 1.9, 3.9], [0.75, 1.6, 5.0]].forEach(([r, h, y]) => {
+    const c = new THREE.ConeGeometry(r, h, 7, 1);
+    c.translate(0, y, 0);
+    cones.push(c);
+  });
+  const conifer = shade(mergeNonIndexed(cones), 1.5, 6.0);
+  const trunk = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6);
+  trunk.translate(0, 1.45, 0);
+  const trunkC = new THREE.CylinderGeometry(0.1, 0.16, 2.0, 5);
+  trunkC.translate(0, 1.0, 0);
+  return { fol: [broadA, broadB, conifer], trunk, trunkC };
+}
+
 /* ---- テクスチャ ---- */
 const texLoader = new THREE.TextureLoader();
 function photoTex(url, opt = {}) {
@@ -239,6 +312,13 @@ const texHouse = (opt = {}) => canvasTex(64, 64, (c) => {
     c.fillRect(9, 24, 15, 5); c.fillRect(39, 24, 15, 5);
   }
   c.fillStyle = 'rgba(0,0,0,0.18)'; c.fillRect(0, 56, 64, 8);
+});
+
+/* レールの継ぎ目(縦方向に1周=25m。端に暗い隙間) */
+const texRailJoint = () => canvasTex(4, 256, (c) => {
+  c.fillStyle = '#ffffff'; c.fillRect(0, 0, 4, 256);
+  c.fillStyle = '#3a3836'; c.fillRect(0, 0, 4, 2);
+  c.fillStyle = '#8e8c88'; c.fillRect(0, 2, 4, 2);
 });
 
 /* 点字ブロック(ホーム縁の黄色警告ブロック) */
@@ -379,7 +459,8 @@ export class RailScene {
       ballast: new THREE.MeshStandardMaterial({ map: this.T.gravelC, normalMap: this.T.gravelN, normalScale: new THREE.Vector2(0.85, 0.85), color: 0xaaa59b, roughness: 1, side: DS }),
       sub: new THREE.MeshStandardMaterial({ map: this.T.gravelSubC, color: 0x6f6b62, roughness: 1, side: DS }),
       apron: new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xaaa8a2, roughness: 0.95, side: DS }),
-      railHead: new THREE.MeshStandardMaterial({ color: 0xd8dadd, metalness: 1.0, roughness: 0.3, side: DS }),
+      /* レール頭面: 25mごとの継ぎ目(ジョイント音「タタン」と同じ間隔)を暗い線で */
+      railHead: new THREE.MeshStandardMaterial({ map: texRailJoint(), color: 0xd8dadd, metalness: 1.0, roughness: 0.3, side: DS }),
       railWeb: new THREE.MeshStandardMaterial({ color: 0x6b5c4d, metalness: 0.35, roughness: 0.9, side: DS }),
       ground: new THREE.MeshStandardMaterial({ map: this.T.grassC, vertexColors: true, roughness: 1, side: DS }),
       bank: new THREE.MeshStandardMaterial({ map: this.T.grassBankC, vertexColors: true, roughness: 1, side: DS }),
@@ -489,6 +570,8 @@ export class RailScene {
     this._buildRailsideDetails();
     this._buildPlatformFurniture();
     this._buildPeople();
+    this._buildCrowds();
+    this._buildHills();
     this._splitInstances();
     this._splitRibbons();
     this.traffic = new Traffic(this, sim);
@@ -726,6 +809,11 @@ export class RailScene {
     const bMap = snow ? null : this.T.grassBankC;
     if (this.M.bank.map !== bMap) { this.M.bank.map = bMap; this.M.bank.needsUpdate = true; }
     this.M.bank.color.setHex(snow ? 0xe6eaee : 0xffffff);
+    if (this._hillMat) {
+      const hm = snow ? null : this._hillTex;
+      if (this._hillMat.map !== hm) { this._hillMat.map = hm; this._hillMat.needsUpdate = true; }
+      this._hillMat.color.setHex(snow ? 0xe8ecf0 : eve ? 0xb09a82 : 0xb9c4a0);
+    }
     this.M.water.roughness = night ? 0.22 : wet ? 0.38 : 0.3;
     this.M.water.color.setHex(night ? 0x141c26 : wet ? 0x49525a : eve ? 0x6a5a58 : 0x455e6d);
     /* 夜・夕方: ビル・住宅を窓明かりテクスチャへ切替(夕方は控えめに灯る) */
@@ -757,7 +845,7 @@ export class RailScene {
 
     /* 1本のレール: 頭面(金属)+両側の腹(垂直帯) */
     const addRail = (offset, full) => {
-      this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, offset, 0.068, 0.19, 8), this.M.railHead)));
+      this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, offset, 0.068, 0.19, 25), this.M.railHead)));
       this.world.add(new THREE.Mesh(vribbon(F, 0, N, offset + 0.034, 0.05, 0.178, 8), this.M.railWeb));
       if (full) this.world.add(new THREE.Mesh(vribbon(F, 0, N, offset - 0.034, 0.05, 0.178, 8), this.M.railWeb));
     };
@@ -774,7 +862,7 @@ export class RailScene {
     [3.8, 7.6].forEach((off) => {
       this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off, 4.2, 0, 2.5), this.M.ballast)));
       [-0.7175, 0.7175].forEach((o) => {
-        this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off + o, 0.068, 0.19, 8), this.M.railHead)));
+        this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off + o, 0.068, 0.19, 25), this.M.railHead)));
         this.world.add(new THREE.Mesh(vribbon(F, qi0, qi1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
       });
     });
@@ -1390,45 +1478,43 @@ export class RailScene {
             const off = side * (20 + rng() * 78);
             const p = f.p.clone().addScaledVector(f.left, off);
             p.y -= 0.5;
-            list.push({ p, sc: 0.85 + rng() * 0.9, tint: 0.7 + rng() * 0.4 });
+            list.push({ p, sc: 0.85 + rng() * 0.9, tint: 0.7 + rng() * 0.4, conifer: k === 3 && rng() < 0.3 });
           }
         }
       }
     }
-    const trunkGeo = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6);
-    trunkGeo.translate(0, 1.45, 0);
-    /* 葉は大中小3つの球のクラスタにして「まんまる玉」を脱却 */
-    const mkFol = (r, ox, oy, oz) => {
-      const g = new THREE.IcosahedronGeometry(r, 1);
-      g.scale(1, 1.18, 1);
-      g.translate(ox, oy, oz);
-      return g;
-    };
-    const folGeos = [mkFol(1.5, 0, 3.65, 0), mkFol(1.05, 0.85, 3.05, 0.35), mkFol(0.92, -0.8, 3.25, -0.3)];
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x584736, roughness: 0.95 });
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, list.length);
-    trunks.castShadow = true;
-    const folIms = folGeos.map((g) => {
-      const im = new THREE.InstancedMesh(
-        g, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 }), list.length);
-      im.castShadow = true;
-      return im;
-    });
-    const m4 = new THREE.Matrix4(), qt = new THREE.Quaternion(), e = new THREE.Euler();
+    this._plantTrees(list, rng);
+  }
+
+  /* 木を植える(広葉樹2種+針葉樹1種)。list: [{p, sc, tint, conifer?}] */
+  _plantTrees(list, rng) {
+    if (!this._treeGeos) this._treeGeos = makeTreeGeos();
+    const G = this._treeGeos;
+    const trunkMat = this._treeTrunkMat || (this._treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x584736, roughness: 0.95 }));
+    const folMat = this._treeFolMat || (this._treeFolMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.92 }));
+    this._keep.add(trunkMat); this._keep.add(folMat);
+    const groups = [[], [], []];
+    list.forEach((t) => groups[t.conifer ? 2 : (rng() < 0.5 ? 0 : 1)].push(t));
+    const m4 = new THREE.Matrix4(), qt = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3();
     const col = new THREE.Color();
-    const shade = [1.0, 0.88, 0.8];
-    list.forEach((t, i) => {
-      e.set(0, rng() * Math.PI, 0); qt.setFromEuler(e);
-      m4.compose(t.p, qt, new THREE.Vector3(t.sc, t.sc * (0.9 + rng() * 0.3), t.sc));
-      trunks.setMatrixAt(i, m4);
-      folIms.forEach((im, gi) => {
-        im.setMatrixAt(i, m4);
-        col.setRGB(t.tint * 0.38 * shade[gi], t.tint * 0.46 * shade[gi], t.tint * 0.30 * shade[gi], THREE.SRGBColorSpace);
-        im.setColorAt(i, col);
+    groups.forEach((arr, gi) => {
+      if (!arr.length) return;
+      const trunks = new THREE.InstancedMesh(gi === 2 ? G.trunkC : G.trunk, trunkMat, arr.length);
+      const fol = new THREE.InstancedMesh(G.fol[gi], folMat, arr.length);
+      trunks.castShadow = true; fol.castShadow = true;
+      arr.forEach((t, i) => {
+        e.set(0, rng() * Math.PI * 2, 0); qt.setFromEuler(e);
+        sc.set(t.sc, t.sc * (0.88 + rng() * 0.3), t.sc);
+        m4.compose(t.p, qt, sc);
+        trunks.setMatrixAt(i, m4);
+        fol.setMatrixAt(i, m4);
+        if (gi === 2) col.setRGB(t.tint * 0.24, t.tint * 0.36, t.tint * 0.27, THREE.SRGBColorSpace);
+        else col.setRGB(t.tint * 0.42, t.tint * 0.52, t.tint * 0.30, THREE.SRGBColorSpace);
+        fol.setColorAt(i, col);
       });
+      if (fol.instanceColor) fol.instanceColor.needsUpdate = true;
+      this.world.add(trunks, fol);
     });
-    folIms.forEach((im) => { if (im.instanceColor) im.instanceColor.needsUpdate = true; this.world.add(im); });
-    this.world.add(trunks);
   }
 
   /* ---------- トンネル（下北沢地下区間） ---------- */
@@ -1627,7 +1713,7 @@ export class RailScene {
     [6.1, -10.1].forEach((off) => {
       this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off, 3.8, 0, 2.5), this.M.ballast));
       [-0.7175, 0.7175].forEach((o) => {
-        this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off + o, 0.068, 0.19, 8), this.M.railHead));
+        this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off + o, 0.068, 0.19, 25), this.M.railHead));
         this.world.add(new THREE.Mesh(vribbon(F, i0, i1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
       });
     });
@@ -1795,7 +1881,7 @@ export class RailScene {
     [-13.5, -17.5, -21.5].forEach((off) => {
       this.world.add(new THREE.Mesh(ribbon(F, iA, iB, off, 3.6, -0.05, 2.5), this.M.sub));
       [-0.7175, 0.7175].forEach((o) => {
-        this.world.add(new THREE.Mesh(ribbon(F, iA, iB, off + o, 0.068, 0.1, 8), this.M.railHead));
+        this.world.add(new THREE.Mesh(ribbon(F, iA, iB, off + o, 0.068, 0.1, 25), this.M.railHead));
       });
     });
     [[a + 95, -13.5, 4], [a + 210, -21.5, 6]].forEach(([s, off, n]) => {
@@ -2059,6 +2145,8 @@ export class RailScene {
         g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.t.clone().multiplyScalar(off > 0 ? 1 : -1));
         this.world.add(g);
       });
+      /* 踏切待ちの車(両側に2〜3台) */
+      this._crossCars(f, s);
       this.crossings.push({ s, arms, lamps });
     });
   }
@@ -2081,6 +2169,172 @@ export class RailScene {
         l.material.color.setHex(on ? 0xff3b30 : 0x33110e);
       });
     });
+  }
+
+  _crossCars(f, s) {
+    if (!this._carRes) {
+      const body = new THREE.BoxGeometry(1.7, 0.75, 4.2); body.translate(0, 0.62, 0);
+      const cabin = new THREE.BoxGeometry(1.5, 0.62, 2.2); cabin.translate(0, 1.3, -0.2);
+      const wheels = new THREE.BoxGeometry(1.76, 0.5, 3.0); wheels.translate(0, 0.25, 0);
+      this._carRes = {
+        body: mergeNonIndexed([body, cabin]), wheels,
+        glass: new THREE.MeshStandardMaterial({ color: 0x1a232b, roughness: 0.15, metalness: 0.6 }),
+        paint: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.5 }),
+        tire: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 }),
+        cols: [0xd8dadc, 0x23272b, 0xa8242a, 0x2b4f8a, 0xe6e2d6, 0x6f7479, 0x3d6b4a],
+      };
+      [this._carRes.glass, this._carRes.paint, this._carRes.tire].forEach((m) => this._keep.add(m));
+    }
+    const R = this._carRes;
+    let seed = Math.floor(s);
+    const rnd = () => (seed = (seed * 16807 + 11) % 2147483647) / 2147483647;
+    [-1, 1].forEach((side) => {
+      const n = 1 + Math.floor(rnd() * 2.6);
+      for (let i = 0; i < n; i++) {
+        const along = side * (13 + i * 5.6 + rnd() * 1.2);   // 線路からの距離(道路方向)
+        const lane = side > 0 ? -1.3 : 1.3;                  // 左側通行
+        const g = new THREE.Group();
+        const car = new THREE.Mesh(R.body, R.paint.clone());
+        car.material.color.setHex(R.cols[Math.floor(rnd() * R.cols.length)]);
+        car.castShadow = true;
+        const w = new THREE.Mesh(R.wheels, R.tire);
+        g.add(car, w);
+        g.position.copy(f.p).addScaledVector(f.left, along - 1.9).addScaledVector(f.t, lane);
+        g.position.y += 0.12;
+        /* 車は線路のほうを向いて止まっている */
+        g.lookAt(g.position.clone().addScaledVector(f.left, -side * 10));
+        this.world.add(g);
+      }
+    });
+  }
+
+  /* ---------- ホームで待つ人たち(静止。インスタンス描画) ---------- */
+  _buildCrowds() {
+    if (!this._crowdRes) {
+      const torso = new THREE.CylinderGeometry(0.17, 0.2, 0.62, 7); torso.translate(0, 1.0, 0);
+      const legs = new THREE.BoxGeometry(0.3, 0.7, 0.2); legs.translate(0, 0.35, 0);
+      const head = new THREE.SphereGeometry(0.12, 8, 6); head.translate(0, 1.45, 0);
+      const hair = new THREE.SphereGeometry(0.125, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55); hair.translate(0, 1.47, -0.01);
+      const colorize = (g, hex) => {
+        const c = new THREE.Color(hex); const n = g.attributes.position.count; const a = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+        g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g;
+      };
+      this._crowdRes = {
+        cloth: torso,
+        rest: mergeNonIndexed([colorize(legs, 0x2a2f36), colorize(head, 0xd8b49a), colorize(hair, 0x1d1915)]),
+        matCloth: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+        matRest: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85 }),
+      };
+      this._keep.add(this._crowdRes.matCloth); this._keep.add(this._crowdRes.matRest);
+    }
+    const R = this._crowdRes;
+    const F = this.frames;
+    let seed = 2024;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const cloth = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0xd8d4c8, 0x2b2f36, 0x714a71, 0xc9a24a, 0x5d7f9a];
+    const items = [];
+    this.line.stations.forEach((st) => {
+      [[3.05, 1], [-6.85, -1]].forEach(([off, side]) => {
+        const n = 10 + Math.floor(rnd() * 14);
+        for (let i = 0; i < n; i++) {
+          const ss = st.s - 150 + rnd() * 158;
+          /* 停車位置まわりの乗り降りする人(アニメ)とは重ならないように */
+          if (Math.abs(ss - st.s) < 50 && side > 0 && rnd() < 0.7) continue;
+          const lat = off + side * (-0.15 + rnd() * 1.05);
+          const f = frameAt(F, this.step, Math.max(2, ss));
+          const p = f.p.clone().addScaledVector(f.left, lat);
+          p.y += 1.02;
+          /* 多くは線路の方を向き、少しばらつかせる */
+          const yaw = Math.atan2(-side * f.left.x, -side * f.left.z) + (rnd() - 0.5) * 1.6;
+          items.push({ p, yaw, sc: 0.86 + rnd() * 0.22, col: cloth[Math.floor(rnd() * cloth.length)] });
+        }
+      });
+    });
+    const imC = new THREE.InstancedMesh(R.cloth, R.matCloth, items.length);
+    const imR = new THREE.InstancedMesh(R.rest, R.matRest, items.length);
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3(), c = new THREE.Color();
+    items.forEach((it, i) => {
+      e.set(0, it.yaw, 0); q.setFromEuler(e); sc.setScalar(it.sc);
+      m4.compose(it.p, q, sc);
+      imC.setMatrixAt(i, m4); imR.setMatrixAt(i, m4);
+      c.setHex(it.col); imC.setColorAt(i, c);
+    });
+    imC.castShadow = true;
+    this.world.add(imC, imR);
+    /* 屋根から下がる駅名の案内板(ホームごとに2枚) */
+    const F2 = this.frames;
+    this.line.stations.forEach((st) => {
+      if (this._inTerminal(st.s)) return;
+      const tex = boardTexture([[st.name, 44, 46], [STATION_KANA[st.name] || '', 96, 22, 'normal']],
+        { bg: '#20272d', fg: '#eef3f6', w: 384, h: 128 });
+      const mat = new THREE.MeshBasicMaterial({ map: tex, side: DS });
+      [[3.05], [-6.85]].forEach(([off]) => {
+        [-28, -112].forEach((ds) => {
+          const f = frameAt(F2, this.step, st.s + ds);
+          const b = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.63), mat);
+          b.position.copy(f.p).addScaledVector(f.left, off);
+          b.position.y += this._inTunnel(st.s) ? 3.7 : 3.55;
+          b.lookAt(b.position.clone().addScaledVector(f.t, -10));
+          this.world.add(b);
+        });
+      });
+    });
+  }
+
+  /* ---------- 丘陵(多摩丘陵らしい郊外の起伏と雑木林) ---------- */
+  _buildHills() {
+    const F = this.frames, L = this.line.meta.length;
+    const urban = this.line.sections.urban;
+    const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
+    let seed = 777;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    if (!this._hillMat) {
+      const t = photoTex('./assets/tex/grass_c.jpg', { rx: 18, ry: 18, aniso: 4 });
+      this._hillTex = t;
+      this._hillMat = new THREE.MeshStandardMaterial({ map: t, color: 0xb9c4a0, vertexColors: true, roughness: 1 });
+      this._keep.add(this._hillMat); this._keep.add(t);
+    }
+    const geo = new THREE.SphereGeometry(1, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
+    {
+      const p = geo.attributes.position, c = new Float32Array(p.count * 3);
+      for (let i = 0; i < p.count; i++) {
+        const v = Math.pow(0.62 + 0.38 * p.getY(i), 2.2);
+        c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
+      }
+      geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
+    }
+    const trees = [];
+    for (let s = 300; s < L - 300; s += 330) {
+      const k = kindAt(s);
+      if (k < 2) continue;
+      if (this.line.sections.river.some((r) => s > r.from - 500 && s < r.to + 500)) continue;
+      for (const side of [1, -1]) {
+        if (rnd() > (k === 3 ? 0.75 : 0.35)) continue;
+        const r = 110 + rnd() * 170, h = (k === 3 ? 28 : 16) + rnd() * (k === 3 ? 38 : 18);
+        const dist = r + 90 + rnd() * 220;
+        const f = frameAt(F, this.step, s + rnd() * 150);
+        const c = f.p.clone().addScaledVector(f.left, side * dist);
+        c.y -= 3;
+        const m = new THREE.Mesh(geo, this._hillMat);
+        m.position.copy(c);
+        m.scale.set(r, h, r * (0.7 + rnd() * 0.5));
+        m.rotation.y = rnd() * Math.PI;
+        m.receiveShadow = true;
+        this.world.add(m);
+        /* 斜面の雑木林 */
+        const nT = Math.floor(r / 9);
+        for (let i = 0; i < nT; i++) {
+          const a = rnd() * Math.PI * 2, u = Math.sqrt(rnd()) * 0.85;
+          const lx = Math.cos(a) * u, lz = Math.sin(a) * u;
+          const local = new THREE.Vector3(lx, Math.sqrt(Math.max(0, 1 - u * u)), lz);
+          local.multiply(m.scale).applyAxisAngle(UP, m.rotation.y);
+          const p = c.clone().add(local);
+          trees.push({ p, sc: 1.4 + rnd() * 1.3, tint: 0.65 + rnd() * 0.4, conifer: rnd() < 0.45 });
+        }
+      }
+    }
+    this._plantTrees(trees, rnd);
   }
 
   /* ---------- 駅舎(駅名看板つき) ---------- */
@@ -2264,6 +2518,7 @@ export class RailScene {
   setCameraMode(mode) {
     this.camMode = mode;
     this._frontCamS = null;
+    this._camPos = null;   // 切り替えたら補間せずに新しい位置へ
     const ext = mode !== 'cab';
     this.cockpit.setVisible(!ext);
     if (this.traffic) this.traffic.showOwn(ext);

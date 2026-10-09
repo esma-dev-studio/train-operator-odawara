@@ -196,18 +196,24 @@ export function drawStamp(cv, name, { got = true, size = 160, seed = 0 } = {}) {
   c.beginPath(); c.arc(0, 0, R * 0.82, 0, Math.PI * 2); c.stroke();
   /* 上: 駅名(漢字) 下: かな */
   c.textAlign = 'center'; c.textBaseline = 'middle';
-  const fs = name.length >= 5 ? 0.15 : 0.19;
-  c.font = `900 ${size * fs}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
-  c.fillText(got ? name : '？', 0, R * 0.48);
-  c.font = `700 ${size * 0.075}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
-  c.fillText(got ? (STATION_KANA[name] || '') : '', 0, R * 0.66);
+  /* 文字は内側の輪に収まるよう、測って縮める */
+  const fit = (text, weight, px, maxW) => {
+    c.font = `${weight} ${px}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
+    const w = c.measureText(text).width;
+    if (w > maxW) c.font = `${weight} ${px * (maxW / w)}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
+  };
+  fit(got ? name : '？', 900, size * 0.185, R * 1.36);
+  c.fillText(got ? name : '？', 0, R * 0.40);
+  const kana = got ? (STATION_KANA[name] || '') : '';
+  fit(kana, 700, size * 0.075, R * 1.0);
+  c.fillText(kana, 0, R * 0.665);
   c.font = `700 ${size * 0.06}px "Zen Kaku Gothic New", sans-serif`;
   c.fillText('えき スタンプ', 0, -R * 0.66);
   /* モチーフ */
   if (got) {
     c.save();
-    c.translate(0, -R * 0.1);
-    c.scale(R * 0.42, R * 0.42);
+    c.translate(0, -R * 0.2);
+    c.scale(R * 0.36, R * 0.36);
     c.lineWidth = 0.075;
     c.lineJoin = 'round'; c.lineCap = 'round';
     motif(c, kind);
