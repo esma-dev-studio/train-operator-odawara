@@ -20,6 +20,8 @@ import { WeatherFx } from './weatherfx.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
+/* 軌間1067mm(狭軌・日本の在来線)。レール中心までの半分の幅。車両(TrainKit)の車輪位置と合わせる */
+const RAIL_HALF = 1.067 / 2 + 0.032;   // 軌間はレール頭部の内側で測るので、頭部中心は少し外
 const DS = THREE.DoubleSide;
 
 /* 画質プリセット */
@@ -858,7 +860,7 @@ export class RailScene {
     };
     const addTrack = (offset, full) => {
       this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, offset, 4.2, 0, 2.5), this.M.ballast)));
-      [-0.7175, 0.7175].forEach((o) => addRail(offset + o, full));
+      [-RAIL_HALF, RAIL_HALF].forEach((o) => addRail(offset + o, full));
     };
     addTrack(0, true);       // 自列車（下り）
     addTrack(-3.8, true);    // 上り線
@@ -868,7 +870,7 @@ export class RailScene {
     const qi0 = Math.floor(q.from / this.step), qi1 = Math.ceil(q.to / this.step);
     [3.8, 7.6].forEach((off) => {
       this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off, 4.2, 0, 2.5), this.M.ballast)));
-      [-0.7175, 0.7175].forEach((o) => {
+      [-RAIL_HALF, RAIL_HALF].forEach((o) => {
         this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off + o, 0.068, 0.19, 25), this.M.railHead)));
         this.world.add(new THREE.Mesh(vribbon(F, qi0, qi1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
       });
@@ -914,7 +916,7 @@ export class RailScene {
 
   /* ---------- 枕木(自列車近傍のみ実体を置くムービングウィンドウ) ---------- */
   _buildSleepers() {
-    const geo = new THREE.BoxGeometry(2.5, 0.13, 0.26);
+    const geo = new THREE.BoxGeometry(2.0, 0.14, 0.24);   // 狭軌用の枕木
     /* own: -45..+195, up: -45..+140 (間隔0.625m) */
     this._slpSpec = [
       { off: 0, back: 45, fwd: 195 },
@@ -1723,7 +1725,7 @@ export class RailScene {
     /* 追加の線路(左: 6.1 / 右: -10.1)と、そこで発車を待つ電車 */
     [6.1, -10.1].forEach((off) => {
       this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off, 3.8, 0, 2.5), this.M.ballast));
-      [-0.7175, 0.7175].forEach((o) => {
+      [-RAIL_HALF, RAIL_HALF].forEach((o) => {
         this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off + o, 0.068, 0.19, 25), this.M.railHead));
         this.world.add(new THREE.Mesh(vribbon(F, i0, i1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
       });
@@ -1891,7 +1893,7 @@ export class RailScene {
     const iA = Math.floor(a / this.step), iB = Math.ceil(b / this.step);
     [-13.5, -17.5, -21.5].forEach((off) => {
       this.world.add(new THREE.Mesh(ribbon(F, iA, iB, off, 3.6, -0.05, 2.5), this.M.sub));
-      [-0.7175, 0.7175].forEach((o) => {
+      [-RAIL_HALF, RAIL_HALF].forEach((o) => {
         this.world.add(new THREE.Mesh(ribbon(F, iA, iB, off + o, 0.068, 0.1, 25), this.M.railHead));
       });
     });
@@ -2252,6 +2254,8 @@ export class RailScene {
           const ss = st.s - 150 + rnd() * 158;
           /* 停車位置まわりの乗り降りする人(アニメ)とは重ならないように */
           if (Math.abs(ss - st.s) < 50 && side > 0 && rnd() < 0.7) continue;
+          /* 運転台の窓のすぐ横(停止位置の前後)には立たせない(視界をふさがない) */
+          if (side > 0 && ss > st.s - 16 && ss < st.s + 14) continue;
           const lat = off + side * (-0.15 + rnd() * 1.05);
           const f = frameAt(F, this.step, Math.max(2, ss));
           const p = f.p.clone().addScaledVector(f.left, lat);
