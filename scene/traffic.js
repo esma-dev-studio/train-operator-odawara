@@ -138,8 +138,6 @@ export class Traffic {
     }
   }
 
-  setNight() { /* 窓明かりなどは TrainKit 側で一括切替 */ }
-
   showOwn(v) { this.own.group.visible = v; }
 
   _spawn(rule, sim) {

@@ -54,10 +54,11 @@ export function makeAutopilot(sim) {
     if (bWant > 0) {
       const b = bWant * (d < 45 ? 1.0 : 1.1) - Math.min(0, bGrade);   // 下りは強め
       const step = Math.ceil((b / TRAIN.maxServiceB) * TRAIN.brakeSteps + 0.25);
-      /* 停止寸前は弱めて滑らかに、直前で確実に */
-      if (d < 2.2 && v < 3.5) { set(-3); return; }
-      if (d < 12 && v < 8 && bNeed < 1.6) { set(-1); return; }
       const maxStep = Math.max(1, Math.floor((cap / TRAIN.maxServiceB) * TRAIN.brakeSteps));
+      /* 停止寸前は弱めて滑らかに、直前で確実に(急な下り坂では勾配ぶん強める) */
+      const gradeStep = Math.ceil(Math.max(0, -bGrade) / TRAIN.maxServiceB * TRAIN.brakeSteps);
+      if (d < 2.2 && v < 3.5) { set(-Math.min(maxStep, Math.max(3, gradeStep + 2))); return; }
+      if (d < 12 && v < 8 && bNeed < 1.6) { set(-Math.min(maxStep, Math.max(1, gradeStep + 1))); return; }
       set(-Math.min(maxStep, Math.max(1, step)));
       return;
     }

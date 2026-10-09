@@ -56,6 +56,19 @@ export class TrainSim {
       ? opts.timetable[ttKey].map((x) => ({ arr: x[0], dep: x[1] }))
       : this._buildTimetable();
 
+    /* 雨・雪の日は走行時分を少し延ばした「天候ダイヤ」で運転する(実際も慎重運転で遅れる) */
+    const slow = this.weather === 'snow' ? 1.12 : this.weather === 'rain' ? 1.04 : 1;
+    if (slow !== 1) {
+      const tb = this.timetable;
+      const out = [{ arr: tb[0].arr, dep: tb[0].dep }];
+      for (let i = 1; i < tb.length; i++) {
+        const run = (tb[i].arr - tb[i - 1].dep) * slow;
+        const arr = Math.round((out[i - 1].dep + run) / 5) * 5;
+        out.push({ arr, dep: arr + (tb[i].dep - tb[i].arr) });
+      }
+      this.timetable = out;
+    }
+
     /* 区間運転: endIdx(停車駅リストの番号)で終点を手前にできる（小2向けの短い運転） */
     if (opts.endIdx != null && opts.endIdx > 0 && opts.endIdx < this.stops.length - 1) {
       this.stops = this.stops.slice(0, opts.endIdx + 1);

@@ -636,10 +636,16 @@ export class RailScene {
   _disposeWorld() {
     const keep = this._keep;
     const geos = new Set(), mats = new Set(), texs = new Set();
-    this.world.traverse((o) => {
+    /* 車両(TrainKit)の形状・材質は共有なので捨てず、編成ごとの表記だけ解放する */
+    if (this.traffic) this.traffic.dispose();
+    this.traffic = null;
+    const walk = (o) => {
+      if (o.userData && o.userData.train) { this.disposeTrainModel(o.userData.train); return; }
       if (o.geometry) geos.add(o.geometry);
       if (o.material) [].concat(o.material).forEach((m) => mats.add(m));
-    });
+      o.children.forEach(walk);
+    };
+    this.world.children.forEach(walk);
     mats.forEach((m) => {
       if (keep.has(m)) return;
       ['map', 'normalMap', 'emissiveMap', 'alphaMap', 'roughnessMap'].forEach((k) => { if (m[k] && !keep.has(m[k])) texs.add(m[k]); });
@@ -647,7 +653,6 @@ export class RailScene {
     });
     geos.forEach((g) => g.dispose());
     texs.forEach((t) => t.dispose());
-    if (this.traffic) this.traffic.dispose();
     this.world.clear();
     this.signalMeshes = [];
     this._sigGroup = null;
@@ -790,7 +795,7 @@ export class RailScene {
     this.sun.color.setHex(night ? 0xa8bcd8 : eve ? 0xffa766 : wet ? 0xdfe4ea : 0xfff0da);
     this._curSunDir = eve && !wet && this._eveSunDir ? this._eveSunDir.clone().setY(Math.max(0.09, this._eveSunDir.y)).normalize() : this._sunDir;
     this.sun.castShadow = QUALITY[this.quality].shadowsOn && !wet && !night;
-    this.hemi.intensity = night ? 0.14 : eve ? 0.3 : snow ? 0.7 : rain ? 0.55 : 0.45;
+    this.hemi.intensity = night ? 0.14 : eve ? 0.55 : snow ? 0.7 : rain ? 0.55 : 0.45;
     this.hemi.color.setHex(eve ? 0xd8a888 : 0xbfd0e0);
     const lightsOn = night || eve || this._inTunnelNow;
     if (this.headlight) this.headlight.intensity = night ? (wet ? 950 : 850) : eve ? 900 : wet ? 750 : 700;
@@ -805,7 +810,7 @@ export class RailScene {
     /* 雪: 地面は芝テクスチャを外して一面の雪原に(頂点色のムラだけ残す) */
     const gMap = snow ? null : this.T.grassC;
     if (this.M.ground.map !== gMap) { this.M.ground.map = gMap; this.M.ground.needsUpdate = true; }
-    this.M.ground.color.setHex(snow ? 0xeef2f6 : eve ? 0xd8c0a8 : 0xffffff);
+    this.M.ground.color.setHex(snow ? 0xeef2f6 : eve ? 0xf0dcc4 : 0xffffff);
     const bMap = snow ? null : this.T.grassBankC;
     if (this.M.bank.map !== bMap) { this.M.bank.map = bMap; this.M.bank.needsUpdate = true; }
     this.M.bank.color.setHex(snow ? 0xe6eaee : 0xffffff);
@@ -830,7 +835,7 @@ export class RailScene {
     if (this.stationLamps) this.stationLamps.visible = lightsOn || wet;
     if (this._vendFrontMat) this._vendFrontMat.emissive.setHex(night || eve ? 0xcfe0ee : 0x000000);
     if (this.weatherFx) this.weatherFx.set(this.weather, tod);
-    if (this.traffic) this.traffic.setNight(night || eve || wet);
+    if (this.trainKit) this.trainKit.setNight(night || eve || wet || !!this._inTunnelNow);
     /* ブルームの強さ(昼は控えめ) */
     if (this.bloom) {
       this.bloom.strength = night ? 0.85 : eve ? 0.55 : 0.22;
@@ -894,7 +899,7 @@ export class RailScene {
     let segStart = 0;
     const addGround = (i0, i1) => {
       if (i1 - i0 < 4) return;
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, 264, 512, -0.5, 5, gVcol), this.M.ground));
+      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, 260.5, 512, -0.5, 5, gVcol), this.M.ground));
       this.world.add(new THREE.Mesh(ribbon(F, i0, i1, -264, 512, -0.5, 5, gVcol), this.M.ground));
     };
     cuts.sort((a, b) => a[0] - b[0]).forEach(([cf, ct]) => {
@@ -1619,7 +1624,10 @@ export class RailScene {
 
   /* ---------- 車両(TrainKit: scene/trains.js) ---------- */
   _kit() {
-    if (!this.trainKit) this.trainKit = new TrainKit({ quality: QUALITY[this.quality].trainDetail });
+    if (!this.trainKit) {
+      this.trainKit = new TrainKit({ quality: QUALITY[this.quality].trainDetail });
+      this.trainKit.setNight(this.timeOfDay !== 'day' || this.weather !== 'clear');
+    }
     return this.trainKit;
   }
 
@@ -1633,10 +1641,11 @@ export class RailScene {
 
   setTrainDest(train, kind, dest) {
     const label = { local: '各停', exp: '急行', rapid: '快急' }[kind] || '各停';
-    if (this._kit().setDest) this._kit().setDest(train, `${label} ${dest}`);
+    this._kit().setDest(train, `${label} ${dest}`, kind);
   }
 
-  disposeTrainModel() { /* 形状・材質は TrainKit で共有しているので個別には捨てない */ }
+  /* 形状・材質は TrainKit で共有。編成ごとの表記テクスチャだけ解放する */
+  disposeTrainModel(train) { if (this.trainKit && train) this.trainKit.release(train); }
 
   /* ---------- 停止位置の光の目印(こどもサポート) ---------- */
   _buildStopBeam() {
@@ -2587,7 +2596,8 @@ export class RailScene {
       cam.fov = 55;
     } else if (mode === 'front') {
       /* 線路わきの「撮影地」: 先頭が通りすぎたら次の地点へ */
-      if (this._frontCamS == null || s > this._frontCamS + 8 + 160 * 0.2) this._frontCamS = Math.min(L - 10, s + 260 + (sim.v / 3.6) * 4);
+      /* 近すぎず遠すぎず(カーブの内側の壁で隠れないよう 150m 前後) */
+      if (this._frontCamS == null || s > this._frontCamS + 40) this._frontCamS = Math.min(L - 10, s + 120 + (sim.v / 3.6) * 2.5);
       /* 線路のすぐ左(ホームの端・柵の内側)から列車を迎える */
       const fc = at(this._frontCamS);
       const p = fc.p.clone().addScaledVector(fc.left, 4.4);
