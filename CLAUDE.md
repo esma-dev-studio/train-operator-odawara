@@ -26,7 +26,8 @@
 - 3Dステージは1つだけ（タイトル・選択画面の背景でも自動運転のデモ列車が走る）。路線(方向)が変わると
   `RailScene.setWorld()` でワールドを作り直す。全線ぶんの InstancedMesh・帯は `_splitInstances`/`_splitRibbons`
   で約700m単位に分割している（視錐台カリングのため。新しい沿線物も world 直下に足せば自動で分割される）。
-- `sw.js` の `VERSION` は公開のたびに上げる（上げないとホーム画面版のiPadが古いまま）。ファイルを増やしたら `CORE` にも足す。
+- `sw.js` の `VERSION` は公開のたびに上げる（上げないとホーム画面版のiPadが古いまま）。ファイルを増やしたら `CORE` にも足し、
+  `node tools/check-sw.mjs` で漏れがないか確認する（漏れるとオフライン起動が読み込み中で止まる）。
 
 ## 検証
 - エンジン回帰: `node tools/autodrive.mjs local|exp|rapid [clear|rain|snow] [up]`

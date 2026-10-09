@@ -141,6 +141,9 @@ const App = {
     sim.tick(dt);
     if (sim.ended || sim.stopIdx >= sim.stops.length - 1) {
       sim.reset(A.start); sim.skipDwell();
+      A.ap = makeAutopilot(sim);
+      if (this.scene.traffic) this.scene.traffic.reset(sim);
+      this.scene._camPos = null;
     }
     A.camT += dt;
     const seq = ['chase', 'side', 'front', 'drone', 'cab', 'side'];
@@ -313,7 +316,8 @@ const App = {
     const n = stops.length;
     const end = this.endIdx == null ? n - 1 : this.endIdx;
     const tt = this.timetable[this._ttKey()];
-    const min = tt ? Math.max(1, Math.round((tt[end][0] - tt[this.startIdx][1]) / 60)) : '—';
+    const slow = this.weather === 'snow' ? 1.12 : this.weather === 'rain' ? 1.04 : 1;   // 天候ダイヤ
+    const min = tt ? Math.max(1, Math.round(((tt[end][0] - tt[this.startIdx][1]) * slow) / 60)) : '—';
     const nStop = end - this.startIdx;
     const tod = { day: 'ひる', evening: 'ゆうがた', night: 'よる' }[this.daytime];
     const wx = { clear: 'はれ', rain: 'あめ', snow: 'ゆき' }[this.weather];
@@ -408,10 +412,15 @@ const App = {
   _rebuildScene() {
     this._qualityDirty = false;
     this.quality = this.settings.quality || this.quality;
-    try { this.scene.renderer.dispose(); } catch (e) { /* noop */ }
+    /* 同じキャンバスに作り直すと古いGPU資源が残るので、文脈ごと捨てて新しいキャンバスにする */
+    try { this.scene.renderer.forceContextLoss(); this.scene.renderer.dispose(); } catch (e) { /* noop */ }
+    const old = $('#gl');
+    const cv = old.cloneNode(false);
+    old.replaceWith(cv);
     const A = this.attract;
-    this.scene = new RailScene($('#gl'), A.line, A.sim, { quality: this.quality, timeOfDay: A.tod, weather: 'clear' });
+    this.scene = new RailScene(cv, A.line, A.sim, { quality: this.quality, timeOfDay: A.tod, weather: 'clear' });
     this.scene.guide = this.settings.guide;
+    this.scene.setCameraMode(['chase', 'side', 'front', 'drone', 'cab', 'side'][A.camI] || 'chase');
     this.resizeGL();
   },
 
@@ -563,6 +572,7 @@ const App = {
     this.lastStationIdx = startIdx;
     this.runStamps = [];
     this.runBadges = [];
+    this._retried = false;
     this.scene.setWorld(this.line, this.sim);
     this.scene.setTimeOfDay(this.daytime);
     this.scene.setWeather(this.weather);
@@ -592,7 +602,8 @@ const App = {
   onSimEvent(type, e) {
     const A = this.announcer;
     if (type === 'arrived') {
-      this.lastStationIdx = this.sim.stopIdx - 1;
+      /* 'arrived' は次の駅へ進める前に出るので、いまの stopIdx が着いた駅 */
+      this.lastStationIdx = this.sim.stopIdx;
       const last = this.sim.score.stops[this.sim.score.stops.length - 1];
       const abs = Math.abs(last.err);
       const grade = abs <= 0.35 ? '◎ みごと！' : abs <= 1 ? '○ いいね' : abs <= 2 ? '△ おしい' : '× ざんねん';
@@ -617,7 +628,6 @@ const App = {
       const k = kanaOf(e.name) || e.name;
       A.speak(e.last ? `まもなく、しゅうてん、${k}です。おわすれものの ないよう、ごちゅうい ください。` : `まもなく、${k}です。`);
     }
-    if (type === 'melody' && this.audio && this.audio.playMelody) this.audio.playMelody(e.seed);
     if (type === 'finished') this.finishRun(e);
   },
 
@@ -803,7 +813,9 @@ const App = {
   },
 
   retryStation() {
+    this._retried = true;   // とちゅうからやり直した運転はベスト記録に残さない
     this.sim.reset(this.lastStationIdx);
+    this.scene._camPos = null;
     this.setPaused(false);
     $('#overrun-modal').classList.add('hidden');
     if (this.scene.traffic) this.scene.traffic.reset(this.sim);
@@ -825,7 +837,7 @@ const App = {
     this.running = false;
     if (this.audio) this.audio.stop();
     this.save.runs = (this.save.runs || 0) + 1;
-    const full = this.startIdx === 0 && this.endIdx == null;
+    const full = this.startIdx === 0 && this.endIdx == null && !this._retried;
     const key = `${this.service}_${this.direction}_${this.weather}`;
     const prev = this.save.best[key];
     const isBest = full && (!prev || res.total > prev.total);

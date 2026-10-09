@@ -641,11 +641,15 @@ export class RailScene {
     this.traffic = null;
     const walk = (o) => {
       if (o.userData && o.userData.train) { this.disposeTrainModel(o.userData.train); return; }
+      if (o.isInstancedMesh) o.dispose();   // インスタンス行列・色のバッファ
       if (o.geometry) geos.add(o.geometry);
       if (o.material) [].concat(o.material).forEach((m) => mats.add(m));
       o.children.forEach(walk);
     };
     this.world.children.forEach(walk);
+    /* 昼/夜で差し替えているビルのテクスチャ(使っていない側も) */
+    (this._bldMats || []).forEach((b) => { texs.add(b.day); texs.add(b.night); });
+    this._bldMats = [];
     mats.forEach((m) => {
       if (keep.has(m)) return;
       ['map', 'normalMap', 'emissiveMap', 'alphaMap', 'roughnessMap'].forEach((k) => { if (m[k] && !keep.has(m[k])) texs.add(m[k]); });
@@ -776,12 +780,10 @@ export class RailScene {
       this.scene.background = env.bg;
       this.scene.environment = env.ibl;
       this.scene.backgroundIntensity = night ? (wet ? 0.55 : 0.8) : eve ? 0.42 : snow ? 1.05 : rain ? 0.85 : 1.0;
-      this.scene.environmentIntensity = eve ? 0.55 : 1;
     } else {
       this.scene.background = new THREE.Color(night ? 0x0a0f16 : rain ? 0x8d959c : snow ? 0xc9cfd5 : eve ? 0x9a7a6a : 0xa8c4dd);
       this.scene.environment = null;
     }
-    if (key === 'evening') this.scene.environmentIntensity = 0.85;
     /* --- 霧 --- */
     const fogCol = night ? (wet ? 0x0a0e13 : 0x0c1119)
       : eve ? (wet ? 0x5a5250 : 0xd9a27a)

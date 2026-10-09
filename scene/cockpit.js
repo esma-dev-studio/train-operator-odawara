@@ -58,7 +58,10 @@ export class Cockpit {
   layoutFor(aspect) {
     if (Math.abs(aspect - this.aspect) < 1e-3 && this.layout) return;
     this.aspect = aspect;
-    this.root.children.slice().forEach((c) => { this.root.remove(c); if (c.geometry) c.geometry.dispose(); });
+    this.root.children.slice().forEach((c) => {
+      this.root.remove(c);
+      c.traverse((o) => { if (o.geometry) o.geometry.dispose(); });   // ワイパー(グループ)の中も
+    });
     /* 縦長(ポートレート)ほど枠を細くして視界を確保する */
     const narrow = aspect < 1.25;
     const L = {

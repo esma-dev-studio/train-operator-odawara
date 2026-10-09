@@ -9,6 +9,7 @@ import { TRAIN, ADHESION } from './engine.js';
 export function makeAutopilot(sim) {
   let lastChange = -9, lastNotch = 0;
   const set = (n) => {
+    if (sim.t < lastChange) lastChange = -9;   // やりなおし等で時計が戻ったとき
     if (n === lastNotch && sim.notch === n) return;
     /* ノッチ操作は0.6秒に1回まで（ガチャガチャ防止）。ただし強いブレーキ要求は即時 */
     if (sim.t - lastChange < 0.6 && !(n < lastNotch && n <= -4)) return;

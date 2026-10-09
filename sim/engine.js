@@ -417,6 +417,14 @@ export class TrainSim {
       this._emit('overrun', { err: this.pos - target });
     }
 
+    /* 終点の停止位置を大きく越えたら非常ブレーキ(車止め・壁に突っ込まない)。
+     * 低速(8km/h以下)はATSの対象外なので、ここで止める */
+    if (target != null && this._left && this.stopIdx === this.stops.length - 1) {
+      const over = this.pos - target, vms = this.v / 3.6;
+      const dEB = (vms * vms) / (2 * 1.2) + vms * 0.9;   // 非常ブレーキで止まるまでの距離(込め遅れ込み)
+      if (over > 3 && over + dEB > 18) this.notch = -8;  // 車止め(+24m)の手前で止める
+    }
+
     /* 終端防護（線路の終わりの手前） */
     if (this.pos > this.line.meta.length - 60 && this.stopIdx >= this.stops.length - 1 && this.stoppedAt == null) {
       /* 過走で車止めに接近 → 強制EB */
