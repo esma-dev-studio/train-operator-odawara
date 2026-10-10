@@ -1,0 +1,99 @@
+/* =========================================================
+ * shots.mjs — 見た目の確認用に、決まった場面のスクリーンショットを一式撮る
+ * (デザインの採点・改善前後の比較用)
+ *
+ * 使い方: (ローカルHTTPサーバを立ててから)
+ *   npx http-server -p 8123 -c-1 .
+ *   node tools/shots.mjs <出力フォルダ> [場面名の一部でしぼる...]
+ * 環境変数: BASE(既定 http://localhost:8123) / Q=high|mid|low(既定mid) / GPU=1(実GPU)
+ * ========================================================= */
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
+let chromium;
+try { ({ chromium } = await import('playwright')); } catch (e) {
+  ({ chromium } = await import('/opt/node-tools/node_modules/playwright/index.mjs'));
+}
+
+const [out = 'shots', ...filters] = process.argv.slice(2);
+mkdirSync(out, { recursive: true });
+const BASE = process.env.BASE || 'http://localhost:8123';
+const Q = process.env.Q || 'mid';
+
+/* 各停の停車駅番号(くだり): 0新宿 2参宮橋 5東北沢 8梅ヶ丘 10経堂 12祖師ヶ谷大蔵 13成城学園前
+ * 16和泉多摩川 17登戸 18向ヶ丘遊園 19生田 21百合ヶ丘 22新百合ヶ丘 */
+const SCENES = [
+  { name: '01_title', screen: 'title', wait: 4000 },
+  { name: '02_select', screen: 'select' },
+  { name: '03_cab_terminal', setup: { start: 0 }, cam: 'cab' },
+  { name: '04_cab_city', setup: { start: 2 }, advance: 45, cam: 'cab' },
+  { name: '05_cab_brakeguide', setup: { start: 9 }, approach: 170, notch: -3, cam: 'cab' },
+  { name: '06_cab_station_stop', setup: { start: 12 }, cam: 'cab' },
+  { name: '07_chase_suburb', setup: { start: 18 }, advance: 70, cam: 'chase' },
+  { name: '08_side_suburb', setup: { start: 18 }, advance: 70, cam: 'side' },
+  { name: '09_front_city', setup: { start: 2 }, advance: 50, cam: 'front', wait: 3500 },
+  { name: '10_drone_city', setup: { start: 1 }, advance: 35, cam: 'drone' },
+  { name: '11_river_side', setup: { start: 16 }, advance: 32, cam: 'side' },
+  { name: '12_tunnel_cab', setup: { start: 5 }, advance: 22, cam: 'cab' },
+  { name: '13_evening_cab', setup: { start: 10, daytime: 'evening' }, advance: 45, cam: 'cab' },
+  { name: '14_evening_chase', setup: { start: 10, daytime: 'evening' }, advance: 45, cam: 'chase' },
+  { name: '15_night_cab', setup: { start: 3, daytime: 'night' }, advance: 45, cam: 'cab' },
+  { name: '16_night_station', setup: { start: 13, daytime: 'night' }, cam: 'cab' },
+  { name: '17_rain_cab', setup: { start: 8, weather: 'rain' }, advance: 40, cam: 'cab' },
+  { name: '18_snow_cab', setup: { start: 19, weather: 'snow' }, advance: 45, cam: 'cab' },
+  { name: '19_snow_side', setup: { start: 19, weather: 'snow' }, advance: 45, cam: 'side' },
+  { name: '20_up_terminal_arrival', setup: { start: 21, dir: 'up' }, approach: 140, cam: 'cab' },
+  { name: '21_result', setup: { start: 9, end: 10 }, finish: true, wait: 3500 },
+  { name: '22_stamps', screen: 'stamps', after: '21_result' },
+  { name: '23_ipad_portrait', setup: { start: 8 }, advance: 40, cam: 'cab', vp: [768, 1024], touch: true },
+  { name: '24_phone_landscape', setup: { start: 8 }, advance: 40, cam: 'cab', vp: [844, 390], touch: true },
+];
+
+const pick = filters.length ? SCENES.filter((s) => filters.some((f) => s.name.includes(f))) : SCENES;
+const args = process.env.GPU ? ['--enable-gpu', '--ignore-gpu-blocklist'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+const browser = await chromium.launch({ args: [...args, '--autoplay-policy=no-user-gesture-required'] });
+const pages = new Map();
+const errors = [];
+
+async function pageFor(vp = [1280, 800], touch = false) {
+  const key = vp.join('x') + (touch ? 't' : '');
+  if (pages.has(key)) return pages.get(key);
+  const ctx = await browser.newContext({ viewport: { width: vp[0], height: vp[1] }, deviceScaleFactor: 1, hasTouch: touch });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(`${key}: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`${key}: ${m.text()}`); });
+  await page.goto(`${BASE}/index.html?debug=1&q=${Q}&v=${Date.now()}`);
+  await page.waitForFunction(() => window.__test && __test.app.mode === 'title', null, { timeout: 180000 });
+  pages.set(key, page);
+  return page;
+}
+
+for (const sc of pick) {
+  const t0 = Date.now();
+  const page = await pageFor(sc.vp, sc.touch);
+  if (sc.screen === 'title') {
+    await page.evaluate(() => { const a = __test.app; if (a.mode !== 'title') a.go('title'); });
+  } else if (sc.screen === 'select') {
+    await page.evaluate(() => { __test.app.renderSvcCards(); __test.app.renderRoute(); __test.app.go('select'); });
+  } else if (sc.screen === 'stamps') {
+    await page.evaluate(() => __test.app.go('stamps'));
+  } else if (sc.setup) {
+    const cfg = { service: 'local', weather: 'clear', daytime: 'day', dir: 'down', ...sc.setup };
+    await page.evaluate((c) => __test.setup(c), cfg);
+    await page.waitForTimeout(800);
+    if (sc.advance) await page.evaluate((s) => __test.advance(s), sc.advance);
+    if (sc.approach) await page.evaluate((m) => __test.approach(m), sc.approach);
+    if (sc.notch != null) await page.evaluate((n) => __test.app.sim.setNotch(n), sc.notch);
+    if (sc.cam) await page.evaluate((m) => __test.cam(m), sc.cam);
+    if (sc.finish) {
+      await page.evaluate(() => __test.advance(900));
+      await page.waitForFunction(() => __test.app.mode === 'result', null, { timeout: 120000 }).catch(() => errors.push('result not reached'));
+    }
+  }
+  await page.waitForTimeout(sc.wait || 2500);
+  await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
+  console.log(`${sc.name}  ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+}
+await browser.close();
+if (errors.length) { console.error('★ エラー:\n' + [...new Set(errors)].join('\n')); process.exit(1); }
+console.log('OK →', out);

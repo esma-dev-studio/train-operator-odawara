@@ -973,6 +973,25 @@ const App = {
       },
       cam: (m) => { this.camIdx = CAM_MODES.indexOf(m); this._setCam(m); },
       go: (m) => this.go(m),
+      /* 描画せずにシミュレーションだけ sec 秒すすめる(自動運転)。撮影位置まで一気に動かす用 */
+      advance: (sec) => {
+        const sim = this.sim, ap = makeAutopilot(sim);
+        for (let t = 0; t < sec && !sim.ended; t += 0.05) { if (sim.doorOpen) sim.skipDwell(); ap(); sim.tick(0.05); }
+        if (this.scene) this.scene._camPos = null;
+        return { pos: Math.round(sim.pos), v: Math.round(sim.v), next: sim.stops[sim.stopIdx] && sim.stops[sim.stopIdx].name };
+      },
+      /* 次の停車駅の手前 m メートルまで自動運転で進める */
+      approach: (m) => {
+        const sim = this.sim, ap = makeAutopilot(sim);
+        for (let i = 0; i < 200000 && !sim.ended; i++) {
+          if (sim.doorOpen) sim.skipDwell();
+          const nx = sim.stops[sim.stopIdx];
+          if (nx && !sim.doorOpen && nx.stopAt - sim.pos < m && sim.v > 1) break;
+          ap(); sim.tick(0.05);
+        }
+        if (this.scene) this.scene._camPos = null;
+        return { pos: Math.round(sim.pos), v: Math.round(sim.v) };
+      },
     };
   },
 
