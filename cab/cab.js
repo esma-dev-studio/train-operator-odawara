@@ -1,44 +1,288 @@
 /* =========================================================
  * cab/cab.js — 運転台の計器盤（DOM+Canvas 2D）
- * 針式速度計 / ノッチ表示 / ATS表示灯 / TIMS風モニタ
+ * 速度計(LEDリング・液晶) / ブレーキの強さ / マスコン(13段) /
+ * 表示灯 / 運転モニタ / 制限スピード板
+ *
+ * index.html の #cab をコンストラクタで組みかえる(要素は移動するだけ。idとリスナーはそのまま)。
+ * 毎フレームの書き込みは「値が変わったときだけ」(_set)。止まっている間はDOMを一切さわらない。
+ * main.js との約束(なくても動く): render(h) / bindInput({canOp,setNotch}) / flashGrip() /
+ *   setService({svcHtml,color,destHtml}) / setLight(lum)
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
 
 const $ = (s) => document.querySelector(s);
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+/* 数字の書体(DIN系があればそれ。なければ本文の書体) */
+const NUM_FONT = '"DIN Alternate","DIN Condensed",Bahnschrift,"Roboto Condensed","Zen Kaku Gothic New",sans-serif';
+const TAU = Math.PI * 2;
+
+/* 種別(main.js が setService を呼ぶまでの代わり) */
+const SVC = {
+  local: { kana: 'かくえきていしゃ', color: '#8fa0aa' },
+  exp: { kana: 'きゅうこう', color: '#ff6b3d' },
+  rapid: { kana: 'かいそくきゅうこう', color: '#3fb0ff' },
+};
+const ruby = (name, kana) => (kana ? `<ruby>${name}<rt>${kana}</rt></ruby>` : name);
+const rubySt = (name) => ruby(name, STATION_KANA[name]);
+/* 「ふん/ぷん」の読み分け(1・3・4・6・8・10 は ぷん) */
+const fun = (m) => ([2, 5, 7, 9].includes(m % 10) ? 'ふん' : 'ぷん');
+
+/* ノッチ: 上から P4 … P1, N, B1 … B7, EB の13段 */
+const NOTCHES = [['P4', 4], ['P3', 3], ['P2', 2], ['P1', 1], ['N', 0],
+  ['B1', -1], ['B2', -2], ['B3', -3], ['B4', -4], ['B5', -5], ['B6', -6], ['B7', -7], ['ひじょう', -8]];
+const notchIdx = (n) => (n === -8 ? 12 : 4 - n);
+const zoneOf = (n) => (n === -8 ? 'eb' : n > 0 ? 'p' : n < 0 ? 'b' : 'n');
+
+/* 速度計の目盛り: 0〜120km/h を 270°(下があく) */
+const A0 = Math.PI * 0.75, A1 = Math.PI * 2.25, VMAX = 120;
+const angOf = (v) => A0 + (A1 - A0) * (v / VMAX);
+const LED_N = 49;                 // 2.5km/hごと
+const LED_COL = ['#1fa85a', '#ffb32e', '#ff4a3d', '#241514'];   // みどり・きいろ・あか・消灯
 
 export class Cab {
   constructor(sim) {
     this.sim = sim;
+    this.root = $('#cab');
     this.speedo = $('#speedo');
     this.ctx = this.speedo.getContext('2d');
+    this._night = false;
+    this._dials = {};
+    this._k = {};
+    this._restructure();
     this.els = {
       notchList: $('#notch-list'),
+      lever: $('#lever'),
+      leverGrip: $('#lever-grip'),
+      gripT: $('#lever-grip .lg-t'),
       lampPat: $('#lamp-pattern'),
       lampBrk: $('#lamp-brake'),
       lampDoor: $('#lamp-door'),
       lampSlip: $('#lamp-slip'),
+      timsSvc: $('#tims-svc'),
+      timsDest: $('#tims-dest'),
       timsNext: $('#tims-next'),
       timsDist: $('#tims-dist'),
       timsSch: $('#tims-sch'),
       timsClock: $('#tims-clock'),
       timsDelay: $('#tims-delay'),
+      timsProg: $('#tims-prog'),
+      timsList: $('#tims-list'),
       limNow: $('#lim-now'),
       limNext: $('#lim-next'),
       grade: $('#grade-ind'),
-      bcBar: $('#bc-fill'),
-      leverGrip: $('#lever-grip'),
+      bcLeds: [...document.querySelectorAll('#bc-fill i')],
     };
     this._buildNotch();
+    this._makeNoise();
+    this._observeSizes();
+    /* Webフォントが後から読めたら、文字盤を描きなおす */
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => { this._dials = {}; this._k.w = -1; }).catch(() => {});
+    }
+  }
+
+  /* ---------------- DOM の組みかえ(一度だけ) ---------------- */
+  _restructure() {
+    const root = this.root;
+    if (root.querySelector('.cab-mascon')) return;
+
+    /* 速度計のわき: ブレーキの強さ(8つのLED) */
+    const bw = root.querySelector('.bc-wrap');
+    if (bw) bw.innerHTML = '<span class="bc-cap">ブレーキ</span><div class="bc-leds" id="bc-fill">' + '<i></i>'.repeat(8) + '</div>';
+
+    /* 運転モニタ: 見出し(種別・行き先・時計) + つぎの駅 + そのさきの駅 */
+    const tims = root.querySelector('.cab-tims');
+    if (tims) {
+      const keep = {};
+      ['tims-clock', 'tims-next', 'tims-dist', 'tims-sch', 'tims-delay'].forEach((id) => {
+        const el = document.getElementById(id);
+        keep[id] = el || Object.assign(document.createElement('span'), { id });
+        if (el) el.remove();
+      });
+      tims.innerHTML = `<div class="tims-screen">
+  <div class="tims-head"><span class="tims-svc" id="tims-svc"></span><span class="tims-dest" id="tims-dest"></span><i data-slot="tims-clock"></i></div>
+  <div class="tims-body">
+    <div class="tims-main">
+      <div class="tims-cap">つぎは</div>
+      <i data-slot="tims-next"></i>
+      <div class="tims-row2"><i data-slot="tims-dist"></i><i data-slot="tims-sch"></i></div>
+      <div class="tims-row3"><i data-slot="tims-delay"></i></div>
+      <div class="tims-prog"><i id="tims-prog"></i></div>
+    </div>
+    <ol class="tims-list" id="tims-list"></ol>
+  </div>
+</div>`;
+      tims.querySelectorAll('[data-slot]').forEach((s) => s.replaceWith(keep[s.dataset.slot]));
+      keep['tims-next'].textContent = '';
+      keep['tims-clock'].textContent = '';
+    }
+
+    /* 制限スピード: 見出しにふりがな */
+    const cap = root.querySelector('.lim-cap');
+    if (cap) cap.innerHTML = '<ruby>制限<rt>せいげん</rt></ruby>スピード';
+
+    /* マスコン: ノッチ目盛り(#notch-list)とレバー(#lever)を1つの台にまとめる */
+    const list = $('#notch-list'), lever = $('#lever');
+    const mascon = document.createElement('div');
+    mascon.className = 'cab-block cab-mascon';
+    root.appendChild(mascon);
+    const oldNotch = list.parentElement;
+    mascon.appendChild(list);
+    mascon.appendChild(lever);
+    if (oldNotch && oldNotch !== root && oldNotch.classList.contains('cab-notch') && !oldNotch.children.length) oldNotch.remove();
+    lever.querySelectorAll('.lv-lab').forEach((s) => s.remove());
+    const slot = document.createElement('div');
+    slot.className = 'lever-slot';
+    lever.insertBefore(slot, lever.firstChild);
+    const grip = $('#lever-grip');
+    grip.innerHTML = '<span class="lg-t">N</span><i class="lg-led"></i>';
+    grip.classList.add('lg-n');
   }
 
   _buildNotch() {
-    const items = [];
-    for (let n = 4; n >= 1; n--) items.push(['P' + n, n]);
-    items.push(['N', 0]);
-    for (let n = 1; n <= 7; n++) items.push(['B' + n, -n]);
-    items.push(['EB', -8]);
-    this.els.notchList.innerHTML = items.map(([label, val]) =>
-      `<div class="nt nt-${val < 0 ? (val === -8 ? 'eb' : 'b') : val > 0 ? 'p' : 'n'}" data-n="${val}">${label}</div>`).join('');
+    const rows = NOTCHES.map(([label, val], i) =>
+      `<div class="nt nt-${zoneOf(val)}" data-n="${val}" style="grid-row:${i + 1}">${label}</div>`).join('');
+    /* 左の見出し(さわっても反応しない。.nt ではない) */
+    const caps = '<span class="nt-cap nt-cap-p" style="grid-row:1/5">すすむ</span>'
+      + '<span class="nt-cap nt-cap-b" style="grid-row:6/13">ブレーキ</span>'
+      + '<span class="nt-cap nt-cap-eb" style="grid-row:13"></span>';
+    this.els.notchList.innerHTML = caps + rows;
+    this._nt = [...this.els.notchList.querySelectorAll('.nt')];
+    this._onIdx = -1;
+    this._lastNotch = null;
+  }
+
+  /* パネルの地(細かいざらつき)は一度だけ画像にして CSS 変数へ
+   * (#cab の style 属性に入れると --cab-lum を書くたびに長い文字列ごと書きなおされるので <style> に置く) */
+  _makeNoise() {
+    if (document.getElementById('cab-noise-css')) return;
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 128;
+      const c = cv.getContext('2d');
+      const img = c.createImageData(128, 128);
+      let seed = 11;
+      for (let i = 0; i < img.data.length; i += 4) {
+        seed = (seed * 16807) % 2147483647;
+        const r = seed / 2147483647;
+        const v = r > 0.5 ? 255 : 0;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = Math.round(Math.abs(r - 0.5) * 2 * 18);   // 最大で約7%
+      }
+      c.putImageData(img, 0, 0);
+      const st = document.createElement('style');
+      st.id = 'cab-noise-css';
+      st.textContent = `#cab{--cab-noise:url(${cv.toDataURL('image/png')})}`;
+      document.head.appendChild(st);
+    } catch (e) { /* 地紋なしでも動く */ }
+  }
+
+  /* 大きさが変わったとき: 速度計の解像度・レバーの持ち手の位置 */
+  _observeSizes() {
+    const onResize = () => { this._fitSpeedo(); this._measureLever(); };
+    if (typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver(onResize);
+      this._ro.observe(this.speedo);
+      this._ro.observe(this.els.lever);
+    }
+    addEventListener('resize', onResize);
+    onResize();
+  }
+
+  _fitSpeedo() {
+    const css = this.speedo.clientWidth;
+    if (!css) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const px = Math.round(css * dpr);
+    this._cssW = css;
+    if (this.speedo.width !== px || this.speedo.height !== px) {
+      this.speedo.width = this.speedo.height = px;
+      this._dials = {};
+      this._led = null;
+      this._grad = null;
+      this._k.w = -1;
+    }
+  }
+
+  _measureLever() {
+    const lv = this.els.lever, g = this.els.leverGrip;
+    const H = lv.clientHeight, gh = g.offsetHeight;
+    if (!H) return;
+    /* 持ち手は台(.cab-mascon)の内側の余白までははみ出してよい */
+    const cs = getComputedStyle(lv.parentElement);
+    const padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
+    if (H !== this._levH || gh !== this._gripH || padT !== this._padT || padB !== this._padB) {
+      this._levH = H; this._gripH = gh; this._padT = padT; this._padB = padB;
+      if (this._lastNotch != null) this._placeGrip(notchIdx(this._lastNotch));
+    }
+  }
+
+  /* 持ち手のまん中を、その段のまん中に(上下のはしは台の中におさめる) */
+  _placeGrip(idx) {
+    const H = this._levH || this.els.lever.clientHeight, gh = this._gripH || this.els.leverGrip.offsetHeight || 30;
+    const y = clamp(((idx + 0.5) * H) / 13 - gh / 2, 1 - (this._padT || 0), H - gh + (this._padB || 0) - 1);
+    this.els.leverGrip.style.transform = `translateY(${y.toFixed(1)}px)`;
+  }
+
+  /* ---------------- 入力(main.js から1回だけ呼ぶ) ----------------
+   * レバーも目盛りも、さわった高さで13段のどれかに。下へはみ出してもかならず EB */
+  bindInput({ canOp = () => true, setNotch } = {}) {
+    if (this._inputBound) return;
+    this._inputBound = true;
+    const list = this.els.notchList;
+    const toNotch = (clientY) => {
+      const r = list.getBoundingClientRect();
+      const k = (clientY - r.top) / Math.max(1, r.height);
+      const idx = clamp(Math.floor(k * 13), 0, 12);
+      return idx === 12 ? -8 : 4 - idx;
+    };
+    const apply = (ev) => {
+      if (!canOp()) return;
+      const n = toNotch(ev.clientY);
+      if (setNotch) setNotch(n); else if (this.sim) this.sim.setNotch(n);
+    };
+    [this.els.lever, list].forEach((el) => {
+      let id = null;
+      el.addEventListener('pointerdown', (ev) => {
+        id = ev.pointerId;
+        try { el.setPointerCapture(id); } catch (e) { /* 合成イベント等 */ }
+        if (ev.cancelable) ev.preventDefault();
+        apply(ev);
+      });
+      el.addEventListener('pointermove', (ev) => { if (id === ev.pointerId) apply(ev); });
+      const end = (ev) => { if (id === ev.pointerId) id = null; };
+      el.addEventListener('pointerup', end);
+      el.addEventListener('pointercancel', end);
+      el.addEventListener('lostpointercapture', end);
+    });
+  }
+
+  /* ▲▼ボタンを押したとき: レバーの持ち手を光らせて関係を見せる */
+  flashGrip() {
+    const g = this.els.leverGrip;
+    g.classList.add('tb-flash');
+    clearTimeout(this._flashT);
+    this._flashT = setTimeout(() => g.classList.remove('tb-flash'), 320);
+  }
+
+  /* 運転モニタの見出し(種別・行き先)。呼ばれるまでは sim から作る */
+  setService({ svcHtml, color, destHtml } = {}) {
+    this._svc = { svcHtml: svcHtml || '', color: color || '#8fa0aa', destHtml: destHtml || '' };
+    this._hdrFor = null;
+  }
+
+  /* 室内の明るさ(0..1, scene.cockpit.light)。暗いと計器盤を減光し、計器だけ光らせる */
+  setLight(lum) {
+    if (!Number.isFinite(lum)) return;
+    lum = clamp(lum, 0, 1);
+    if (this._lum == null || Math.abs(lum - this._lum) > 0.02) {
+      this._lum = lum;
+      this.root.style.setProperty('--cab-lum', lum.toFixed(2));
+    }
+    const dark = lum < 0.45;
+    const b = document.body;
+    if (b.classList.contains('cab-dark') !== dark) b.classList.toggle('cab-dark', dark);
+    if (dark !== this._night) { this._night = dark; this._k.night = -1; }
   }
 
   fmtClock(t) {
@@ -50,133 +294,408 @@ export class Cab {
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   }
 
-  render() {
+  /* 時:分(ゲーム内) */
+  _hm(t) {
+    const total = Math.floor(t) + (this.baseHour || 10) * 3600;
+    return `${Math.floor(total / 3600) % 24}:${String(Math.floor((total % 3600) / 60)).padStart(2, '0')}`;
+  }
+
+  /* 変わったときだけ書く */
+  _set(el, s) { if (el._t !== s) { el._t = s; el.textContent = s; } }
+  _cls(el, c, on) { const k = '_c_' + c; if (el[k] !== on) { el[k] = on; el.classList.toggle(c, on); } }
+
+  /* ---------------- 毎フレーム ---------------- */
+  render(h) {
     const sim = this.sim;
-    const h = sim.hud();
+    if (!sim) return;
+    if (!h) h = sim.hud();
+    if (sim !== this._simRef) this._newRun(sim);
+    /* 時間がとんだ(やりなおし・早送り)ときは表示の動き(ポン)をつけない */
+    const lastT = this._lastSimT != null ? this._lastSimT : sim.t;
+    this._jump = !(Math.abs(sim.t - lastT) < 1);
+    /* 時間がもどった(駅からやりなおし): そのさきの駅・のこり距離の基準を作りなおす */
+    if (sim.t < lastT - 0.5) { this._listIdx = null; this._limAt = null; }
+    this._lastSimT = sim.t;
+    if (h.notch !== this._lastNotch) this._renderNotch(h.notch);
+    this._renderSpeedo(h);
+    this._renderBC(h.bc);
+    this._cls(this.els.lampPat, 'on', h.atsLamp === 'pattern' || h.atsLamp === 'brake');
+    this._cls(this.els.lampBrk, 'on', h.atsLamp === 'brake');
+    this._cls(this.els.lampDoor, 'on', !!h.doorOpen);
+    this._cls(this.els.lampSlip, 'on', !!h.slipping);
+    this._renderTims(h, sim);
+    this._renderLimit(h);
+    this._renderGrade(h.grade);
+  }
 
-    /* ---- レバーの持ち手を現在ノッチ位置へ動かす ---- */
-    if (this._lastNotch !== sim.notch) {
-      this._lastNotch = sim.notch;
-      const idx = sim.notch === -8 ? 12 : 4 - sim.notch;
-      const frac = idx / 12;
-      const gh = (this.els.leverGrip.offsetHeight || 40) - 6;   // 画面サイズで持ち手の高さが変わる
-      this.els.leverGrip.style.top = `calc(${(frac * 100).toFixed(2)}% - ${(frac * gh).toFixed(1)}px)`;
-      this.els.leverGrip.textContent = sim.notch === -8 ? 'EB'
-        : sim.notch > 0 ? 'P' + sim.notch
-        : sim.notch < 0 ? 'B' + (-sim.notch) : 'N';
-      this.els.leverGrip.className = 'lever-grip ' + (sim.notch === -8 ? 'lg-eb'
-        : sim.notch > 0 ? 'lg-p' : sim.notch < 0 ? 'lg-b' : 'lg-n');
+  /* 運転がかわった(新しい sim): 表示の記憶を捨てる */
+  _newRun(sim) {
+    this._simRef = sim;
+    this._hdrFor = null;
+    this._listIdx = null;
+    this._lim = null;
+    this._limKey = null;
+    this._limKind = null;
+    this._limAt = null;
+    this._nextName = null;
+    this._noNext = false;
+    this._distK = null;
+    this._delayK = null;
+    this._clockM = null;
+    this._arrM = null;
+    this._lastNotch = null;
+  }
+
+  _renderNotch(n) {
+    this._lastNotch = n;
+    const idx = notchIdx(n);
+    if (this._onIdx >= 0 && this._nt[this._onIdx]) this._nt[this._onIdx].classList.remove('on');
+    if (this._nt[idx]) this._nt[idx].classList.add('on');
+    this._onIdx = idx;
+    const g = this.els.leverGrip, z = zoneOf(n);
+    if (this._gripZone !== z) {
+      if (this._gripZone) g.classList.remove('lg-' + this._gripZone);
+      else g.classList.remove('lg-n');
+      g.classList.add('lg-' + z);
+      this._gripZone = z;
     }
+    this.els.gripT.textContent = n === -8 ? 'EB' : n > 0 ? 'P' + n : n < 0 ? 'B' + -n : 'N';
+    this._placeGrip(idx);
+  }
 
-    /* ---- 速度計 ---- */
+  /* ---------------- 速度計 ---------------- */
+  _renderSpeedo(h) {
+    const W = this.speedo.width;
+    if (!W) return;
+    const v = Math.max(0, h.v || 0);
+    const lim = h.limit;
+    const a = h.ats;
+    const pat = a && a.pattern < lim ? a.pattern : 999;
+    const patI = pat < 999 ? Math.floor(pat / 2.5) : 99;
+    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置のLEDをきいろで1つ */
+    const tgtI = a && a.kind !== 'stop' && a.target < lim ? Math.floor(a.target / 2.5) : -1;
+    const lamp = h.atsLamp;
+    const blinking = lamp === 'brake' || (lamp === 'pattern' && pat < lim);
+    const blink = blinking ? ((performance.now() / 250) | 0) & 1 : 0;   // 2Hzで点滅
+    const v10 = (v * 10) | 0, night = this._night ? 1 : 0;
+    const k = this._k;
+    if (k.v10 === v10 && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.blink === blink && k.night === night && k.w === W) return;
+    k.v10 = v10; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.blink = blink; k.night = night; k.w = W;
+    this._drawSpeedo(v, lim, pat, tgtI, lamp, blink, night);
+  }
+
+  _ledPts(W) {
+    if (this._led && this._led.W === W) return this._led;
+    const R = W / 2, r = R * 0.885, pts = [];
+    for (let i = 0; i < LED_N; i++) { const an = angOf(i * 2.5); pts.push(R + Math.cos(an) * r, R + Math.sin(an) * r); }
+    this._led = { W, pts, rd: R * 0.025 };
+    return this._led;
+  }
+
+  _drawSpeedo(v, lim, pat, tgtI, lamp, blink, night) {
     const c = this.ctx, W = this.speedo.width, R = W / 2;
+    const small = (this._cssW || 150) < 100;
+    const dial = this._dial(W, night, small);
+    c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, W, W);
-    c.save();
-    c.translate(R, R);
-    /* 文字盤 */
-    c.fillStyle = '#101315';
-    c.beginPath(); c.arc(0, 0, R - 2, 0, Math.PI * 2); c.fill();
-    c.strokeStyle = '#3a4147'; c.lineWidth = 2;
-    c.beginPath(); c.arc(0, 0, R - 3, 0, Math.PI * 2); c.stroke();
-    const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
-    const angOf = (v) => a0 + (a1 - a0) * (v / 120);
-    /* 制限速度の赤アーク */
-    c.strokeStyle = 'rgba(255,70,60,.8)'; c.lineWidth = 5;
-    c.beginPath(); c.arc(0, 0, R - 12, angOf(Math.min(120, h.limit)), a1); c.stroke();
-    /* ATSパターンの橙マーク */
-    if (h.ats && h.ats.pattern < 130) {
-      c.strokeStyle = '#ff9d2e'; c.lineWidth = 5;
-      const pa = angOf(Math.min(119, h.ats.pattern));
-      c.beginPath(); c.arc(0, 0, R - 12, pa - 0.03, pa + 0.03); c.stroke();
+    c.drawImage(dial, 0, 0);
+
+    /* LEDリング: みどり=だいじょうぶ / きいろ=このさき下げる(パターンより上・つぎの制限の目標) /
+     * あか=いまの制限 / 消灯=制限より上 */
+    const L = this._ledPts(W), pts = L.pts, rd = L.rd;
+    const limI = Math.floor(Math.min(lim, VMAX) / 2.5);
+    const greenMax = Math.min(lim, pat);
+    const col = this._ledCol || (this._ledCol = new Int8Array(LED_N));
+    for (let i = 0; i < LED_N; i++) {
+      const d = i * 2.5;
+      let ci;
+      if (i > limI) ci = 3;
+      else if (i === limI) ci = 2;
+      else if (i === tgtI) ci = 1;
+      else if (d <= greenMax) ci = 0;
+      else ci = lamp === 'pattern' && blink ? 3 : 1;
+      if (lamp === 'brake' && ci !== 3) ci = blink ? 3 : 2;
+      col[i] = ci;
     }
-    /* 目盛り */
-    for (let v = 0; v <= 120; v += 5) {
-      const a = angOf(v);
-      const big = v % 20 === 0;
-      c.strokeStyle = big ? '#cfd6da' : '#5c656b';
-      c.lineWidth = big ? 2.4 : 1.2;
+    for (let ci = 0; ci < 4; ci++) {
       c.beginPath();
-      c.moveTo(Math.cos(a) * (R - 16), Math.sin(a) * (R - 16));
-      c.lineTo(Math.cos(a) * (R - (big ? 30 : 24)), Math.sin(a) * (R - (big ? 30 : 24)));
-      c.stroke();
-      if (big) {
-        c.fillStyle = '#cfd6da';
-        c.font = `600 ${R * 0.155}px "Zen Kaku Gothic New", sans-serif`;
-        c.textAlign = 'center'; c.textBaseline = 'middle';
-        c.fillText(String(v), Math.cos(a) * (R - 45), Math.sin(a) * (R - 45));
+      let any = false;
+      for (let i = 0; i < LED_N; i++) {
+        if (col[i] !== ci) continue;
+        const x = pts[i * 2], y = pts[i * 2 + 1];
+        c.moveTo(x + rd, y); c.arc(x, y, rd, 0, TAU);
+        any = true;
       }
+      if (any) { c.fillStyle = LED_COL[ci]; c.fill(); }
     }
-    /* 針 */
-    const av = angOf(Math.min(120, h.v));
-    c.strokeStyle = '#ff5f4e'; c.lineWidth = 4; c.lineCap = 'round';
-    c.beginPath(); c.moveTo(Math.cos(av + Math.PI) * 14, Math.sin(av + Math.PI) * 14);
-    c.lineTo(Math.cos(av) * (R - 34), Math.sin(av) * (R - 34)); c.stroke();
-    c.fillStyle = '#2b3237';
-    c.beginPath(); c.arc(0, 0, 9, 0, Math.PI * 2); c.fill();
-    /* デジタル速度 */
-    c.fillStyle = '#e8f2f6';
-    c.font = `700 ${R * 0.30}px "Zen Kaku Gothic New", sans-serif`;
-    c.textAlign = 'center';
-    c.fillText(String(Math.floor(h.v)), 0, R * 0.48);
-    c.font = `500 ${R * 0.11}px sans-serif`;
-    c.fillStyle = '#7d8890';
-    c.fillText('km/h', 0, R * 0.66);
+
+    /* 液晶: 速度(切り捨て)。小さい速度計では ATS の状態も出す */
+    const lcd = this._lcdBox(R, small);
+    let txt = String(Math.floor(v)), ink = night ? '#e6fff1' : '#d6ffe8';
+    if (small && lamp !== 'normal') {
+      c.fillStyle = lamp === 'brake' ? '#ff4a3d' : '#ffb32e';
+      this._rrect(c, lcd.x + 1, lcd.y + 1, lcd.w - 2, lcd.h - 2, lcd.h * 0.25);
+      c.fill();
+      txt = lamp === 'brake' ? 'ブレーキ' : 'ちゅうい';
+      ink = '#140a00';
+      c.font = `700 ${(lcd.h * 0.62).toFixed(1)}px "Zen Kaku Gothic New",sans-serif`;
+    } else {
+      c.font = `700 ${(lcd.h * 0.8).toFixed(1)}px ${NUM_FONT}`;
+    }
+    c.fillStyle = ink;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(txt, R, lcd.y + lcd.h * 0.54, lcd.w - 4);
+
+    /* 針(先細り・影つき) */
+    const av = angOf(Math.min(VMAX + 2, v));
+    c.save();
+    c.translate(R, R); c.rotate(av);
+    c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = R * 0.04; c.shadowOffsetY = R * 0.02;
+    c.beginPath();
+    c.moveTo(-0.16 * R, -0.028 * R); c.lineTo(0.80 * R, -0.008 * R); c.lineTo(0.84 * R, 0);
+    c.lineTo(0.80 * R, 0.008 * R); c.lineTo(-0.16 * R, 0.028 * R); c.closePath();
+    c.fillStyle = '#ff5a36'; c.fill();
     c.restore();
 
-    /* ---- BC圧（ブレーキシリンダ相当） ---- */
-    this.els.bcBar.style.width = `${Math.min(100, (h.bc / 4.6) * 100)}%`;
+    /* 中心のキャップとガラスの映り込み(グラデーションは大きさごとに作りおき) */
+    const g = this._grads(R);
+    c.fillStyle = g.hub;
+    c.beginPath(); c.arc(R, R, R * 0.085, 0, TAU); c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.55)';
+    c.beginPath(); c.arc(R - R * 0.03, R - R * 0.03, R * 0.018, 0, TAU); c.fill();
+    c.fillStyle = g.glass;
+    c.beginPath(); c.arc(R, R, R * 0.915, 0, TAU); c.fill();
+  }
 
-    /* ---- ノッチ ---- */
-    [...this.els.notchList.children].forEach((el) => {
-      el.classList.toggle('on', Number(el.dataset.n) === h.notch);
-    });
+  _lcdBox(R, small) {
+    /* 小さい速度計: 0 と 120 の数字にかからないよう、下のすきまいっぱいに */
+    return small ? { x: R - R * 0.41, y: R + R * 0.53, w: R * 0.82, h: R * 0.27 }
+      : { x: R - R * 0.30, y: R + R * 0.40, w: R * 0.60, h: R * 0.24 };
+  }
 
-    /* ---- 表示灯 ---- */
-    this.els.lampPat.classList.toggle('on', h.atsLamp === 'pattern' || h.atsLamp === 'brake');
-    this.els.lampBrk.classList.toggle('on', h.atsLamp === 'brake');
-    this.els.lampDoor.classList.toggle('on', h.doorOpen);
-    this.els.lampSlip.classList.toggle('on', !!h.slipping);
+  _grads(R) {
+    if (this._grad && this._grad.R === R) return this._grad;
+    const c = this.ctx;
+    const hub = c.createRadialGradient(R - R * 0.02, R - R * 0.03, 0, R, R, R * 0.085);
+    hub.addColorStop(0, '#5b656c'); hub.addColorStop(1, '#15191c');
+    const glass = c.createRadialGradient(R - 0.35 * R, R - 0.55 * R, 0, R - 0.35 * R, R - 0.55 * R, R * 0.9);
+    glass.addColorStop(0, 'rgba(255,255,255,0.10)'); glass.addColorStop(1, 'rgba(255,255,255,0)');
+    this._grad = { R, hub, glass };
+    return this._grad;
+  }
 
-    /* ---- TIMS ---- */
-    if (h.next) {
-      if (this._nextName !== h.next.name) {
-        this._nextName = h.next.name;
-        this.els.timsNext.innerHTML = `${h.next.name}<span class="tims-kana">${STATION_KANA[h.next.name] || ''}</span>`;
+  /* 角丸の四角(古いSafariには ctx.roundRect がないので arcTo で) */
+  _rrect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  /* 文字盤(動かない部分)は大きさ・昼夜ごとに一度だけ描いておく */
+  _dial(W, night, small) {
+    const key = W + (night ? 'n' : 'd') + (small ? 's' : '');
+    if (this._dials[key]) return this._dials[key];
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = W;
+    const c = cv.getContext('2d');
+    const R = W / 2, s = R / 75;
+    c.translate(R, R);
+    /* ベゼル(金属の縁)。夜は室内が暗いので、縁の金属も暗く(光るのは文字盤だけ) */
+    const bz = c.createLinearGradient(-R, -R, R, R);
+    const bzc = night ? ['#5b6266', '#2a3033', '#0d1012', '#3e4549'] : ['#c9d0d4', '#5d666c', '#1c2124', '#8c959b'];
+    bz.addColorStop(0, bzc[0]); bz.addColorStop(0.35, bzc[1]); bz.addColorStop(0.65, bzc[2]); bz.addColorStop(1, bzc[3]);
+    c.fillStyle = bz;
+    c.beginPath(); c.arc(0, 0, R - 1, 0, TAU); c.fill();
+    c.fillStyle = '#060708';
+    c.beginPath(); c.arc(0, 0, R * 0.93, 0, TAU); c.fill();
+    /* 盤面 */
+    const face = c.createRadialGradient(0, -0.2 * R, 0, 0, -0.2 * R, R * 0.92);
+    face.addColorStop(0, night ? '#161c20' : '#1d2327'); face.addColorStop(1, '#0a0c0e');
+    c.fillStyle = face;
+    c.beginPath(); c.arc(0, 0, R * 0.915, 0, TAU); c.fill();
+    /* 目盛り: 5きざみ(細) / 10きざみ(中) / 20きざみ(太・数字) */
+    const ink = night ? '#ffe2b0' : '#eef2f4';
+    if (night) { c.shadowColor = 'rgba(255,190,110,0.8)'; c.shadowBlur = R * 0.04; }
+    c.lineCap = 'butt';
+    for (let v = 0; v <= VMAX; v += 5) {
+      const an = angOf(v), major = v % 20 === 0, mid = v % 10 === 0;
+      const r0 = major ? 0.76 : 0.80, r1 = 0.86;
+      c.strokeStyle = major ? ink : mid ? (night ? '#c9b48e' : '#a3adb3') : (night ? '#8c7c62' : '#6b757b');
+      c.lineWidth = (major ? 3 : mid ? 2 : 1.2) * s;
+      c.beginPath();
+      c.moveTo(Math.cos(an) * R * r0, Math.sin(an) * R * r0);
+      c.lineTo(Math.cos(an) * R * r1, Math.sin(an) * R * r1);
+      c.stroke();
+    }
+    c.fillStyle = ink;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `700 ${(R * (small ? 0.19 : 0.16)).toFixed(1)}px ${NUM_FONT}`;
+    for (let v = 0; v <= VMAX; v += 20) {
+      const an = angOf(v);
+      c.fillText(String(v), Math.cos(an) * R * 0.62, Math.sin(an) * R * 0.62);
+    }
+    c.shadowBlur = 0; c.shadowColor = 'transparent';
+    if (!small) {
+      c.fillStyle = night ? '#a8977a' : '#7d8890';
+      c.font = `500 ${(R * 0.09).toFixed(1)}px ${NUM_FONT}`;
+      c.fillText('km/h', 0, R * 0.30);
+    }
+    /* 液晶の窓 */
+    c.translate(-R, -R);
+    const lcd = this._lcdBox(R, small);
+    c.fillStyle = '#06140f';
+    this._rrect(c, lcd.x, lcd.y, lcd.w, lcd.h, lcd.h * 0.22);
+    c.fill();
+    c.strokeStyle = '#000'; c.lineWidth = Math.max(1, s);
+    c.stroke();
+    c.strokeStyle = 'rgba(255,255,255,0.08)'; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(lcd.x + lcd.h * 0.25, lcd.y + lcd.h + 0.5 * s); c.lineTo(lcd.x + lcd.w - lcd.h * 0.25, lcd.y + lcd.h + 0.5 * s); c.stroke();
+    this._dials[key] = cv;
+    return cv;
+  }
+
+  /* ブレーキの強さ: 8つのLED(つくのは数が変わったときだけ) */
+  _renderBC(bc) {
+    const n = clamp(Math.round(((bc || 0) / 4.6) * 8), 0, 8);
+    if (n === this._bcN) return;
+    const leds = this.els.bcLeds;
+    for (let i = 0; i < leds.length; i++) {
+      const on = i < n;
+      if (on !== (i < (this._bcN || 0))) leds[i].classList.toggle('on', on);
+    }
+    this._bcN = n;
+  }
+
+  /* ---------------- 運転モニタ ---------------- */
+  _renderTims(h, sim) {
+    const E = this.els;
+    /* 見出し(種別・行き先): 運転ごとに1回 */
+    if (this._hdrFor !== sim) {
+      this._hdrFor = sim;
+      let svc = this._svc;
+      if (!svc) {
+        const key = sim.serviceKey || 'local', info = SVC[key] || SVC.local;
+        const name = (sim.service && sim.service.name) || '';
+        const last = sim.stops && sim.stops[sim.stops.length - 1];
+        svc = { svcHtml: ruby(name, info.kana), color: info.color, destHtml: last ? `${rubySt(last.name)} ゆき` : '' };
       }
-      const d = Math.max(0, h.next.dist);
-      this.els.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
-      this.els.timsSch.textContent = '着 ' + this.fmtClock(h.next.arr);
-      const delta = Math.round(sim.t - h.next.arr + Math.min(0, 0));
-      const early = h.next.arr - sim.t;
-      this.els.timsDelay.textContent = early >= 0
-        ? `じかんまで ${Math.floor(early / 60)}:${String(Math.floor(early % 60)).padStart(2, '0')}`
-        : `おくれ ${Math.floor(-early / 60)}:${String(Math.floor(-early % 60)).padStart(2, '0')}`;
-      this.els.timsDelay.classList.toggle('late', early < 0);
-    } else {
-      this._nextName = null;
-      this.els.timsNext.textContent = '—';
-      this.els.timsDist.textContent = '';
-      this.els.timsSch.textContent = '';
-      this.els.timsDelay.textContent = '';
+      E.timsSvc.innerHTML = svc.svcHtml;
+      E.timsSvc.style.setProperty('--svc', svc.color);
+      E.timsDest.innerHTML = svc.destHtml;
     }
-    this.els.timsClock.textContent = this.fmtClock(sim.t);
-
-    /* ---- 制限表示 ---- */
-    this.els.limNow.textContent = h.limit;
-    if (h.ats && h.ats.kind === 'limit') {
-      const d = Math.max(0, Math.round(h.ats.at - h.pos));
-      this.els.limNext.textContent = `▼${h.ats.target}  ${d}m`;
-      this.els.limNext.classList.remove('hidden');
-    } else if (h.ats && h.ats.kind === 'signal') {
-      const d = Math.max(0, Math.round(h.ats.at - h.pos));
-      this.els.limNext.textContent = `信号 ${h.ats.target === 0 ? '停止' : h.ats.target}  ${d}m`;
-      this.els.limNext.classList.remove('hidden');
-    } else {
-      this.els.limNext.classList.add('hidden');
+    /* 時計(時:分。コロンの点滅はCSS) */
+    const cm = Math.floor((sim.t + (this.baseHour || 10) * 3600) / 60);
+    if (cm !== this._clockM) {
+      this._clockM = cm;
+      const hh = Math.floor(cm / 60) % 24, mm = String(cm % 60).padStart(2, '0');
+      E.timsClock.innerHTML = `${hh}<i class="tc-c">:</i>${mm}`;
     }
+    const nx = h.next;
+    if (!nx) {
+      if (!this._noNext) {
+        this._noNext = true;
+        this._nextName = null; this._distK = null; this._delayK = null;
+        E.timsNext.textContent = '—';
+        E.timsDist.textContent = ''; E.timsDelay.textContent = '';
+        E.timsSch._t = null; E.timsSch.textContent = ''; this._arrM = null;
+      }
+      return;
+    }
+    this._noNext = false;
+    if (this._nextName !== nx.name) {
+      this._nextName = nx.name;
+      E.timsNext._t = null;
+      E.timsNext.innerHTML = rubySt(nx.name);
+    }
+    /* そのさきの駅(3つまで): 駅をすぎたときだけ作りなおす */
+    if (this._listIdx !== sim.stopIdx) {
+      this._listIdx = sim.stopIdx;
+      const items = [];
+      for (let i = sim.stopIdx; i < Math.min(sim.stops.length, sim.stopIdx + 3); i++) {
+        const st = sim.stops[i], tt = sim.timetable && sim.timetable[i];
+        items.push(`<li${i === sim.stopIdx ? ' class="next"' : ''}><span class="tl-n">${rubySt(st.name)}</span><span class="tl-t">${tt ? this._hm(tt.arr) : ''} つく</span></li>`);
+      }
+      E.timsList.innerHTML = items.join('');
+      const cur = sim.stops[sim.stopIdx], prev = sim.stops[sim.stopIdx - 1];
+      this._segLen = cur && prev ? Math.max(1, cur.stopAt - prev.stopAt) : 0;
+      this._prog = null;
+    }
+    /* のこりの距離(m は1mごと、km は10mごと) */
+    const d = Math.max(0, nx.dist);
+    const dk = d >= 1000 ? 100000 + Math.round(d / 10) : Math.round(d);
+    if (dk !== this._distK) {
+      this._distK = dk;
+      E.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
+    }
+    /* つく時刻(分が変わったときだけ文字列を作る。毎フレームの文字列づくりをしない) */
+    const am = Math.floor(nx.arr / 60);
+    if (am !== this._arrM) { this._arrM = am; this._set(E.timsSch, `${this._hm(nx.arr)} つく`); }
+    /* じかん: 分のきざみ(こどもが読みやすく、表示もほとんど変わらない) */
+    const early = nx.arr - sim.t;
+    let dk2, txt, late = false;
+    if (early >= 60) { const m = Math.floor(early / 60); dk2 = m; txt = `じかんまで あと ${m}${fun(m)}`; }
+    else if (early >= 0) { dk2 = 0; txt = 'もうすぐ つく じかん'; }
+    else if (early > -60) { dk2 = -1; txt = 'すこし おくれ'; late = true; }
+    else { const m = Math.floor(-early / 60); dk2 = -1 - m; txt = `${m}${fun(m)} おくれ`; late = true; }
+    if (dk2 !== this._delayK) { this._delayK = dk2; E.timsDelay.textContent = txt; this._cls(E.timsDelay, 'late', late); }
+    /* すすみぐあい(前の駅→つぎの駅) */
+    {
+      const p = this._segLen ? Math.round(clamp(1 - d / this._segLen, 0, 1) * 400) : 0;
+      if (p !== this._prog) { this._prog = p; E.timsProg.style.transform = `scaleX(${(p / 400).toFixed(4)})`; }
+    }
+  }
 
-    /* ---- 勾配 ---- */
-    const g = h.grade;
-    this.els.grade.textContent = Math.abs(g) < 1.5 ? 'ー 平坦' : (g > 0 ? `／ 上り ${g.toFixed(0)}‰` : `＼ 下り ${(-g).toFixed(0)}‰`);
+  /* ---------------- 制限スピード ---------------- */
+  _renderLimit(h) {
+    const E = this.els;
+    if (h.limit !== this._lim) {
+      const first = this._lim == null;
+      this._lim = h.limit;
+      E.limNow.textContent = h.limit;
+      this._cls(E.limNow, 'l3', h.limit >= 100);
+      /* かわったときだけ「ポン」 */
+      if (!first && !this._jump && E.limNow.animate) {
+        E.limNow.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(.2,1.6,.4,1)' });
+      }
+    }
+    const a = h.ats;
+    if (a && (a.kind === 'limit' || a.kind === 'signal')) {
+      if (a.at !== this._limAt) { this._limAt = a.at; this._limD0 = Math.max(1, a.at - h.pos); }
+      if (a.kind !== this._limKind || a.target !== this._limKey) {
+        this._limKind = a.kind; this._limKey = a.target;
+        let l1;
+        if (a.kind === 'limit') l1 = `<b class="ln-board">${a.target}</b>まで`;
+        else if (a.target === 0) l1 = '<i class="ln-sig"></i>しんごう とまれ';
+        else l1 = `<i class="ln-sig ln-sig-y"></i>しんごう <b class="ln-board">${a.target}</b>`;
+        E.limNext.innerHTML = `<span class="ln-l1">${l1}</span><span class="ln-l2">あと <b class="ln-d"></b>m</span><i class="ln-bar"><s></s></i>`;
+        this._lnD = E.limNext.querySelector('.ln-d');
+        this._lnBar = E.limNext.querySelector('.ln-bar s');
+        this._lnBarK = null;
+        this._lnD._t = null;
+      }
+      const d = Math.max(0, Math.round(a.at - h.pos));
+      this._set(this._lnD, String(d));
+      const bk = Math.round(clamp(d / this._limD0, 0, 1) * 200);
+      if (bk !== this._lnBarK) { this._lnBarK = bk; this._lnBar.style.transform = `scaleX(${(bk / 200).toFixed(3)})`; }
+      this._cls(E.limNext, 'hidden', false);
+    } else {
+      this._cls(E.limNext, 'hidden', true);
+      this._limAt = null;
+    }
+  }
+
+  /* 勾配: たいら / のぼりざか / くだりざか(‰ は小さく。せまい画面では出さない) */
+  _renderGrade(g) {
+    const kind = Math.abs(g) < 1.5 ? 0 : g > 0 ? 1 : -1;
+    const pm = Math.round(Math.abs(g));
+    const key = kind * 1000 + (kind ? pm : 0);
+    if (key === this._gradeK) return;
+    this._gradeK = key;
+    this.els.grade.innerHTML = kind === 0 ? '<i class="gr-ico gr-0"></i>たいら'
+      : `<i class="gr-ico gr-${kind > 0 ? 'up' : 'dn'}"></i>${kind > 0 ? 'のぼりざか' : 'くだりざか'}<small>${pm}‰</small>`;
   }
 }
