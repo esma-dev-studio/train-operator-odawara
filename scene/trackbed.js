@@ -691,7 +691,9 @@ export function buildTrackBed(rs, o = {}) {
   /* 地面: 区画の種類(都心・市街地=舗装 / 郊外=砂利と庭 / 丘陵=草)ごとに材質を分ける。川の前後は切る */
   const urban = rs.line.sections.urban;
   const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
-  const grassTint = srgbLin(0xc9cdb4);
+  /* 丘陵の芝: 緑をおさえて落ち着いた色に。黄みの色(#c9cdb4)をかけると逆に黄緑があざやかになるので、
+   * 緑だけ少し弱く青を残した灰色をかける(写真の芝の彩度が 0.35 → 約0.22) */
+  const grassTint = srgbLin(0xc4c3cc);
   /* 頂点色: ゆるい明暗のムラ(タイルのくり返しを目立たなくする)。舗装・庭は少し沈めた明るさに */
   const hash = (x) => { const h = Math.sin(x * 127.1 + 311.7) * 43758.5453; return h - Math.floor(h); };
   const vnoise = (x) => { const a = Math.floor(x), f = x - a, w = f * f * (3 - 2 * f); return hash(a) * (1 - w) + hash(a + 1) * w; };
