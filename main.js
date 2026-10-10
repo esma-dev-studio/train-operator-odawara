@@ -35,6 +35,8 @@ const TIER_WORD = ['', 'くろ', 'いろ', 'きん'];
 /* ずれをcmで(子どもには「+0.06m」より「6cm いきすぎ」) */
 const cmOf = (err) => Math.round(Math.abs(err) * 100);
 const errTxt = (err) => { const cm = cmOf(err); return cm < 5 ? 'ぴったり' : `${cm}cm ${err > 0 ? 'いきすぎ' : 'てまえ'}`; };
+/* 100m より遠い距離は 10m きざみ(数字が毎フレーム かわって読めない、を ふせぐ) */
+const roundM = (m) => (m >= 100 ? Math.round(m / 10) * 10 : Math.round(m));
 /* よみこみ中に出す ひとことヒント */
 const LOAD_TIPS = ['レバーを したに うごかすと ブレーキ', '「8」のかんばんに ぴったり とめよう', 'きいろの しんごうは スピードを おとす'];
 const RANK_LINE = [[95, 'S'], [85, 'A'], [70, 'B'], [55, 'C']];
@@ -221,7 +223,11 @@ const App = {
   go(mode) {
     const prev = this.mode;
     this.mode = mode;
-    document.body.className = 'mode-' + mode + (this.scene && this.scene.camMode === 'cab' ? ' cam-cab' : '');
+    /* mode-* と cam-cab だけを入れかえる(運転台の cab-dark など、ほかの部品がつけた class は のこす) */
+    const bc = document.body.classList;
+    Array.from(bc).forEach((c) => { if (c.indexOf('mode-') === 0) bc.remove(c); });
+    bc.add('mode-' + mode);
+    bc.toggle('cam-cab', !!(this.scene && this.scene.camMode === 'cab'));
     const screens = { title: 'title', select: 'select', result: 'result', stamps: 'stamps', boot: 'loading' };
     document.querySelectorAll('.screen').forEach((el) => {
       if (el.classList.contains('overlay')) return;
@@ -1005,7 +1011,7 @@ const App = {
       txt = `このさき<br><b>${Math.round(h.ats.target)}</b> まで`;
     } else if (pred == null) {
       if (el.pred._d !== 'none') { el.pred._d = 'none'; el.pred.style.display = 'none'; }
-      const toBrake = Math.round(this._toBrake(h, c));
+      const toBrake = roundM(this._toBrake(h, c));
       txt = toBrake > 0 ? `ブレーキまで<br><b>${toBrake}m</b>` : '<b>ブレーキ</b>を<br>かけよう';
       if (toBrake <= 0) cls = 'over';
     } else {
@@ -1043,10 +1049,12 @@ const App = {
     } else if (sim.v < 0.5 && sim.notch <= 0 && !redNear) {
       txt = '<b>▲すすむ</b> を おして しゅっぱつ！';
     } else if (h.atsLamp === 'brake') {
-      /* じどうブレーキは「ゆるしてもらえる速さ」より すこし下がると はなれる */
-      const cap = Math.min(h.limit, h.ats ? h.ats.pattern : h.limit);
-      const tgt = Math.max(0, Math.floor((cap - 3) / 5) * 5);
-      txt = `${icon('warn')} じどうブレーキ中… スピードが <b>${tgt}</b> まで さがるのを まとう`;
+      /* じどうブレーキが はなれる速さ(engine の照査と同じ: パターン-5 かつ いまの制限+3 いか。2秒は かかったまま) */
+      const rel = Math.min(h.ats ? h.ats.pattern - 5 : 999, h.limit + 3);
+      const tgt = Math.max(0, Math.floor(rel / 5) * 5);
+      txt = sim.v > tgt + 1
+        ? `${icon('warn')} じどうブレーキ中… スピードが <b>${tgt}</b> まで さがるのを まとう`
+        : `${icon('warn')} じどうブレーキ中… もうすぐ ゆるむよ`;
     } else if (h.slipping) {
       txt = 'すべってる！ <b>▲</b>で ブレーキを すこし よわく';
     } else if (redAhead && (h.ats.at - sim.pos) < 700) {
@@ -1071,7 +1079,7 @@ const App = {
       const dist = h.next.dist;
       if (sim.notch >= 0) {
         const toBrake = this._toBrake(h, c);
-        if (toBrake > 40) txt = `ブレーキまで あと <b>${Math.round(toBrake)}</b> m`;
+        if (toBrake > 40) txt = `ブレーキまで あと <b>${roundM(toBrake)}</b> m`;
         else if (toBrake > 0) txt = 'そろそろ！ <b>▼</b>を 3〜4かい';
         else { txt = 'いま！ <b>▼ブレーキ</b>'; hot = true; }
       } else if (c.pred == null) {

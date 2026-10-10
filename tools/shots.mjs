@@ -105,6 +105,17 @@ for (const sc of pick) {
         await page.waitForFunction(() => __test.app.sim.doorOpen, null, { timeout: 180000 }).catch(() => errors.push(`${sc.name}: 停車しなかった`));
         await page.evaluate(() => { __test.fast(1); __test.auto(false); });
       }
+      /* ソフト描画では 1コマが数秒かかり、CSSアニメの時計が進まない(タイマーだけ進む)。
+       * 判定カードとスタンプの登場アニメが おわるまで待ち、撮るまで スタンプ・くんしょうを出しっぱなし/止めておく */
+      await page.waitForFunction(() => {
+        const a = __test.app, pop = document.querySelector('#stamp-pop');
+        const showing = !!pop && pop.classList.contains('go') && !pop.classList.contains('hidden');
+        if (showing) { clearTimeout(a._stampT); clearTimeout(a._popT); }
+        const fin = (el) => !el || !el.getAnimations || el.getAnimations().every((x) => x.playState === 'finished');
+        if (!fin(document.querySelector('#stop-card'))) return false;
+        if (!showing && a._popBusy) return false;   // スタンプの順番待ち
+        return !showing || fin(document.querySelector('#stamp-pop-cv'));
+      }, null, { timeout: 90000, polling: 250 }).catch(() => errors.push(`${sc.name}: 判定カードの表示待ちが時間切れ`));
     }
     if (sc.finish) {
       await page.evaluate(() => __test.advance(900));

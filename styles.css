@@ -70,8 +70,12 @@ body.mode-drive .hud { display: block; }
   padding: 11px 26px; letter-spacing: 0.08em;
   background: var(--panel-2); color: var(--ink);
   transition: background 0.12s, border-color 0.12s, transform 0.08s;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  display: inline-block; text-align: center;
 }
+/* ボタンの中のアイコン。ボタン自体は flex にしない(ふりがなの高さで文字の並びがずれ、
+ * 「運転 をはじめる」のように すき間が入るため) */
+.btn .icw { vertical-align: -0.2em; margin-right: 8px; }
+.btn > .ico { margin-left: 4px; }
 .btn:hover { background: #242e35; }
 .btn:active { transform: scale(0.97); }
 .btn-primary { background: var(--acc); color: #06222e; }
@@ -169,7 +173,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 .sel-grid { display: grid; grid-template-columns: minmax(340px, 1.25fr) minmax(300px, 1fr); gap: 18px; align-items: start; }
 .sel-col { background: rgba(22, 28, 33, 0.92); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
 .sel-opts { position: sticky; top: 0; }
-.opt-h { display: flex; align-items: center; gap: 8px; font-size: var(--fs-cap); color: var(--ink-2); letter-spacing: 0.2em; margin: 16px 0 8px; font-weight: 700; }
+.opt-h { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-cap); color: var(--ink-2); letter-spacing: 0.2em; margin: 16px 0 8px; font-weight: 700; }
 .opt-h:first-child { margin-top: 0; }
 /* ①②③④ の じゅんばん */
 .step {
@@ -198,7 +202,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 .chip:active { background: #1d2a31; }
 /* 下に まだ駅があることを うすく消えていく形で見せる */
 .route-list {
-  list-style: none; max-height: max(240px, calc(100vh - 430px)); overflow-y: auto; padding: 0 4px 18px 0; position: relative;
+  list-style: none; max-height: max(240px, calc(100vh - 500px)); overflow-y: auto; padding: 0 4px 18px 0; position: relative;
   -webkit-mask-image: linear-gradient(#000 86%, transparent); mask-image: linear-gradient(#000 86%, transparent);
 }
 .rt {
@@ -359,7 +363,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 }
 body:not(.cam-cab) #brake-guide { top: 62%; }
 .bg-cap { font-size: var(--fs-cap); font-weight: 700; color: #a9becb; line-height: 1.3; letter-spacing: 0.06em; }
-.bg-scale { position: relative; height: 170px; margin: 22px auto 20px; width: 30px; border-radius: 6px; background: linear-gradient(180deg, rgba(255,83,71,0.28), rgba(255,83,71,0.06) 42%, rgba(52,208,124,0.15) 46%, rgba(52,208,124,0.15) 54%, rgba(127,216,255,0.06) 58%, rgba(127,216,255,0.22)); border: 1px solid #36454e; }
+.bg-scale { position: relative; height: 170px; margin: 22px auto 23px; width: 30px; border-radius: 6px; background: linear-gradient(180deg, rgba(255,83,71,0.28), rgba(255,83,71,0.06) 42%, rgba(52,208,124,0.15) 46%, rgba(52,208,124,0.15) 54%, rgba(127,216,255,0.06) 58%, rgba(127,216,255,0.22)); border: 1px solid #36454e; }
 .bg-zone { position: absolute; left: -4px; right: -4px; top: 46%; height: 8%; border-top: 1px dashed rgba(52,208,124,0.7); border-bottom: 1px dashed rgba(52,208,124,0.7); }
 .bg-target { position: absolute; left: -10px; right: -10px; top: 50%; height: 2px; margin-top: -1px; background: #eef4f8; }
 .bg-target span { position: absolute; right: -26px; top: -11px; width: 22px; height: 24px; background: #111; color: #fff; border: 1.5px solid #fff; font: 900 0.85rem/21px var(--num); }
@@ -369,8 +373,8 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
 .bg-pred.ok::before { background: var(--green); box-shadow: 0 0 12px rgba(52,208,124,0.9); }
 .bg-pred.over::before { background: var(--red); box-shadow: 0 0 12px rgba(255,83,71,0.9); }
 .bg-lbl { position: absolute; left: 50%; transform: translateX(-50%); font-size: var(--fs-micro); font-weight: 700; color: #8fa2ae; white-space: nowrap; writing-mode: horizontal-tb; }
-.bg-lbl-over { top: -17px; color: #ff9a8f; }
-.bg-lbl-short { bottom: -17px; color: var(--hi); }
+.bg-lbl-over { top: -19px; color: #ff9a8f; }
+.bg-lbl-short { bottom: -20px; color: var(--hi); }
 .bg-txt { font-size: var(--fs-cap); font-weight: 700; line-height: 1.35; min-height: 2.7em; color: #eef4f8; word-break: keep-all; overflow-wrap: anywhere; text-wrap: balance; }
 .bg-txt b { font-size: 1.2em; color: var(--hi); font-family: var(--num), "Zen Kaku Gothic New", sans-serif; }
 .bg-txt.over b { color: #ff9a8f; }
@@ -800,7 +804,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   #brake-guide { width: 96px; padding: 5px; top: 60%; }
   body:not(.cam-cab) #brake-guide { top: 60%; }
   .bg-cap { font-size: var(--fs-micro); line-height: 1.25; }
-  .bg-scale { height: 50px; margin: 17px auto 17px; }
+  .bg-scale { height: 50px; margin: 19px auto 21px; }
   .bg-txt { font-size: var(--fs-micro); min-height: 0; }
   #stamp-pop canvas { width: 96px !important; height: 96px !important; }
   .title-inner { padding: 14px 24px calc(14px + var(--safe-b)); }
@@ -923,6 +927,8 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .sel-head .btn-sm .ico, .stamps-wrap .btn-sm .ico { width: 1em; height: 1em; }
 
 /* ---- 一時停止・せってい ---- */
+/* ポーズから開いた「せってい」は ポーズの上に出す(同じ重なり順だと うしろに かくれて さわれない) */
+#screen-settings { z-index: 45; }
 .pause-card { min-width: min(400px, 92vw); padding: 22px 26px; gap: 12px; }
 .pause-card .btn { min-height: 54px; }
 .pause-ctx { text-align: center; color: var(--ink-2); font-size: var(--fs-cap); line-height: 2; margin: -4px 0 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
@@ -937,6 +943,9 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 
 /* ---- 成績票 ---- */
 .res-reveal { animation: fadeUp 0.45s both; }
+/* ランクの はんこは 点数を数えおわってから ポンと押す(それまでは見せない) */
+#screen-result .res-rank { opacity: 0; }
+#screen-result .res-rank.pop { opacity: 1; }
 /* 横に広い画面では 左=点数とわけ / 右=めあて・スタンプ・駅ごと の2列(1画面におさめる) */
 @media (min-width: 980px) {
   .res-inner { max-width: 1000px; }
@@ -954,9 +963,8 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .res-next b { color: var(--hi); font-family: var(--num), "Zen Kaku Gothic New", sans-serif; }
 .rn-cap { display: block; font-size: var(--fs-micro); color: var(--acc-2); letter-spacing: 0.25em; }
 .res-btns { margin-top: 16px; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; align-items: stretch; }
-.res-btns .btn { min-height: 52px; padding: 8px 14px; flex-direction: row; flex-wrap: wrap; }
-.res-btns .btn small { width: 100%; font-size: var(--fs-cap); font-weight: 700; opacity: 0.85; }
-#btn-res-next { flex-direction: row; }
+.res-btns .btn { min-height: 52px; padding: 8px 14px; }
+.res-btns .btn small { display: block; font-size: var(--fs-cap); font-weight: 700; opacity: 0.85; }
 
 /* ---- えきスタンプちょう ---- */
 .book-tabs { max-width: 520px; margin: 0 auto 12px; }
@@ -995,4 +1003,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   #stamp-pop p { font-size: var(--fs-cap); padding: 3px 10px; width: auto; max-width: 132px; }
   .t-gear { top: 10px; left: 10px; }
   #screen-title .t-btns .btn { height: 50px; }
+}
+/* スマホの縦向き: タイトルのボタンは 横にはいらないので 1つずつ全幅で */
+@media (max-width: 560px) {
+  #screen-title .t-btns { flex-wrap: wrap; }
+  #screen-title .t-btns .btn { flex: 1 1 100%; }
+  /* 左上の せってい と かさならないように */
+  .live-cap { left: 96px; }
 }
