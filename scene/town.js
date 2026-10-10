@@ -56,7 +56,7 @@ function occPut(occ, x, z, v) {
 }
 /* 回転した長方形(中心cx,cz・軸ax=(axx,axz) az=(azx,azz)・半幅hx,hz)を書く */
 function fpStamp(occ, cx, cz, axx, axz, azx, azz, hx, hz, v) {
-  const nx = Math.max(1, Math.ceil((2 * hx) / 1.5)), nz = Math.max(1, Math.ceil((2 * hz) / 1.5));
+  const nx = Math.max(1, Math.ceil((2 * hx) / 2)), nz = Math.max(1, Math.ceil((2 * hz) / 2));
   for (let i = 0; i <= nx; i++) {
     const u = -hx + (2 * hx * i) / nx;
     for (let j = 0; j <= nz; j++) {
@@ -67,7 +67,8 @@ function fpStamp(occ, cx, cz, axx, axz, azx, azz, hx, hz, v) {
 }
 /* ぶつかるか: 外形全体で HARD を、内側(inset)で SOFT 以上を調べる */
 function fpHit(occ, cx, cz, axx, axz, azx, azz, hx, hz, inset) {
-  const nx = Math.max(1, Math.ceil((2 * hx) / 2.5)), nz = Math.max(1, Math.ceil((2 * hz) / 2.5));
+  /* 道路の帯(幅6.6m以上)を見落とさない間隔3mで調べる */
+  const nx = Math.max(1, Math.ceil((2 * hx) / 3)), nz = Math.max(1, Math.ceil((2 * hz) / 3));
   for (let i = 0; i <= nx; i++) {
     const u = -hx + (2 * hx * i) / nx;
     for (let j = 0; j <= nz; j++) {
@@ -78,7 +79,7 @@ function fpHit(occ, cx, cz, axx, axz, azx, azz, hx, hz, inset) {
   }
   const sx = hx - inset, sz = hz - inset;
   if (sx > 0.2 && sz > 0.2) {
-    const mx = Math.max(1, Math.ceil((2 * sx) / 2.5)), mz = Math.max(1, Math.ceil((2 * sz) / 2.5));
+    const mx = Math.max(1, Math.ceil((2 * sx) / 3)), mz = Math.max(1, Math.ceil((2 * sz) / 3));
     for (let i = 0; i <= mx; i++) {
       const u = -sx + (2 * sx * i) / mx;
       for (let j = 0; j <= mz; j++) {
@@ -408,7 +409,7 @@ export function buildTown(rs) {
   const L = rs.line.meta.length;
   const T = {
     frame: 0, rev: null, lodX: 1e9, lodZ: 1e9, fb: { tod: null, w: null, rev: '', night: false, eve: false, rain: false, snow: false, wet: false, indoor: false },
-    treeCells: [], glows: [], groups: {},
+    treeCells: [], wireCells: [], glows: [], groups: {},
   };
   rs._town = T;
   rs._occ = new Map();
@@ -640,11 +641,12 @@ function buildStreets(rs, T) {
     }
     /* 街路樹(3割の側道) */
     if (rng() < 0.3) {
-      for (let ts = run.s0 + 12; ts <= run.s1 - 6; ts += 9) {
-        if (Math.abs(((ts - run.s0 - 8) % 30)) < 3.5) continue;
+      /* 間隔・大きさを少しずつ変え、ところどころ欠けさせる(ロリポップの行列に見せない) */
+      for (let ts = run.s0 + 12; ts <= run.s1 - 6; ts += 7.5 + rng() * 3) {
+        if (Math.abs(((ts - run.s0 - 8) % 30)) < 3.5 || rng() < 0.18) continue;
         sampleFrame(F, step, ts, fr);
-        const lat = side * (edge + poleOff + 0.7);
-        rs._treeQueue.push({ x: fr.x + fr.lx * lat, y: fr.y - 0.5, z: fr.z + fr.lz * lat, s: ts, sc: 0.8 + rng() * 0.25, tint: 0.85 + rng() * 0.25 });
+        const lat = side * (edge + poleOff + 0.5 + rng() * 0.6);
+        rs._treeQueue.push({ x: fr.x + fr.lx * lat, y: fr.y - 0.5, z: fr.z + fr.lz * lat, s: ts, sc: 0.68 + rng() * 0.42, tint: 0.8 + rng() * 0.32 });
       }
     }
   });
@@ -735,7 +737,15 @@ function buildStreets(rs, T) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
     geo.computeBoundingSphere();
-    g.add(new THREE.LineSegments(geo, M.wire));
+    const ls = new THREE.LineSegments(geo, M.wire);
+    g.add(ls);
+    /* 遠い電線は1pxの線がちらつくので隠す(外接矩形で距離判定) */
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < arr.length; i += 3) {
+      const x = arr[i], z = arr[i + 2];
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    T.wireCells.push({ obj: ls, x0, x1, z0, z1 });
   });
   glowPts.forEach((arr) => {
     const geo = new THREE.BufferGeometry();
@@ -1015,8 +1025,8 @@ function buildHouses(rs, T) {
   if (flat.length) emitInstanced(g, geoUnitBox(), M.house, flat, 400, { shadow: true });
   if (roofs.length) emitInstanced(g, geoGableRoof(), M.roof, roofs, 400, { shadow: true });
   /* 屋上の小物・塀・アンテナ(建物ぶんもまとめて)と接地影 */
-  /* 屋上の小物・塀は影を落とさない(運転台からは見えず、影の描画コールだけ増えるため) */
-  if (boxes.length) emitInstanced(T.groups.town, geoUnitBox(), M.box, boxes, 500);
+  /* 屋上の小物・塀: 影は線路から80m以内の塔屋・室外機だけ(並べ替えて影描画のときだけ数を減らす) */
+  if (boxes.length) emitInstanced(T.groups.town, geoUnitBox(), M.box, boxes, 500, { shadow: true });
   if (aos.length) {
     const ag = new THREE.PlaneGeometry(1, 1); ag.rotateX(-Math.PI / 2);
     emitInstanced(T.groups.town, ag, M.ao, aos, 500, { colors: false, receive: false });
@@ -1142,6 +1152,16 @@ function buildSkyline(rs, T) {
   }
   const sj = rs.line.stations.find((x) => x.name === '新宿');
   if (sj) { const f = FR(); sampleFrame(rs.frames, rs.step, sj.s, f); T.sjX = f.x; T.sjZ = f.z; } else T.sjX = null;
+}
+
+/* 駅舎の本体(全駅ぶんを1つのインスタンスに。外壁はオフィスのガラス連窓) */
+export function stationBodiesP1(rs, list) {
+  if (!list.length) return;
+  const M = materials(rs);
+  const rng = makeRng(555);
+  const g = rs._town ? rs._town.groups.town : rs.world;
+  const items = list.map((b) => paint({ ...b, s: 0, sh: true }, pick([0xe4e2dc, 0xd9dcdf, 0xcfc9bd], rng), 0.03, rng));
+  emitInstanced(g, geoUnitBox(), M.office, items, () => 0, { shadow: true });
 }
 
 /* =========================================================
@@ -1431,6 +1451,13 @@ export function updateTown(rs, dt) {
       } else if (!c.far && d2 > 240 * 240) {
         c.far = true; c.mesh.geometry = c.lo; c.mesh.castShadow = false;
       }
+    }
+    const wc = T.wireCells;
+    for (let i = 0; i < wc.length; i++) {
+      const c = wc[i];
+      const dx = ex < c.x0 ? c.x0 - ex : ex > c.x1 ? ex - c.x1 : 0;
+      const dz = ez < c.z0 ? c.z0 - ez : ez > c.z1 ? ez - c.z1 : 0;
+      c.obj.visible = dx * dx + dz * dz < 450 * 450;
     }
   }
   void dt;

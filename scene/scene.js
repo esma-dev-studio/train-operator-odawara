@@ -15,7 +15,7 @@ import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
-import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, makeRng, occFree } from './town.js';
+import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
 
@@ -1706,13 +1706,47 @@ export class RailScene {
       placeTrain(this, t, s, -1, off);
       this.world.add(t.group);
     });
+    /* 検車庫: 波板の壁+切妻屋根+線路が入る黒い開口 */
     const fS = frameAt(F, this.step, b - 55);
-    const shed = new THREE.Mesh(new THREE.BoxGeometry(16, 8, 92),
-      new THREE.MeshStandardMaterial({ color: 0x8f959b, roughness: 0.8 }));
+    const shed = new THREE.Group();
+    const corr = canvasTex(64, 64, (c) => {
+      c.fillStyle = '#a3a9ad'; c.fillRect(0, 0, 64, 64);
+      for (let x = 0; x < 64; x += 4) {
+        c.fillStyle = 'rgba(0,0,0,.2)'; c.fillRect(x, 0, 1, 64);
+        c.fillStyle = 'rgba(255,255,255,.14)'; c.fillRect(x + 2, 0, 1, 64);
+      }
+      c.fillStyle = 'rgba(0,0,0,.28)'; c.fillRect(0, 58, 64, 6);
+    });
+    corr.repeat.set(24, 1);
+    const wallM = new THREE.MeshStandardMaterial({ map: corr, roughness: 0.55, metalness: 0.35 });
+    const roofM = new THREE.MeshStandardMaterial({ color: 0x5d6468, roughness: 0.6, metalness: 0.3 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(16, 8, 92), wallM);
+    body.position.y = 4;
+    body.castShadow = true;
+    shed.add(body);
+    const th = 0.3, half = 8, rise = half * Math.tan(th);
+    [-1, 1].forEach((sg) => {
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(half / Math.cos(th) + 0.7, 0.22, 93), roofM);
+      slab.position.set(sg * half / 2, 8 + rise / 2 + 0.1, 0);
+      slab.rotation.z = -sg * th;
+      slab.castShadow = true;
+      shed.add(slab);
+    });
+    const gable = new THREE.Shape([new THREE.Vector2(-half, 0), new THREE.Vector2(half, 0), new THREE.Vector2(0, rise)]);
+    const gGeo = new THREE.ShapeGeometry(gable);
+    [-46.01, 46.01].forEach((z) => {
+      const gm = new THREE.Mesh(gGeo, wallM);
+      gm.position.set(0, 8, z);
+      if (z < 0) gm.rotation.y = Math.PI;
+      shed.add(gm);
+    });
+    /* 線路の入口(手前側の妻面に黒い開口) */
+    const door = new THREE.Mesh(new THREE.PlaneGeometry(13, 6.4), new THREE.MeshBasicMaterial({ color: 0x0d0f11 }));
+    door.position.set(0, 3.2, -46.03);
+    door.rotation.y = Math.PI;
+    shed.add(door);
     shed.position.copy(fS.p).addScaledVector(fS.left, -18);
-    shed.position.y += 4;
     shed.lookAt(shed.position.clone().add(fS.t));
-    shed.castShadow = true;
     this.world.add(shed);
   }
 
@@ -1740,21 +1774,35 @@ export class RailScene {
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 3.0, 12), white);
     hub.rotation.x = Math.PI / 2;
     spin.add(hub);
+    /* ゴンドラ28台(1回の描画でまとめて) */
     const cols = [0xd6604d, 0xf2b134, 0x4d9dd6, 0x62b56b, 0xb08bd0];
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2;
-      const gm = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.7, 2.4),
-        new THREE.MeshStandardMaterial({ color: cols[i % cols.length], roughness: 0.6 }));
-      gm.position.set(Math.cos(a) * 26, Math.sin(a) * 26, 0);
-      spin.add(gm);
+    const gon = new THREE.InstancedMesh(new THREE.BoxGeometry(2.0, 2.4, 2.0), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }), 28);
+    const gm4 = new THREE.Matrix4(), gc = new THREE.Color();
+    for (let i = 0; i < 28; i++) {
+      const a = (i / 28) * Math.PI * 2;
+      gm4.makeTranslation(Math.cos(a) * 26, Math.sin(a) * 26 - 1.4, 0);
+      gon.setMatrixAt(i, gm4);
+      gon.setColorAt(i, gc.setHex(cols[i % cols.length]));
     }
+    gon.userData.noSplit = true;
+    spin.add(gon);
+    /* 支柱: 前後2本ずつのA字形トラス */
     const legMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a5, roughness: 0.6, metalness: 0.4 });
     [-1, 1].forEach((sgn) => {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.7, 48, 2.1), legMat);
-      leg.position.set(sgn * 10, -20, 0);
-      leg.rotation.z = sgn * -0.3;
-      root.add(leg);
+      [-3.2, 3.2].forEach((dz) => {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(1.0, 46, 1.0), legMat);
+        leg.position.set(sgn * 9.5, -20, dz);
+        leg.rotation.z = sgn * 0.42;                    // 上端が軸(ハブ)に集まる
+        leg.rotation.x = dz > 0 ? -0.07 : 0.07;
+        root.add(leg);
+      });
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 7.2), legMat);
+      brace.position.set(sgn * 9.5, -20, 0);
+      root.add(brace);
     });
+    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 8, 10), legMat);
+    axle.rotation.x = Math.PI / 2;
+    root.add(axle);
     this.wheelSpin = spin;
     this.world.add(root);
   }
@@ -2119,21 +2167,25 @@ export class RailScene {
   /* ---------- 駅舎(駅名看板つき) ---------- */
   _buildStationHouses() {
     const F = this.frames;
-    const wallMat = new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xd8d5cc, roughness: 0.9 });
     const roofMat = new THREE.MeshStandardMaterial({ color: 0x3d4a56, roughness: 0.8 });
+    const bodies = [];
     this.line.stations.forEach((st) => {
       if (this._inTunnel(st.s)) return;
       if (st.name === '新宿') return;   // 新宿は大屋根ターミナルがあるので省略
       const f = frameAt(F, this.step, st.s - 55);
       const g = new THREE.Group();
-      const bld = new THREE.Mesh(new THREE.BoxGeometry(15, 4.4, 6.5), wallMat);
-      bld.position.y = 2.2;
-      bld.castShadow = true;
-      g.add(bld);
-      const roof = new THREE.Mesh(new THREE.BoxGeometry(16, 0.5, 7.5), roofMat);
-      roof.position.y = 4.65;
+      /* 2階建ての駅舎(ガラスの外壁は街と同じ外壁シェーダ。全駅で1回の描画) */
+      const p = f.p.clone().addScaledVector(f.left, -14.5);
+      bodies.push({ x: p.x, y: p.y + 0.1 - 0.6, z: p.z, yaw: Math.atan2(f.t.x, f.t.z), sx: 6.5, sy: 8.4, sz: 15 });
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(16, 0.4, 7.5), roofMat);
+      roof.position.y = 8.0;
       roof.castShadow = true;
       g.add(roof);
+      /* 入口のひさし */
+      const canopy = new THREE.Mesh(new THREE.BoxGeometry(15.4, 0.22, 1.8), roofMat);
+      canopy.position.set(0, 3.15, 4.1);
+      canopy.castShadow = true;
+      g.add(canopy);
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3),
         new THREE.MeshBasicMaterial({
           map: boardTexture([
@@ -2141,13 +2193,14 @@ export class RailScene {
             [STATION_KANA[st.name] || '', 70, 18, 'normal'],
           ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 96 }),
         }));
-      sign.position.set(0, 3.4, 3.3);
+      sign.position.set(0, 4.15, 3.29);
       g.add(sign);
-      g.position.copy(f.p).addScaledVector(f.left, -14.5);
+      g.position.copy(p);
       g.position.y += 0.1;
       g.lookAt(g.position.clone().addScaledVector(f.left, 30));   // 正面(+z)を線路側へ
       this.world.add(g);
     });
+    stationBodiesP1(this, bodies);
   }
 
   /* ---------- 駅の人々(待つ・乗る・降りる。脚と腕が歩きで振れる) ---------- */
