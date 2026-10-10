@@ -454,9 +454,10 @@ export function buildStations(rs) {
           const P = sideOf(sg), e0 = P.edge - 0.15 * sg, b0 = P.back + 0.4 * sg;
           const u0 = P.edge - 0.05 * sg, u1 = P.back + 0.3 * sg;
           const la = u0 + (u1 - u0) * LAMP_U[0], lb = u0 + (u1 - u0) * LAMP_U[1];
-          B.geo(profileStrip(F, ra, rb, [[u0, 4.05, AT.under(0.004)], [la, 4.05, AT.under(LAMP_U[0])]]));
+          /* 天井の板も照明の照り返しで少し明るく(夜に天井が真っ黒にならないよう。帯の0.15倍) */
+          B.geo(profileStrip(F, ra, rb, [[u0, 4.05, AT.under(0.004)], [la, 4.05, AT.under(LAMP_U[0])]]), { e: 0.15 });
           B.geo(profileStrip(F, ra, rb, [[la, 4.05, AT.under(LAMP_U[0])], [lb, 4.05, AT.under(LAMP_U[1])]]), { e: 1 });
-          B.geo(profileStrip(F, ra, rb, [[lb, 4.05, AT.under(LAMP_U[1])], [u1, 4.05, AT.under(0.996)]]));
+          B.geo(profileStrip(F, ra, rb, [[lb, 4.05, AT.under(LAMP_U[1])], [u1, 4.05, AT.under(0.996)]]), { e: 0.15 });
           B.geo(profileStrip(F, ra, rb, [[e0, 4.47, AT.top(0.05)], [b0, 4.27, AT.top(0.95)]]));
           const fas = { white: true, col: 0xe6e4de };
           B.geo(profileStrip(F, ra, rb, [[e0, 3.98, 0], [e0, 4.5, 0]]), fas);
@@ -932,8 +933,9 @@ export function buildFurniture(rs) {
     if (T && st.name === '新宿') return;    // ターミナルは島式ホーム(ベンチは置かない)
     const B = stationBaker(rs, si);
     if (!B) return;
-    [[1, 4.45], [-1, -8.25]].forEach(([dir, off]) => {
-      [-45, -95].forEach((ds) => {
+    /* 左ホームの -45.5/-95.5m には停止位置の予告(50/100)が立つので、ベンチはずらす */
+    [[1, 4.45, [-54, -86]], [-1, -8.25, [-45, -95]]].forEach(([dir, off, benchS]) => {
+      benchS.forEach((ds) => {
         frameInto(rs, st.s + ds, f);
         q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));   // 線路のほうを向く
         m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05), q, one);
