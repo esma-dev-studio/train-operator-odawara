@@ -130,6 +130,11 @@ for (const sc of pick) {
     }
   }
   await page.waitForTimeout(sc.wait || 2500);
+  /* 運転開始の暗転(#fade)が ソフト描画では なかなか明けないので、明けきるまで待つ */
+  await page.waitForFunction(() => {
+    const f = document.querySelector('#fade');
+    return !f || parseFloat(getComputedStyle(f).opacity) < 0.01;
+  }, null, { timeout: 30000, polling: 200 }).catch(() => errors.push(`${sc.name}: 暗転が明けない`));
   await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
   /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える */
   const info = await page.evaluate(() => new Promise((resolve) => {
