@@ -694,7 +694,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   .sel-opts { position: static; }
   .route-list { max-height: 44vh; }
   /* 縦長画面: 出発ボタンは常に画面下に見えるように(まとめの1行も いっしょに) */
-  .sel-go { position: fixed; left: 16px; right: 16px; bottom: calc(10px + var(--safe-b)); z-index: 3; margin: 0; }
+  .sel-go {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; margin: 0;
+    padding: 16px 16px calc(10px + var(--safe-b));
+    background: linear-gradient(rgba(7, 11, 14, 0), rgba(7, 11, 14, 0.94) 16px);
+  }
   .sel-go .sel-summary { margin: 0 0 6px; padding: 6px 12px; background: var(--hud-bg); border-color: var(--hud-bd); line-height: 1.7; font-size: var(--fs-cap); }
   .sel-go .sel-summary .sum-route { display: inline; font-size: var(--fs-body); margin-right: 8px; }
   .sel-wrap { padding-bottom: calc(150px + var(--safe-b)); }
@@ -807,6 +811,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
  * 3D画面の上の板は var(--hud-bg)/var(--hud-bd)。うごきは transform と opacity だけ。
  * ========================================================= */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } }
+/* 文はことばの区切り(スペース)で折り返す。「ゴ/ール」のような切れ方をしない */
+#coach, #msg-center, .badge .bd-name, .badge .bd-desc, .res-next, .rb-why, .stamps-help, .sc-tip,
+.pause-ctx, .confirm p, .set-note, .route-help, .load-tip, .stamp-cell .sc-cnt, #stamp-pop p, .bg-txt {
+  word-break: keep-all; overflow-wrap: anywhere;
+}
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
 
 /* ---- お知らせ(1行で切らずに折り返す) ---- */
@@ -960,7 +969,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 }
 @media (max-height: 540px) and (orientation: landscape) {
   #msg-center { top: 18%; font-size: 0.82rem; padding: 6px 14px; }
-  #stop-card { top: 6px; width: min(400px, 52%); padding: 6px 12px 8px; }
+  #stop-card { top: 62px; width: min(400px, 50%); padding: 6px 12px 8px; }
   #sc-sta { font-size: var(--fs-body); }
   .sc-ruler { height: 30px; margin: 4px 0; }
   .sc-8 { top: 2px; height: 18px; width: 16px; margin-left: -8px; line-height: 15px; font-size: 0.7rem; }
@@ -969,8 +978,8 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   #sc-cm { font-size: 1.4rem; }
   #sc-word { font-size: var(--fs-body); margin-top: 2px; }
   /* 背が低いので スタンプはカードの右に出す */
-  #stamp-pop { top: 8px; left: auto; right: 14%; transform: none; }
-  #stamp-pop p { font-size: var(--fs-cap); padding: 3px 10px; }
+  #stamp-pop { top: 58px; left: calc(50% + min(200px, 25%) + 62px); transform: translateX(-50%); }
+  #stamp-pop p { font-size: var(--fs-cap); padding: 3px 10px; width: auto; max-width: 132px; }
   .t-gear { top: 10px; left: 10px; }
   #screen-title .t-btns .btn { height: 50px; }
 }
