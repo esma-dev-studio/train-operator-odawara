@@ -120,6 +120,13 @@ for (const sc of pick) {
     if (sc.finish) {
       await page.evaluate(() => __test.advance(900));
       await page.waitForFunction(() => __test.app.mode === 'result', null, { timeout: 120000 }).catch(() => errors.push('result not reached'));
+      /* 成績票の じゅんばんに出る演出(ランクのはんこ・棒グラフ)が おわるまで待つ(ソフト描画ではCSSアニメが遅れる) */
+      await page.waitForFunction(() => {
+        const rk = document.querySelector('#res-rank'), bar = document.querySelector('.rb-bar i');
+        if (!rk || !rk.classList.contains('pop') || (bar && !bar.style.transform)) return false;
+        return [...document.querySelectorAll('#screen-result *')]
+          .every((el) => !el.getAnimations || el.getAnimations().every((a) => a.playState === 'finished'));
+      }, null, { timeout: 90000, polling: 250 }).catch(() => errors.push(`${sc.name}: 成績票の演出待ちが時間切れ`));
     }
   }
   await page.waitForTimeout(sc.wait || 2500);
