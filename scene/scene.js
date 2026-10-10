@@ -524,6 +524,7 @@ export class RailScene {
     this.M.ground.userData.wxMacro = true;
     this.M.bank.userData.wxMacro = true;
     this.M.railHead.userData.noWeather = true;
+    this.M.water.userData.noWeather = true;   // 川の水面に雪は積もらない
     this._keep = new Set([...Object.values(this.M), ...Object.values(this.T), this.U.uWxMacro.value]);
 
     /* ---- 光源(強さ・色は LOOK の表から _applyAtmosphere/_applyLightLevel で決める) ---- */
@@ -1009,9 +1010,7 @@ export class RailScene {
     this.sun.castShadow = QUALITY[this.quality].shadowsOn && L.shadow;
     this.hemi.color.setHex(L.hemi[1]);
     this.hemi.groundColor.setHex(L.hemi[2]);
-    /* --- ぬれ・雪(全材質共通の部品の値) --- */
-    this.U.uWet.value = L.wet;
-    this.U.uSnow.value = L.snow;
+    /* --- ぬれ・雪(全材質共通の部品の値は _applyLightLevel で。トンネルの中は乾いている) --- */
     this.M.railHead.roughness = wet ? 0.12 : 0.3;
     this.M.water.roughness = night ? 0.22 : wet ? 0.38 : 0.3;
     this.M.water.color.setHex(night ? 0x141c26 : wet ? 0x49525a : eve ? 0x6a5a58 : 0x455e6d);
@@ -1059,6 +1058,10 @@ export class RailScene {
       if (this.eveSky) this.eveSky.scale.setScalar(sk);
       if (this.nightSky) this.nightSky.scale.setScalar(sk);
     }
+    /* ぬれ・雪: トンネルの奥(k小)ではトンネル内の道床が見えているので、雪も水たまりも消す */
+    const kw = Math.min(1, Math.max(0, (k - 0.1) / 0.5));
+    this.U.uWet.value = L.wet * kw;
+    this.U.uSnow.value = L.snow * kw;
     /* 前照灯(昼の屋外は0、トンネルでは点ける) */
     if (this.headlight) this.headlight.intensity = L.head + (I.head - L.head) * (1 - k);
     /* ブルーム: 明るさの境目(しきい値)は表どおり。屋内(昼)は k に合わせてじわっと効かせる */
