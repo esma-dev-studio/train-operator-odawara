@@ -302,7 +302,6 @@ export class Cab {
 
   /* 変わったときだけ書く */
   _set(el, s) { if (el._t !== s) { el._t = s; el.textContent = s; } }
-  _setH(el, s) { if (el._t !== s) { el._t = s; el.innerHTML = s; } }
   _cls(el, c, on) { const k = '_c_' + c; if (el[k] !== on) { el[k] = on; el.classList.toggle(c, on); } }
 
   /* ---------------- 毎フレーム ---------------- */
@@ -312,7 +311,10 @@ export class Cab {
     if (!h) h = sim.hud();
     if (sim !== this._simRef) this._newRun(sim);
     /* 時間がとんだ(やりなおし・早送り)ときは表示の動き(ポン)をつけない */
-    this._jump = !(Math.abs(sim.t - (this._lastSimT ?? sim.t)) < 1);
+    const lastT = this._lastSimT != null ? this._lastSimT : sim.t;
+    this._jump = !(Math.abs(sim.t - lastT) < 1);
+    /* 時間がもどった(駅からやりなおし): そのさきの駅・のこり距離の基準を作りなおす */
+    if (sim.t < lastT - 0.5) { this._listIdx = null; this._limAt = null; }
     this._lastSimT = sim.t;
     if (h.notch !== this._lastNotch) this._renderNotch(h.notch);
     this._renderSpeedo(h);
