@@ -571,7 +571,7 @@ export class RailScene {
     this.env = {};
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     this._pmrem.compileEquirectangularShader();
-    this._wetBg = new THREE.Color(0x8d959c);   // 曇りの空がまだ無いときの雨・雪の背景色
+    this._wetBg = new THREE.Color(this.weather === 'snow' ? 0xc9cfd5 : 0x8d959c);   // 曇りの空がまだ無いときの雨・雪の背景色
     this._buildEveningSky();
     this._buildNightSky();
     this.ensureEnv('clear');
@@ -1034,7 +1034,8 @@ export class RailScene {
     this._lateN++;
     /* 最初の準備の前・止まっているときは すぐ使う。走っている最中なら、つぎの時間帯・天気・路線の切替(暗転中)まで待つ */
     const sim = this.sim;
-    if (!this._booted || !sim || sim.ended || sim.v < 0.05) this._promoteEnv(true);
+    if (k === 'rain' && this.weather === 'clear') this._promoteEnv(false);   // いまは使っていない(先読み): 見た目は変えない
+    else if (!this._booted || !sim || sim.ended || sim.v < 0.05) this._promoteEnv(true);
     return true;
   }
 
