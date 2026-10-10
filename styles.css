@@ -520,7 +520,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   grid-column: 1; pointer-events: none; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
   writing-mode: vertical-rl; text-orientation: upright;
-  font-size: clamp(0.5rem, 1.4vh, 0.66rem); font-weight: 700; letter-spacing: 0.08em; line-height: 1;
+  font-size: clamp(0.5rem, 1.45vh, 0.72rem); font-weight: 700; letter-spacing: 0.06em; line-height: 1;
 }
 .nt-cap-p { color: #4f8095; }
 .nt-cap-b { color: #8a7350; }
@@ -621,22 +621,25 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body #cab #tims-dist { font-size: 1.3rem; }
   body #cab .tims-main { gap: 6px; }
 }
-/* たて長のスマホ: 表示灯は速度計のLEDと液晶の表示にまかせる */
+/* たて長のスマホ: 左に速度計と制限(上下)、まん中にモニタ、右にマスコン。
+ * 表示灯は速度計のLEDと液晶の表示にまかせる */
 @media (max-width: 560px) {
-  body #cab { grid-template-columns: 92px minmax(0, 1fr) 64px 96px; grid-template-rows: minmax(0, 1fr); gap: 6px; padding: 6px 6px calc(6px + var(--safe-b)); }
-  body #cab .cab-speedo { grid-row: 1; padding: 3px; }
+  body #cab { grid-template-columns: 88px minmax(0, 1fr) 92px; grid-template-rows: auto minmax(0, 1fr); gap: 6px; padding: 6px 6px calc(6px + var(--safe-b)); }
+  body #cab .cab-speedo { grid-column: 1; grid-row: 1; padding: 2px; }
   body #cab #speedo { width: 84px; height: 84px; }
   body #cab .bc-wrap { display: none; }
-  body #cab .cab-tims { grid-row: 1; }
+  body #cab .cab-tims { grid-column: 2; grid-row: 1 / 3; }
   body #cab .cab-lamps { display: none; }
   body #cab .tims-head .tims-dest { display: none; }
-  body #cab #tims-next { font-size: 1.2rem; }
-  body #cab .cab-limit { grid-row: 1; padding: 4px 2px; }
-  body #cab .lim-cap { font-size: 0.6rem; letter-spacing: 0; }
-  body #cab #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 3px; }
+  body #cab .tims-body { padding: 4px 8px 6px; }
+  body #cab #tims-next { font-size: 1.3rem; }
+  body #cab .tims-row2 { flex-direction: column; align-items: flex-start; gap: 0; }
+  body #cab .cab-limit { grid-column: 1; grid-row: 2; padding: 4px 2px; gap: 2px; }
+  body #cab .lim-cap, body #cab #grade-ind { display: none; }
+  body #cab #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 3px; margin: 2px auto; }
   body #cab #lim-now.l3 { font-size: 1.05rem; }
   body #cab #lim-next { font-size: 0.64rem; }
-  body #cab .cab-mascon { grid-row: 1; grid-template-columns: minmax(0, 1fr) 40px; }
+  body #cab .cab-mascon { grid-column: 3; grid-row: 1 / 3; grid-template-columns: minmax(0, 1fr) 40px; }
 }
 /* 横向きのスマホ(背の低い画面): 表示灯なし、マスコンはパネルの高さいっぱい */
 @media (max-height: 540px) and (orientation: landscape) {

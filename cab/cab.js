@@ -335,12 +335,14 @@ export class Cab {
     this._listIdx = null;
     this._lim = null;
     this._limKey = null;
+    this._limKind = null;
     this._limAt = null;
     this._nextName = null;
     this._noNext = false;
     this._distK = null;
     this._delayK = null;
     this._clockM = null;
+    this._arrM = null;
     this._lastNotch = null;
   }
 
@@ -386,7 +388,7 @@ export class Cab {
     if (this._led && this._led.W === W) return this._led;
     const R = W / 2, r = R * 0.885, pts = [];
     for (let i = 0; i < LED_N; i++) { const an = angOf(i * 2.5); pts.push(R + Math.cos(an) * r, R + Math.sin(an) * r); }
-    this._led = { W, pts, rd: R * 0.022 };
+    this._led = { W, pts, rd: R * 0.025 };
     return this._led;
   }
 
@@ -502,9 +504,10 @@ export class Cab {
     const c = cv.getContext('2d');
     const R = W / 2, s = R / 75;
     c.translate(R, R);
-    /* ベゼル(金属の縁) */
+    /* ベゼル(金属の縁)。夜は室内が暗いので、縁の金属も暗く(光るのは文字盤だけ) */
     const bz = c.createLinearGradient(-R, -R, R, R);
-    bz.addColorStop(0, '#c9d0d4'); bz.addColorStop(0.35, '#5d666c'); bz.addColorStop(0.65, '#1c2124'); bz.addColorStop(1, '#8c959b');
+    const bzc = night ? ['#5b6266', '#2a3033', '#0d1012', '#3e4549'] : ['#c9d0d4', '#5d666c', '#1c2124', '#8c959b'];
+    bz.addColorStop(0, bzc[0]); bz.addColorStop(0.35, bzc[1]); bz.addColorStop(0.65, bzc[2]); bz.addColorStop(1, bzc[3]);
     c.fillStyle = bz;
     c.beginPath(); c.arc(0, 0, R - 1, 0, TAU); c.fill();
     c.fillStyle = '#060708';
@@ -598,7 +601,7 @@ export class Cab {
         this._nextName = null; this._distK = null; this._delayK = null;
         E.timsNext.textContent = '—';
         E.timsDist.textContent = ''; E.timsDelay.textContent = '';
-        E.timsSch._t = null; E.timsSch.textContent = '';
+        E.timsSch._t = null; E.timsSch.textContent = ''; this._arrM = null;
       }
       return;
     }
@@ -628,7 +631,9 @@ export class Cab {
       this._distK = dk;
       E.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
     }
-    this._set(E.timsSch, `${this._hm(nx.arr)} つく`);
+    /* つく時刻(分が変わったときだけ文字列を作る。毎フレームの文字列づくりをしない) */
+    const am = Math.floor(nx.arr / 60);
+    if (am !== this._arrM) { this._arrM = am; this._set(E.timsSch, `${this._hm(nx.arr)} つく`); }
     /* じかん: 分のきざみ(こどもが読みやすく、表示もほとんど変わらない) */
     const early = nx.arr - sim.t;
     let dk2, txt, late = false;
@@ -638,8 +643,8 @@ export class Cab {
     else { const m = Math.floor(-early / 60); dk2 = -1 - m; txt = `${m}${fun(m)} おくれ`; late = true; }
     if (dk2 !== this._delayK) { this._delayK = dk2; E.timsDelay.textContent = txt; this._cls(E.timsDelay, 'late', late); }
     /* すすみぐあい(前の駅→つぎの駅) */
-    if (this._segLen) {
-      const p = Math.round(clamp(1 - d / this._segLen, 0, 1) * 400);
+    {
+      const p = this._segLen ? Math.round(clamp(1 - d / this._segLen, 0, 1) * 400) : 0;
       if (p !== this._prog) { this._prog = p; E.timsProg.style.transform = `scaleX(${(p / 400).toFixed(4)})`; }
     }
   }
@@ -660,9 +665,8 @@ export class Cab {
     const a = h.ats;
     if (a && (a.kind === 'limit' || a.kind === 'signal')) {
       if (a.at !== this._limAt) { this._limAt = a.at; this._limD0 = Math.max(1, a.at - h.pos); }
-      const key = a.kind + a.target;
-      if (key !== this._limKey) {
-        this._limKey = key;
+      if (a.kind !== this._limKind || a.target !== this._limKey) {
+        this._limKind = a.kind; this._limKey = a.target;
         let l1;
         if (a.kind === 'limit') l1 = `<b class="ln-board">${a.target}</b>まで`;
         else if (a.target === 0) l1 = '<i class="ln-sig"></i>しんごう とまれ';
