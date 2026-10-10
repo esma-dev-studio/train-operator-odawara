@@ -15,6 +15,7 @@ import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
+import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, makeRng, occFree } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
 
@@ -153,58 +154,9 @@ function mergeNonIndexed(geos) {
   return out;
 }
 
+/* 木の形は scene/town.js にまとめた(幹を葉と1つの形にし、遠景用の軽い形も作る) */
 function makeTreeGeos() {
-  let seed = 31;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const blob = (r, x, y, z, sy = 1.15) => {
-    const g = new THREE.IcosahedronGeometry(r, 1);
-    const p = g.attributes.position;
-    /* 同じ頂点(面ごとに複製されている)は同じだけ動かして、すき間を作らない */
-    const salt = rnd() * 1000;
-    for (let i = 0; i < p.count; i++) {
-      const hx = Math.round(p.getX(i) * 1000), hy = Math.round(p.getY(i) * 1000), hz = Math.round(p.getZ(i) * 1000);
-      const h = Math.sin(hx * 12.9898 + hy * 78.233 + hz * 37.719 + salt) * 43758.5453;
-      const k = 0.82 + (h - Math.floor(h)) * 0.32;
-      p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * sy, p.getZ(i) * k);
-    }
-    /* 法線は球の中心から外向き(なめらかな陰影) */
-    const nr = new Float32Array(p.count * 3);
-    for (let i = 0; i < p.count; i++) {
-      const vx = p.getX(i), vy = p.getY(i) / sy, vz = p.getZ(i);
-      const l = Math.hypot(vx, vy, vz) || 1;
-      nr[i * 3] = vx / l; nr[i * 3 + 1] = vy / l; nr[i * 3 + 2] = vz / l;
-    }
-    g.setAttribute('normal', new THREE.BufferAttribute(nr, 3));
-    g.translate(x, y, z);
-    return g;
-  };
-  /* 頂点色: 下(幹側)ほど暗く、上ほど明るい */
-  const shade = (g, y0, y1) => {
-    const p = g.attributes.position;
-    const c = new Float32Array(p.count * 3);
-    for (let i = 0; i < p.count; i++) {
-      const t = Math.min(1, Math.max(0, (p.getY(i) - y0) / (y1 - y0)));
-      const v = Math.pow(0.55 + 0.5 * t, 2.2);
-      c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    return g;
-  };
-  const broadA = shade(mergeNonIndexed([blob(1.55, 0, 3.7, 0), blob(1.1, 0.95, 3.1, 0.35), blob(1.0, -0.85, 3.25, -0.3), blob(0.9, 0.1, 4.6, -0.5)]), 2.2, 5.4);
-  const broadB = shade(mergeNonIndexed([blob(1.25, 0, 3.3, 0, 1.3), blob(1.15, 0.2, 4.4, 0.2, 1.2), blob(0.85, -0.7, 3.0, 0.5), blob(0.8, 0.75, 3.6, -0.55)]), 2.2, 5.6);
-  /* 針葉樹: 円錐を3段に重ねる */
-  const cones = [];
-  [[1.5, 2.2, 2.6], [1.15, 1.9, 3.9], [0.75, 1.6, 5.0]].forEach(([r, h, y]) => {
-    const c = new THREE.ConeGeometry(r, h, 7, 1);
-    c.translate(0, y, 0);
-    cones.push(c);
-  });
-  const conifer = shade(mergeNonIndexed(cones), 1.5, 6.0);
-  const trunk = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6);
-  trunk.translate(0, 1.45, 0);
-  const trunkC = new THREE.CylinderGeometry(0.1, 0.16, 2.0, 5);
-  trunkC.translate(0, 1.0, 0);
-  return { fol: [broadA, broadB, conifer], trunk, trunkC };
+  return makeTreeGeosP1();
 }
 
 /* ---- テクスチャ ---- */
@@ -624,6 +576,7 @@ export class RailScene {
         });
         c.castShadow = im.castShadow; c.receiveShadow = im.receiveShadow;
         c.renderOrder = im.renderOrder;
+        c.userData = { ...im.userData };
         c.computeBoundingSphere();
         g.add(c);
       });
@@ -1238,171 +1191,12 @@ export class RailScene {
     });
   }
 
-  /* ---------- 街並み ---------- */
+  /* ---------- 街並み(scene/town.js) ----------
+   * 占有グリッド・側道/交差道路/電柱/電線・線路と平行な中高層・戸建て・遠景リングを作る */
   _buildTown() {
-    const F = this.frames;
-    const rng = (() => { let x = 12345; return () => (x = (x * 16807) % 2147483647) / 2147483647; })();
-    /* 昼テクスチャと夜テクスチャ(窓明かり)の両方を用意し、夜モードで差し替える */
-    const bldDefs = [
-      ['#8f979e', { shop: true, seed: 1 }, { roughness: 0.85 }],
-      ['#a39b90', { balcony: true, winRatio: 0.8, seed: 2 }, { roughness: 0.9 }],
-      ['#79828c', { shop: true, winRatio: 0.95, seed: 3 }, { roughness: 0.7, metalness: 0.15 }],
-    ];
+    /* 昼夜でテクスチャを差し替える旧方式(_bldMats)はターミナルの駅ビルだけが使う */
     this._bldMats = [];
-    const mats = bldDefs.map(([base, o, mo]) => {
-      const day = texBuilding(base, o);
-      const nightT = texBuilding(base, { ...o, night: true });
-      const m = new THREE.MeshStandardMaterial({ map: day, ...mo });
-      this._bldMats.push({ m, day, night: nightT });
-      return m;
-    });
-    {
-      const day = texHouse();
-      const nightT = texHouse({ night: true });
-      const m = new THREE.MeshStandardMaterial({ map: day, roughness: 0.9 });
-      this._bldMats.push({ m, day, night: nightT });
-      mats.push(m);
-    }
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    geo.translate(0, 0.5, 0);
-    const groups = mats.map((m) => ({ m, list: [] }));
-    const aoList = [];      // 建物の接地影(擬似AO)
-    const roofUnits = [];   // 屋上の室外機・機械
-    const urban = this.line.sections.urban;
-    const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
-    for (let s = 40; s < this.line.meta.length - 40; s += 26) {
-      if (this._inTunnel(s) || this._inTerminal(s, 45)) continue;
-      const inRiver = this.line.sections.river.some((r) => s > r.from - 60 && s < r.to + 60);
-      if (inRiver) continue;
-      const kind = kindAt(s);
-      const f = frameAt(F, this.step, s + rng() * 18);
-      for (const side of [1, -1]) {
-        if (side < 0 && this.depotZone && s > this.depotZone.a - 40 && s < this.depotZone.b + 40) continue;
-        const nBld = kind === 0 ? 3 : kind === 1 ? 2 : kind === 2 ? 2 : 1;
-        for (let bi = 0; bi < nBld; bi++) {
-          if (rng() < (kind === 3 ? 0.45 : 0.25)) continue;
-          const dist = 16 + rng() * (kind === 0 ? 90 : 70) + bi * 22;
-          const h = kind === 0 ? 22 + rng() * 95
-            : kind === 1 ? 8 + rng() * 22
-            : kind === 2 ? 5 + rng() * 13
-            : 4 + rng() * 5;
-          const w = kind === 3 ? 7 + rng() * 4 : 9 + rng() * 16;
-          const dpt = kind === 3 ? 7 + rng() * 3 : 9 + rng() * 14;
-          const p = f.p.clone().addScaledVector(f.left, side * (dist + (side > 0 ? 0 : 4)));
-          const mi = kind === 3 && h < 9 ? 3 : Math.floor(rng() * 3);
-          const rot = rng() * 0.5 - 0.25;
-          groups[mi].list.push({ p, h, w, dpt, rot });
-          aoList.push({ p, w, dpt, rot });
-          /* 屋上の機械(近いビルだけ) */
-          if (mi < 3 && dist < 80 && h > 10) {
-            const nu = 1 + Math.floor(rng() * 2);
-            for (let u = 0; u < nu; u++) {
-              roofUnits.push({
-                x: p.x + (rng() - 0.5) * w * 0.5, y: p.y - 1.5 + h + 0.45,
-                z: p.z + (rng() - 0.5) * dpt * 0.5,
-                sx: 1.1 + rng() * 1.8, sy: 0.8 + rng() * 1.0, sz: 1.0 + rng() * 1.5, rot,
-              });
-            }
-          }
-          /* 超高層はセットバック(上に細い塔を重ねる) */
-          if (kind === 0 && h > 60 && rng() < 0.55) {
-            const p2 = p.clone();
-            p2.y += h * 0.7;
-            groups[mi].list.push({ p: p2, h: h * 0.42, w: w * 0.72, dpt: dpt * 0.72, rot });
-          }
-        }
-      }
-    }
-    /* 遠景ベルト(市街地のみ、150〜420m帯に大きめの箱) */
-    for (let s = 60; s < this.line.meta.length - 60; s += 55) {
-      const kind = kindAt(s);
-      if (kind > 1) continue;
-      if (this.line.sections.river.some((r) => s > r.from - 150 && s < r.to + 150)) continue;
-      const f = frameAt(F, this.step, s + rng() * 30);
-      for (const side of [1, -1]) {
-        const nB = kind === 0 ? 2 : 1;
-        for (let bi = 0; bi < nB; bi++) {
-          if (rng() < 0.3) continue;
-          const dist = 150 + rng() * 270;
-          const h = kind === 0 ? 25 + rng() * 70 : 10 + rng() * 20;
-          const bp = f.p.clone().addScaledVector(f.left, side * dist);
-          const bw = 18 + rng() * 26, bd = 16 + rng() * 22, brot = rng() * 0.6 - 0.3;
-          groups[Math.floor(rng() * 3)].list.push({ p: bp, h, w: bw, dpt: bd, rot: brot });
-          aoList.push({ p: bp, w: bw, dpt: bd, rot: brot });
-        }
-      }
-    }
-    const houseTf = [];
-    groups.forEach(({ m, list }, gi) => {
-      const im = new THREE.InstancedMesh(geo, m, list.length);
-      im.castShadow = true;
-      const mat4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-      const col = new THREE.Color();
-      list.forEach((b, i) => {
-        e.set(0, b.rot, 0); q.setFromEuler(e);
-        mat4.compose(new THREE.Vector3(b.p.x, b.p.y - 1.5, b.p.z), q, new THREE.Vector3(b.w, b.h, b.dpt));
-        im.setMatrixAt(i, mat4);
-        const l = gi === 3 ? 0.76 + rng() * 0.16 : 0.82 + rng() * 0.24;
-        col.setRGB(Math.min(1, l), Math.min(1, l * (0.97 + rng() * 0.05)), Math.min(1, l * (0.94 + rng() * 0.08)), THREE.SRGBColorSpace);
-        im.setColorAt(i, col);
-        if (gi === 3) houseTf.push(b);
-      });
-      if (im.instanceColor) im.instanceColor.needsUpdate = true;
-      this.world.add(im);
-    });
-    /* 建物の接地影(擬似AO。地面に薄黒い板を敷いて「浮き」を消す) */
-    if (aoList.length) {
-      const aoGeo = new THREE.PlaneGeometry(1, 1);
-      aoGeo.rotateX(-Math.PI / 2);
-      const aoMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.24, depthWrite: false });
-      const aoIm = new THREE.InstancedMesh(aoGeo, aoMat, aoList.length);
-      const m4a = new THREE.Matrix4(), qa = new THREE.Quaternion(), ea = new THREE.Euler();
-      aoList.forEach((a, i) => {
-        ea.set(0, a.rot, 0); qa.setFromEuler(ea);
-        m4a.compose(new THREE.Vector3(a.p.x, a.p.y - 0.46, a.p.z), qa, new THREE.Vector3(a.w * 1.28, 1, a.dpt * 1.28));
-        aoIm.setMatrixAt(i, m4a);
-      });
-      this.world.add(aoIm);
-    }
-    /* 屋上の室外機・機械 */
-    if (roofUnits.length) {
-      const ruGeo = new THREE.BoxGeometry(1, 1, 1);
-      ruGeo.translate(0, 0.5, 0);
-      const ruMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.7, metalness: 0.3 });
-      const ruIm = new THREE.InstancedMesh(ruGeo, ruMat, roofUnits.length);
-      const m4r = new THREE.Matrix4(), qr = new THREE.Quaternion(), er = new THREE.Euler();
-      roofUnits.forEach((u, i) => {
-        er.set(0, u.rot, 0); qr.setFromEuler(er);
-        m4r.compose(new THREE.Vector3(u.x, u.y, u.z), qr, new THREE.Vector3(u.sx, u.sy, u.sz));
-        ruIm.setMatrixAt(i, m4r);
-      });
-      this.world.add(ruIm);
-    }
-    /* 戸建ての寄棟屋根 */
-    if (houseTf.length) {
-      const roofGeo = new THREE.ConeGeometry(0.74, 1, 4);
-      roofGeo.rotateY(Math.PI / 4);
-      const roofMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
-      const roofs = new THREE.InstancedMesh(roofGeo, roofMat, houseTf.length);
-      roofs.castShadow = true;
-      /* 屋根の色に瓦らしいバリエーションを付ける(街の見分けやすさ) */
-      const roofCols = [0x6e4438, 0x44546a, 0x4e6248, 0x5c4f42, 0x4c5258];
-      const mat4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-      const rcol = new THREE.Color();
-      houseTf.forEach((b, i) => {
-        e.set(0, b.rot, 0); q.setFromEuler(e);
-        mat4.compose(
-          new THREE.Vector3(b.p.x, b.p.y - 1.5 + b.h + 0.9, b.p.z), q,
-          new THREE.Vector3(b.w * 1.04, 2.0, b.dpt * 1.04));
-        roofs.setMatrixAt(i, mat4);
-        rcol.setHex(roofCols[i % roofCols.length]);
-        const jit = 0.85 + rng() * 0.3;
-        rcol.multiplyScalar(jit);
-        roofs.setColorAt(i, rcol);
-      });
-      if (roofs.instanceColor) roofs.instanceColor.needsUpdate = true;
-      this.world.add(roofs);
-    }
+    buildTown(this);
   }
 
   /* ---------- 沿線の柵・防音壁 ---------- */
@@ -1452,78 +1246,65 @@ export class RailScene {
     }
   }
 
-  /* ---------- 並木・樹木 ---------- */
+  /* ---------- 並木・樹木 ----------
+   * 木は this._treeQueue にためて、最後(_buildHills)にまとめて植える(描画コールを減らすため) */
   _buildTrees() {
     const F = this.frames, L = this.line.meta.length;
-    const rng = (() => { let x = 7777; return () => (x = (x * 16807) % 2147483647) / 2147483647; })();
-    const urban = this.line.sections.urban;
-    const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
+    const rng = makeRng(7777);
+    const T = this._town;
+    const kindAt = T ? T.kindAt : () => 2;
     const q = this.line.sections.quad;
+    const QO = this.quadOff || [3.8, 7.6];
+    const qk = T ? T.q : 1;
     const nearStation = (s) => this.line.stations.some((st) => s > st.s - 165 && s < st.s + 25);
     const inRiver = (s) => this.line.sections.river.some((r) => s > r.from - 80 && s < r.to + 80);
-    const list = [];
+    const list = this._treeQueue || (this._treeQueue = []);
     for (let s = 60; s < L - 60; s += 22) {
       if (this._inTunnel(s) || inRiver(s) || this._inTerminal(s, 40)) continue;
       const k = kindAt(s);
       const f = frameAt(F, this.step, s + rng() * 20);
-      /* 線路際の並木(郊外のみ。防音壁区間には置かない) */
-      const pNear = k === 3 ? 0.55 : k === 2 ? 0.38 : 0;
+      const ss = s + 10;
+      /* 線路ぎわの木はごくまばらに(郊外のみ・道路や建物のない所) */
+      const pNear = k >= 2 ? 0.06 : 0;
       if (this.crossSpots.some((c) => Math.abs(c - s) < 24)) continue;
       for (const side of [1, -1]) {
         const inDepot = side < 0 && this.depotZone && s > this.depotZone.a - 40 && s < this.depotZone.b + 40;
         if (inDepot) continue;
         if (pNear > 0 && rng() < pNear && !nearStation(s)) {
           let base = side > 0 ? 7.2 : 10.4;
-          if (side > 0 && s > q.from - 30 && s < q.to + 30) base = 11.4;
-          const off = side * (base + rng() * 5.5);
-          const p = f.p.clone().addScaledVector(f.left, off);
-          list.push({ p, sc: 0.7 + rng() * 0.8, tint: 0.75 + rng() * 0.35 });
+          if (side > 0 && s > q.from - 30 && s < q.to + 30) base = QO[1] + 3.8;
+          const p = f.p.clone().addScaledVector(f.left, side * (base + rng() * 5.5));
+          if (occFree(this, p.x, p.z)) list.push({ p, s: ss, sc: 0.7 + rng() * 0.8, tint: 0.75 + rng() * 0.35 });
         }
-        /* 郊外の散在林 */
+        /* 郊外の散在林(家・道路のない所だけ) */
         if (k >= 2) {
-          const n = k === 3 ? (rng() < 0.6 ? 2 : 3) : (rng() < 0.5 ? 1 : 2);
+          const n = k === 3 ? 3 : 2;
           for (let i = 0; i < n; i++) {
-            if (rng() < 0.4) continue;
-            const off = side * (20 + rng() * 78);
-            const p = f.p.clone().addScaledVector(f.left, off);
+            if (rng() < 0.45 || rng() > qk) continue;
+            const p = f.p.clone().addScaledVector(f.left, side * (20 + rng() * 120));
+            if (!occFree(this, p.x, p.z)) continue;
             p.y -= 0.5;
-            list.push({ p, sc: 0.85 + rng() * 0.9, tint: 0.7 + rng() * 0.4, conifer: k === 3 && rng() < 0.3 });
+            list.push({ p, s: ss, sc: 0.85 + rng() * 0.9, tint: 0.7 + rng() * 0.4, conifer: k === 3 && rng() < 0.3 });
           }
         }
       }
     }
-    this._plantTrees(list, rng);
+    /* 雑木林・屋敷林のかたまり(約1.2kmごと。場所は _buildTown で確保ずみ) */
+    (this._groves || []).forEach((g) => {
+      const n = Math.round((25 + rng() * 20) * (0.5 + 0.5 * qk));
+      for (let i = 0; i < n; i++) {
+        const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * g.r;
+        const con = rng() < 0.5;
+        list.push({ x: g.x + Math.cos(a) * r, y: g.y - 0.5, z: g.z + Math.sin(a) * r, s: g.s, sc: 1.3 + rng() * 0.8, sy: con ? 1.5 : 1, tint: 0.62 + rng() * 0.35, conifer: con });
+      }
+    });
   }
 
-  /* 木を植える(広葉樹2種+針葉樹1種)。list: [{p, sc, tint, conifer?}] */
+  /* 木を植える(広葉樹2種+針葉樹1種)。list: [{p|x,y,z, s, sc, sy?, tint, conifer?}] */
   _plantTrees(list, rng) {
     if (!this._treeGeos) this._treeGeos = makeTreeGeos();
-    const G = this._treeGeos;
-    const trunkMat = this._treeTrunkMat || (this._treeTrunkMat = new THREE.MeshStandardMaterial({ color: 0x584736, roughness: 0.95 }));
-    const folMat = this._treeFolMat || (this._treeFolMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.92 }));
-    this._keep.add(trunkMat); this._keep.add(folMat);
-    const groups = [[], [], []];
-    list.forEach((t) => groups[t.conifer ? 2 : (rng() < 0.5 ? 0 : 1)].push(t));
-    const m4 = new THREE.Matrix4(), qt = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3();
-    const col = new THREE.Color();
-    groups.forEach((arr, gi) => {
-      if (!arr.length) return;
-      const trunks = new THREE.InstancedMesh(gi === 2 ? G.trunkC : G.trunk, trunkMat, arr.length);
-      const fol = new THREE.InstancedMesh(G.fol[gi], folMat, arr.length);
-      trunks.castShadow = true; fol.castShadow = true;
-      arr.forEach((t, i) => {
-        e.set(0, rng() * Math.PI * 2, 0); qt.setFromEuler(e);
-        sc.set(t.sc, t.sc * (0.88 + rng() * 0.3), t.sc);
-        m4.compose(t.p, qt, sc);
-        trunks.setMatrixAt(i, m4);
-        fol.setMatrixAt(i, m4);
-        if (gi === 2) col.setRGB(t.tint * 0.24, t.tint * 0.36, t.tint * 0.27, THREE.SRGBColorSpace);
-        else col.setRGB(t.tint * 0.42, t.tint * 0.52, t.tint * 0.30, THREE.SRGBColorSpace);
-        fol.setColorAt(i, col);
-      });
-      if (fol.instanceColor) fol.instanceColor.needsUpdate = true;
-      this.world.add(trunks, fol);
-    });
+    this._treeGeosP1 = this._treeGeos;
+    return plantTreesP1(this, list, rng);
   }
 
   /* ---------- トンネル（下北沢地下区間） ---------- */
@@ -1865,23 +1646,45 @@ export class RailScene {
     shimaki.position.y = 5.9; g.add(shimaki);
     const nuki = new THREE.Mesh(new THREE.BoxGeometry(7.0, 0.4, 0.5), red);
     nuki.position.y = 4.6; g.add(nuki);
-    /* 社叢(濃い緑の木立) */
-    const gm = new THREE.MeshStandardMaterial({ color: 0x35503a, roughness: 0.95 });
-    for (let i = 0; i < 9; i++) {
-      const sp = new THREE.Mesh(new THREE.SphereGeometry(2.4 + (i % 3), 10, 8), gm);
-      sp.position.set(-7 + (i % 3) * 7 + (i * 7) % 4, 2.6 + (i % 3) * 1.3, 4 + Math.floor(i / 3) * 5);
-      sp.castShadow = true;
-      g.add(sp);
-    }
     /* 小さな築山の上に、少し大きめに立てる(壁ごしでも見えるように) */
-    const mound = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 8.5, 1.4, 12),
+    const mound = new THREE.Mesh(new THREE.CylinderGeometry(5.2, 6.8, 1.4, 14),
       new THREE.MeshStandardMaterial({ color: 0x6d7a5a, roughness: 1 }));
     mound.position.y = -0.7;
     g.add(mound);
     g.scale.setScalar(1.3);
-    g.position.copy(f.p).addScaledVector(f.left, -14.5);
+    g.position.copy(f.p).addScaledVector(f.left, -17.5);
     g.position.y += 1.6;
     g.lookAt(g.position.clone().addScaledVector(f.left, -40));
+    g.updateMatrixWorld(true);
+    /* 社叢(鳥居の奥の鎮守の森): 針葉樹の多い木立35本 + 石の玉垣(30m四方) */
+    const rng = makeRng(1185);
+    const q0 = this._treeQueue || (this._treeQueue = []);
+    const v = new THREE.Vector3();
+    for (let i = 0; i < 35; i++) {
+      v.set((rng() - 0.5) * 20, 0, 8 + rng() * 17);
+      g.localToWorld(v);
+      v.y = f.p.y - 0.5;
+      const con = rng() < 0.65;
+      q0.push({ x: v.x, y: v.y, z: v.z, s: s0 - 190, sc: 1.6 + rng() * 0.8, sy: con ? 1.4 : 1, tint: 0.55 + rng() * 0.3, conifer: con });
+    }
+    const posts = [];
+    const half = 15 / 1.3;
+    for (let k = 0; k < 4; k++) {
+      for (let d = -half; d < half; d += 0.8 / 1.3) {
+        const lx = k === 0 ? d : k === 1 ? half : k === 2 ? -d : -half;
+        const lz = 5.5 + half + (k === 0 ? -half : k === 1 ? d : k === 2 ? half : -d);
+        if (k === 0 && Math.abs(lx) < 3.6) continue;   // 鳥居の前はあける
+        v.set(lx, 0, lz);
+        g.localToWorld(v);
+        posts.push(v.clone().setY(f.p.y - 0.5 + 0.45));
+      }
+    }
+    const pm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.3, 0.9, 0.3), new THREE.MeshStandardMaterial({ color: 0xa9a59c, roughness: 0.95 }), posts.length);
+    const m4 = new THREE.Matrix4(), qy = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.left.clone().negate());
+    posts.forEach((p, i) => { m4.compose(p, qy, new THREE.Vector3(1, 1, 1)); pm.setMatrixAt(i, m4); });
+    pm.castShadow = true;
+    pm.userData.noSplit = true;
+    this.world.add(pm);
     this.world.add(g);
   }
 
@@ -2165,6 +1968,7 @@ export class RailScene {
   }
 
   _updateCrossings(dt) {
+    this._updateTown(dt);
     if (!this.crossings) return;
     const pos = this.sim.pos;
     this.crossings.forEach((cr) => {
@@ -2182,6 +1986,11 @@ export class RailScene {
         l.material.color.setHex(on ? 0xff3b30 : 0x33110e);
       });
     });
+  }
+
+  /* 街の毎フレーム処理(遠景リングの追従・昼夜の窓明かり・木のLOD)。scene/town.js */
+  _updateTown(dt) {
+    updateTown(this, dt);
   }
 
   _crossCars(f, s) {
@@ -2297,59 +2106,14 @@ export class RailScene {
     });
   }
 
-  /* ---------- 丘陵(多摩丘陵らしい郊外の起伏と雑木林) ---------- */
+  /* ---------- 丘陵(多摩丘陵らしい郊外の起伏と雑木林) ----------
+   * でこぼこの半球3種を線路方向へ引きのばして、重ねて稜線に見せる(森のテクスチャ)。
+   * 最後に、ここまでにためた木(並木・雑木林・庭木・社叢・稜線の木)をまとめて植える */
   _buildHills() {
-    const F = this.frames, L = this.line.meta.length;
-    const urban = this.line.sections.urban;
-    const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
-    let seed = 777;
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    if (!this._hillMat) {
-      const t = photoTex('./assets/tex/grass_c.jpg', { rx: 18, ry: 18, aniso: 4 });
-      this._hillTex = t;
-      this._hillMat = new THREE.MeshStandardMaterial({ map: t, color: 0xb9c4a0, vertexColors: true, roughness: 1 });
-      this._keep.add(this._hillMat); this._keep.add(t);
-    }
-    const geo = new THREE.SphereGeometry(1, 28, 10, 0, Math.PI * 2, 0, Math.PI / 2);
-    {
-      const p = geo.attributes.position, c = new Float32Array(p.count * 3);
-      for (let i = 0; i < p.count; i++) {
-        const v = Math.pow(0.62 + 0.38 * p.getY(i), 2.2);
-        c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
-      }
-      geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    }
-    const trees = [];
-    for (let s = 300; s < L - 300; s += 330) {
-      const k = kindAt(s);
-      if (k < 2) continue;
-      if (this.line.sections.river.some((r) => s > r.from - 500 && s < r.to + 500)) continue;
-      for (const side of [1, -1]) {
-        if (rnd() > (k === 3 ? 0.75 : 0.35)) continue;
-        const r = 110 + rnd() * 170, h = (k === 3 ? 28 : 16) + rnd() * (k === 3 ? 38 : 18);
-        const dist = r + 90 + rnd() * 220;
-        const f = frameAt(F, this.step, s + rnd() * 150);
-        const c = f.p.clone().addScaledVector(f.left, side * dist);
-        c.y -= 3;
-        const m = new THREE.Mesh(geo, this._hillMat);
-        m.position.copy(c);
-        m.scale.set(r, h, r * (0.7 + rnd() * 0.5));
-        m.rotation.y = rnd() * Math.PI;
-        m.receiveShadow = true;
-        this.world.add(m);
-        /* 斜面の雑木林 */
-        const nT = Math.floor(r / 9);
-        for (let i = 0; i < nT; i++) {
-          const a = rnd() * Math.PI * 2, u = Math.sqrt(rnd()) * 0.85;
-          const lx = Math.cos(a) * u, lz = Math.sin(a) * u;
-          const local = new THREE.Vector3(lx, Math.sqrt(Math.max(0, 1 - u * u)), lz);
-          local.multiply(m.scale).applyAxisAngle(UP, m.rotation.y);
-          const p = c.clone().add(local);
-          trees.push({ p, sc: 1.4 + rnd() * 1.3, tint: 0.65 + rnd() * 0.4, conifer: rnd() < 0.45 });
-        }
-      }
-    }
-    this._plantTrees(trees, rnd);
+    const trees = buildHillsP1(this);
+    const list = (this._treeQueue || []).concat(trees);
+    this._treeQueue = [];
+    this._plantTrees(list, makeRng(4711));
   }
 
   /* ---------- 駅舎(駅名看板つき) ---------- */
