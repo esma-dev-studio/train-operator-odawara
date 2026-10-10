@@ -273,6 +273,8 @@ function boardAtlas(rs) {
   const ctx = tex.image.getContext('2d');
   const mat = new THREE.MeshStandardMaterial({
     map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.12, roughness: 0.6, vertexColors: true,
+    /* 空の映りこみで黒い数字が灰色に・黄色が白っぽくならないよう、環境光の反射は控えめに */
+    envMapIntensity: 0.3,
   });
   mat.name = 'st-lineside';
   const A = rs._atlas = { tex, mat, text: '', white: [1 - C / 2 / W, C / 2 / H] };
