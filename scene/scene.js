@@ -604,6 +604,7 @@ export class RailScene {
       if (this.traffic) this.traffic.reset(sim);
       this._installWeatherChunk();
       this._resetCamFeel();
+      this._kInit = false;   // 新しい運転の最初のフレームで目の慣れを合わせ直す
       return;
     }
     this._disposeWorld();
@@ -853,6 +854,7 @@ export class RailScene {
       this.bloom = null;
       P.bloom = false;
       this._savePerf();
+      this._needPrewarm = true;   // これからは直接描くので、そのシェーダを用意しなおす
       return 'bloom';
     }
     return null;
@@ -870,7 +872,7 @@ export class RailScene {
     const now = performance.now();
     if (dt >= 0.09) A.hitch = now;
     A.t += dt; A.n++;
-    if (A.t < 4) return null;
+    if (A.t < 4 - 1e-6) return null;   // 1/30秒を120回足しても4にわずかに届かないので少し余裕を見る
     const fps = A.n / A.t;
     A.t = 0; A.n = 0;
     const bad = fps < 40 && now - A.hitch > 2500 && !busy;
