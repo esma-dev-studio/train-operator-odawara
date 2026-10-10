@@ -9,6 +9,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { STATION_KANA } from '../sim/kana.js';
 import { fixAdditiveFog } from './lightpool.js';
+import { quadInfo, quadOffAt, quadSep } from './trackbed.js';
 
 export const FONT = '"Zen Kaku Gothic New", "Hiragino Sans", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif';
 export const kanaOf = (name) => STATION_KANA[name] || name || '';
@@ -196,8 +197,8 @@ export class Baker {
     this.n += pos.count;
     return this;
   }
-  /* 四角い板。c=中心, n=表の向き(水平), uv=[u0,v0,u1,v1](nullなら白いマス) */
-  quad(c, n, w, h, uv, col) {
+  /* 四角い板。c=中心, n=表の向き(水平), uv=[u0,v0,u1,v1](nullなら白いマス), e=自発光(0〜1) */
+  quad(c, n, w, h, uv, col, e = 0) {
     _r.crossVectors(UPV, n).normalize();
     const base = this.n;
     if (col != null) _bcol.set(col); else _bcol.setRGB(1, 1, 1);
@@ -208,7 +209,7 @@ export class Baker {
       this.N.push(n.x, n.y, n.z);
       if (uv) this.U.push(sx < 0 ? uv[0] : uv[2], sy < 0 ? uv[1] : uv[3]); else this.U.push(this.white[0], this.white[1]);
       this.C.push(_bcol.r, _bcol.g, _bcol.b);
-      this.E.push(0);
+      this.E.push(e);
     });
     this.I.push(base, base + 1, base + 2, base, base + 2, base + 3);
     this.n += 4;
@@ -277,6 +278,17 @@ function boardAtlas(rs) {
     envMapIntensity: 0.3,
   });
   mat.name = 'st-lineside';
+  /* 光るのは板の表(絵)だけ。支柱・灰色の裏・キロ程の杭は アトラスの白いマスを指すので、
+   * そのままだと夜に白く光ってしまう → 頂点の自発光フラグ stE を掛けて消す */
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float stE;\nvarying float vStE;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvStE = stE;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vStE;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vStE;');
+  };
+  mat.customProgramCacheKey = () => 'st-lineside';
   const A = rs._atlas = { tex, mat, text: '', white: [1 - C / 2 / W, C / 2 / H] };
   A.cell = (key, fn, isSmall) => {
     let x, y, s;
@@ -297,7 +309,7 @@ function boardAtlas(rs) {
 /* 線路わきの標識の置き場(全線で1つ) */
 export function lineBaker(rs) {
   const A = boardAtlas(rs);
-  return bakerFor(rs, 'line', A.mat, { white: A.white, build: {} });
+  return bakerFor(rs, 'line', A.mat, { white: A.white, e: true, build: {} });
 }
 
 /* 四角い標識の絵(背景・枠・文字) */
@@ -338,7 +350,7 @@ export function finishAtlas(rs) {
 export function makeSign(rs, key, w, h, o) {
   const b = lineBoard(rs, key);
   const B = lineBaker(rs);
-  B.quad(o.c, o.n, w, h, b.uv);
+  B.quad(o.c, o.n, w, h, b.uv, null, 1);        // 表だけ光る(裏・支柱は光らない)
   _bn.copy(o.n).negate();
   _bc.copy(o.c).addScaledVector(o.n, -0.02);
   B.quad(_bc, _bn, w, h, null, 0x8a9096);
@@ -382,8 +394,11 @@ export function buildBoards(rs, plat, inPlat) {
   const pad = rs.line.meta.pad || 0;
   const up = rs.line.meta.direction === 'up';
   const river = rs.line.sections.river;
-  const skip = (s) => inPlat(s) || rs._inTunnel(s) || rs._inTerminal(s, 10) ||
-    river.some((r) => s > r.from - 25 && s < r.to + 25);
+  const qi = quadInfo(rs.line);
+  /* 杭はホームの端から5mは立てない・急行線が分かれていくところ(杭がレールのあいだに入る)も立てない */
+  const skip = (s) => inPlat(s) || inPlat(s - 5) || inPlat(s + 5) || rs._inTunnel(s) || rs._inTerminal(s, 10) ||
+    river.some((r) => s > r.from - 25 && s < r.to + 25) ||
+    [0, 1].some((k) => quadSep(s, k, qi) >= 0.15 && Math.abs(quadOffAt(s, k, qi) - 2.0) < 1.3);
   const physToS = (d) => (up ? L - pad - d : d + pad);
   const peg = new THREE.BoxGeometry(0.1, 1, 0.1).translate(0, 0.5, 0);
   const B = lineBaker(rs);
@@ -570,8 +585,9 @@ function signalRes(rs) {
 const _m4 = new THREE.Matrix4(), _m4b = new THREE.Matrix4(), _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 
 /* 信号機を(種別ごとに)作り直す。inPlat(s): ホームの上か(柱の根元をホーム面に)
+ * coverAt(s): 上にある天井・屋根の高さ(なければ Infinity。灯器をその下に収める)
  * 描画は全線で 本体(+影) / 灯 / ATS地上子 の4回 */
-export function buildSignals(rs, inPlat) {
+export function buildSignals(rs, inPlat, coverAt = () => Infinity) {
   const R = signalRes(rs);
   if (rs._sigGroup) {
     rs.world.remove(rs._sigGroup);
@@ -615,7 +631,9 @@ export function buildSignals(rs, inPlat) {
     frameInto(rs, sig.s, f);
     q.setFromAxisAngle(UPV, Math.atan2(-f.t.x, -f.t.z));        // 表(+z)を近づく列車へ
     p.copy(f.p).addScaledVector(f.left, 2.6);
-    if (inPlat(sig.s)) p.y += 1.05;
+    const lift = inPlat(sig.s) ? 1.05 : 0;
+    /* 灯器(背板の上端)が トンネルの天井・ホームの屋根の下に収まるように(見た目だけ。信号の位置 s は変えない) */
+    p.y += Math.min(lift, coverAt(sig.s) - 0.1 - (HEAD_Y + 0.95));
     _m4.compose(p, q, one);
     _m4.toArray(base, i * 16);
     stat.setMatrixAt(i, _m4);

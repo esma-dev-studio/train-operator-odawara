@@ -383,6 +383,7 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
 /* しゅっぱつスキップ */
 .skip-btn {
   position: absolute; left: 50%; bottom: 66px; transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - 24px);   /* left:50% でも 半分の幅で 折り返さない */
   z-index: 6; cursor: pointer;
   background: linear-gradient(180deg, #3aa9d0, #2b7fa0);
   color: #04222e; border: 2px solid var(--hi); border-radius: 999px;
@@ -595,9 +596,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   background: radial-gradient(ellipse at 50% 28%, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0) 60%), var(--lens-off, #12171b);
   box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, inset 0 -3px 6px rgba(0, 0, 0, 0.6);
 }
-.lamp-amber { --lens-off: #2b2210; --lens-ink: #7f6632; }
-.lamp-red { --lens-off: #2a1311; --lens-ink: #84403a; }
-.lamp-green { --lens-off: #0f2419; --lens-ink: #33704f; }
+/* --lens-ink-dim は 暗いとき用(lens-ink の 70%)。color-mix() は 古いiPad(〜16.1)で
+ * 白っぽい文字に なってしまうので、さきに 計算した色を おいておく */
+.lamp-amber { --lens-off: #2b2210; --lens-ink: #7f6632; --lens-ink-dim: #594723; }
+.lamp-red { --lens-off: #2a1311; --lens-ink: #84403a; --lens-ink-dim: #5c2d29; }
+.lamp-green { --lens-off: #0f2419; --lens-ink: #33704f; --lens-ink-dim: #244e37; }
 .lamp.on { z-index: 2; }
 .lamp.on.lamp-amber { background: radial-gradient(ellipse at 50% 35%, #fff3c4 0, #ffc443 38%, #d98a00); color: #3a2500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 180, 40, 0.55); }
 .lamp.on.lamp-red { background: radial-gradient(ellipse at 50% 35%, #ffd0c8 0, #ff5347 38%, #a1160c); color: #3a0500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 83, 71, 0.6); animation: blink 0.6s steps(2) infinite; }
@@ -674,7 +677,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 /* --- 暗いとき(夜・トンネル): パネルは沈み、計器だけ光る --- */
 body.cab-dark .tims-screen { box-shadow: 0 0 0 1px #000, inset 0 0 18px rgba(0, 0, 0, 0.55), 0 0 22px rgba(70, 160, 230, 0.16); }
 body.cab-dark .nt.on { box-shadow: inset 3px 0 0 #fff, 0 0 8px var(--zc); }
-body.cab-dark .lamp { color: color-mix(in srgb, var(--lens-ink) 70%, #000); }
+body.cab-dark .lamp { color: var(--lens-ink-dim, #3b4449); }
 body.cab-dark .lamp.on { color: #1a0d00; }
 
 /* ---------------- 運転台パネル: 画面サイズ別 ---------------- */

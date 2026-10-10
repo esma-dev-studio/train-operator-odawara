@@ -634,7 +634,10 @@ const App = {
     $('#btn-pause-quit').addEventListener('click', () => this.quitDrive());
     $('#btn-res-retry').addEventListener('click', () => this.startDrive(true));
     $('#btn-res-next').addEventListener('click', () => this._continueRun());
-    $('#btn-res-select').addEventListener('click', () => { this.renderSvcCards(); this.go('select'); this.renderRoute(true); });
+    $('#btn-res-select').addEventListener('click', () => {
+      if (this._starting) return;   // 出発の フェード中(すぐ うんてん画面に かわる)
+      this.renderSvcCards(); this.go('select'); this.renderRoute(true);
+    });
     $('#btn-overrun-retry').addEventListener('click', () => { $('#overrun-modal').classList.add('hidden'); this.retryStation(); });
     $('#btn-cam').addEventListener('click', () => this.cycleCam());
 
@@ -699,6 +702,8 @@ const App = {
   },
 
   resizeGL() {
+    /* 画面の むき・大きさが かわったら スキップボタンの もとの高さ(CSSの bottom)を 読みなおす */
+    if (this._bh) this._bh.skip._base = null;
     if (!this.scene) return;
     const wrap = $('#gl-wrap');
     this.scene.resize(wrap.clientWidth, wrap.clientHeight);
@@ -707,19 +712,27 @@ const App = {
 
   /* ================= 運転開始 ================= */
   async startDrive(again = false) {
-    this._unlockAudio();
-    if (!again) this.line = prepareLine(this.rawLine, this.direction);
-    /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす) */
-    this.save.last = { direction: this.direction, service: this.service, daytime: this.daytime, weather: this.weather, startIdx: this.startIdx, endIdx: this.endIdx };
-    this.writeSave();
-    const fade = $('#fade');
-    fade.classList.add('on');
-    await new Promise((r) => setTimeout(r, 380));
-    this.go('drive');
-    await nextFrame();
-    this.beginRun(this.startIdx);
-    await nextFrame();
-    fade.classList.remove('on');
+    /* 二度おし よけ: フェード(380ms)のあいだも 画面のボタンは押せるので、
+     * 2かい目は むしする(区間が とんだり、ワールドを2回 作りなおしたり しない) */
+    if (this._starting) return;
+    this._starting = true;
+    try {
+      this._unlockAudio();
+      if (!again) this.line = prepareLine(this.rawLine, this.direction);
+      /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす) */
+      this.save.last = { direction: this.direction, service: this.service, daytime: this.daytime, weather: this.weather, startIdx: this.startIdx, endIdx: this.endIdx };
+      this.writeSave();
+      const fade = $('#fade');
+      fade.classList.add('on');
+      await new Promise((r) => setTimeout(r, 380));
+      this.go('drive');
+      await nextFrame();
+      this.beginRun(this.startIdx);
+      await nextFrame();
+      fade.classList.remove('on');
+    } finally {
+      this._starting = false;
+    }
   },
 
   beginRun(startIdx) {
@@ -1062,15 +1075,16 @@ const App = {
     } else if (redAhead && (h.ats.at - sim.pos) < 700) {
       txt = sim.v < 0.5 ? '<i class="sig sig-r"></i>しんごうが <b>あか</b>。あおに かわるまで まとう'
         : '<i class="sig sig-r"></i>しんごうが <b>あか</b>！ ブレーキで とまろう';
+    } else if (h.ats && h.ats.kind === 'limit' && sim.v > h.ats.pattern - 4 && h.ats.target < h.limit) {
+      /* 「いまの制限は守っているのに」の混乱に、理由(この先の低い制限)を示す。
+       * 先行パターンの じどうブレーキの 理由なので「もうすぐ ◯◯」より 先に出す */
+      const m = Math.max(0, Math.round(h.ats.at - sim.pos));
+      txt = `${icon('warn')} このさきは <b>${Math.round(h.ats.target)}</b> まで。いまから おとそう（あと <b>${m}</b> m）`;
     } else if (sim.notch > 0 && sim.v > h.limit - 8) {
       /* じどうブレーキが かかる まえに 知らせる */
       txt = `もうすぐ <b>${h.limit}</b>！ <b>▼</b>で <b>N</b>に もどそう`;
     } else if (h.ats && h.ats.kind === 'signal' && (h.ats.at - sim.pos) < 700 && sim.v > h.ats.target - 3) {
       txt = `<i class="sig sig-y"></i>しんごうが <b>きいろ</b>。スピードを <b>${Math.round(h.ats.target)}</b> まで おとそう`;
-    } else if (h.ats && h.ats.kind === 'limit' && sim.v > h.ats.pattern - 4 && h.ats.target < h.limit) {
-      /* 「いまの制限は守っているのに」の混乱に、理由(この先の低い制限)を示す */
-      const m = Math.max(0, Math.round(h.ats.at - sim.pos));
-      txt = `${icon('warn')} このさきは <b>${Math.round(h.ats.target)}</b> まで。いまから おとそう（あと <b>${m}</b> m）`;
     } else if (this._limitAhead(h)) {
       /* 駅より手前に 低い制限がある: まずは そちらに合わせる(駅の予想を出すと まぎらわしい) */
       const m = Math.max(0, Math.round(h.ats.at - sim.pos));
@@ -1144,6 +1158,23 @@ const App = {
     /* しゅっぱつスキップボタン(まだ待ち時間があるときだけ) */
     const canSkip = h.doorOpen && ((h.next ? h.next.dep : sim._departTime) - sim.t) > 7;
     setHidden(B.skip, !canSkip);
+    if (canSkip) {
+      /* コーチが 2〜4行に のびても(せまい たて画面) ボタンが かくれないよう、コーチの すぐ上に おく。
+       * #coach と #btn-skip は おなじ #gl-wrap の中(offsetTop は transform を むしする)。
+       * CSSの bottom(画面サイズ別)より 下には さげない。
+       * レイアウトを読むのは ドアが あいていて、コーチの 文が かわったときだけ(毎フレームは 読まない) */
+      if (B.skip._base == null) {
+        B.skip.style.bottom = ''; B.skip._b = null; B.skip._for = undefined;
+        B.skip._base = parseFloat(getComputedStyle(B.skip).bottom) || 66;
+      }
+      if (B.skip._for !== this._coachTxt) {
+        B.skip._for = this._coachTxt;
+        const par = el.offsetParent;
+        const need = el.classList.contains('hidden') || !par ? 0 : Math.round(par.clientHeight - el.offsetTop + 8);
+        const b = Math.max(B.skip._base, need);
+        if (B.skip._b !== b) { B.skip._b = b; B.skip.style.bottom = b + 'px'; }
+      }
+    } else B.skip._base = null;
     this._updateBrakeGuide(h);
     this._updateRouteStrip();
   },
@@ -1156,6 +1187,7 @@ const App = {
     $('#overrun-modal').classList.add('hidden');
     if (this.scene.traffic) this.scene.traffic.reset(this.sim);
     this._clearPops();
+    this.runStreak = 0;   // やりなおしたら「れんぞく」も 0から
     this._coachTxt = null; this._cb = null;
     if (this._rs) this._rs.idx = null;
     this.flashMsg(`${rubyStation(this.sim.stops[this.lastStationIdx].name)} から やりなおし`, 2000);
@@ -1305,7 +1337,10 @@ const App = {
     const t0 = performance.now();
     rk.classList.remove('pop');
     let lastTen = 0;
+    const fadeEl = $('#fade');
     const step = () => {
+      /* 成績票を はなれたら(もういちど・つづき・えらびなおす) ピッ や スタンプの音を とめる */
+      if (this.mode !== 'result' || fadeEl.classList.contains('on')) return;
       const k = Math.min(1, (performance.now() - t0) / 1100);
       const v = Math.round(res.total * (1 - Math.pow(1 - k, 3)));
       tot.textContent = v;
@@ -1324,8 +1359,9 @@ const App = {
 
   /* 成績票の「つづきを はしる」: 同じ駅数だけ先へ */
   _continueRun() {
+    /* 出発の フェード中は むし(区間を うごかす まえに みる。2かい おすと 1区間 とばしてしまう) */
+    if (this._starting || this.endIdx == null) return;
     const n = this._svcStops().length;
-    if (this.endIdx == null) return;
     const span = this.endIdx - this.startIdx;
     this.startIdx = this.endIdx;
     this.endIdx = Math.min(n - 1, this.startIdx + span);

@@ -126,6 +126,7 @@ export const newFrame = () => ({ p: new THREE.Vector3(), t: new THREE.Vector3(),
  * profileRibbon: 断面(左→右の点列 [u(横m), y(高さ), texU])を行ごとに並べた帯。
  * prof は配列か (i)=>配列。opts.offset(数 or (i)=>数)で断面全体を横にずらす。
  * UV は u=texU, v=距離/uvScale (opts.vert=true なら u=距離/uvScale, v=texU: 縦の壁用)。
+ * 距離はふつう 行×step。行に f.s があればそれを使う(端の行だけ坑口の位置にずらしたとき、模様がつぶれない)。
  * 三角形の向きは scene.js の ribbon() と同じ(法線が上を向く。材質は両面)。 */
 export function profileRibbon(F, i0, i1, prof, opts = {}) {
   const uvScale = opts.uvScale || 5, step = opts.step || 5, vcol = opts.vcol || null;
@@ -140,7 +141,7 @@ export function profileRibbon(F, i0, i1, prof, opts = {}) {
   const idx = new (nv > 65535 ? Uint32Array : Uint16Array)((rows - 1) * (C - 1) * 6);
   let n = 0, k = 0;
   for (let i = i0; i <= i1; i++) {
-    const f = F[i], P = pf(i), o = of(i), v = (i * step) / uvScale;
+    const f = F[i], P = pf(i), o = of(i), v = (f.s != null ? f.s : i * step) / uvScale;   // 端を坑口などにそろえた行は f.s(m)を持つ
     for (let c = 0; c < C; c++) {
       const pt = P[c], lat = pt[0] + o;
       pos[n * 3] = f.p.x + f.left.x * lat;
@@ -863,6 +864,8 @@ export function buildCatenary(rs, o = {}) {
   const bl = rs.line.sections.river.map((r) => ({ r, lay: bridgeLayout(r) }));
   const inStation = (s) => rs.line.stations.some((st) => s > st.s - 160 && s < st.s + 20);
   const nearCross = (s) => (rs.crossSpots || []).some((c) => Math.abs(c - s) < 9);
+  /* トンネルの中と、坑口の外3mまで。坑口の面ちょうどの支持点を門型にすると、梁が坑口に埋まって柱だけ口の中に立つ */
+  const inTunnel3 = (s) => rs.line.sections.tunnel.some((t) => s > t.from - 3 && s < t.to + 3);
   /* 1) 支持点(約45mごと) */
   const sup = [];
   for (let s0 = 20; s0 < L - 20; s0 += 45) {
@@ -872,7 +875,7 @@ export function buildCatenary(rs, o = {}) {
       /* 橋の上: いちばん近いトラスの上横桁からぶら下げる */
       s = b.lay.top.reduce((best, x) => (Math.abs(x - s0) < Math.abs(best - s0) ? x : best), b.lay.top[0]);
       type = 'bridge'; dy = 0.3;
-    } else if (rs._inTunnel(s0)) type = 'tunnel';
+    } else if (inTunnel3(s0)) type = 'tunnel';
     else if (T && s0 > T.a && s0 < T.b) { type = 'terminal'; dy = 0.5; }
     else if (nearCross(s0)) s = s0 + 12;
     sup.push({ s, type, dy, k: sup.length });
@@ -999,24 +1002,30 @@ export function buildTunnel(rs, o = {}) {
   const fr = newFrame(), m4 = new THREE.Matrix4(), nl = new THREE.Vector3(), nt = new THREE.Vector3();
   rs.line.sections.tunnel.forEach((t) => {
     const i0 = Math.max(0, Math.floor(t.from / step)), i1 = Math.min(N, Math.ceil(t.to / step));
+    /* 両はしの行だけ坑口の面(t.from / t.to)にずらしたフレーム列。
+     * 5mの行のままだと、内張りが坑口の前に最大5mはみ出す(t.from が5の倍数でないとき) */
+    const FT = F.slice();
+    FT[i0] = Object.assign(frameInto(F, step, t.from, newFrame()), { s: t.from });
+    const sEnd = Math.min(t.to, N * step);
+    FT[i1] = Object.assign(frameInto(F, step, sEnd, newFrame()), { s: sEnd });
     /* 壁(型枠の目地・ケーブル受け)と天井 */
-    add(wallStrip(F, i0, i1, WL, -0.5, H, 4, step), M.tunnelWall);
-    add(wallStrip(F, i0, i1, WR, -0.5, H, 4, step), M.tunnelWall);
-    add(flatStrip(F, i0, i1, (WL + WR) / 2, WL - WR + 0.6, H, 6, step), rs.M.tunnel);
+    add(wallStrip(FT, i0, i1, WL, -0.5, H, 4, step), M.tunnelWall);
+    add(wallStrip(FT, i0, i1, WR, -0.5, H, 4, step), M.tunnelWall);
+    add(flatStrip(FT, i0, i1, (WL + WR) / 2, WL - WR + 0.6, H, 6, step), rs.M.tunnel);
     /* 土かぶり(トンネルの上の盛り土)と、出入口の掘割 */
     const hAt = (s) => (s < t.from ? 6.8 * sstep(t.from - RAMP, t.from, s) : s > t.to ? 6.8 * (1 - sstep(t.to, t.to + RAMP, s)) : 6.8);
     const vc = () => bankCol;
     const tu = (x) => x / 760;
-    add(profileRibbon(F, i0, i1, [[WL + 18, -0.6, tu(WL + 18)], [WL + 1.2, 6.8, tu(WL + 1.2)], [WR - 1.2, 6.8, tu(WR - 1.2)], [WR - 18, -0.6, tu(WR - 18)]],
+    add(profileRibbon(FT, i0, i1, [[WL + 18, -0.6, tu(WL + 18)], [WL + 1.2, 6.8, tu(WL + 1.2)], [WR - 1.2, 6.8, tu(WR - 1.2)], [WR - 18, -0.6, tu(WR - 18)]],
       { uvScale: 5, step, vcol: vc }), rs.M.bank);
     [[Math.max(0, Math.floor((t.from - RAMP) / step)), i0], [i1, Math.min(N, Math.ceil((t.to + RAMP) / step))]].forEach(([ra, rb]) => {
       if (rb - ra < 2) return;
-      const h = (i) => hAt(i * step);
-      add(profileRibbon(F, ra, rb, (i) => [[WL + 18, -0.6, tu(WL + 18)], [WL + 0.3, h(i) + 0.3, tu(WL + 0.3)]], { uvScale: 5, step, vcol: vc }), rs.M.bank);
-      add(profileRibbon(F, ra, rb, (i) => [[WR - 0.3, h(i) + 0.3, tu(WR - 0.3)], [WR - 18, -0.6, tu(WR - 18)]], { uvScale: 5, step, vcol: vc }), rs.M.bank);
+      const h = (i) => hAt(FT[i].s != null ? FT[i].s : i * step);
+      add(profileRibbon(FT, ra, rb, (i) => [[WL + 18, -0.6, tu(WL + 18)], [WL + 0.3, h(i) + 0.3, tu(WL + 0.3)]], { uvScale: 5, step, vcol: vc }), rs.M.bank);
+      add(profileRibbon(FT, ra, rb, (i) => [[WR - 0.3, h(i) + 0.3, tu(WR - 0.3)], [WR - 18, -0.6, tu(WR - 18)]], { uvScale: 5, step, vcol: vc }), rs.M.bank);
       /* 掘割の擁壁(上端は少しだけ地面より高い) */
-      add(wallStrip(F, ra, rb, WL + 0.3, -0.5, (i) => h(i) + 0.35, 4, step), rs.M.tunnel);
-      add(wallStrip(F, ra, rb, WR - 0.3, -0.5, (i) => h(i) + 0.35, 4, step), rs.M.tunnel);
+      add(wallStrip(FT, ra, rb, WL + 0.3, -0.5, (i) => h(i) + 0.35, 4, step), rs.M.tunnel);
+      add(wallStrip(FT, ra, rb, WR - 0.3, -0.5, (i) => h(i) + 0.35, 4, step), rs.M.tunnel);
     });
     /* 坑口: 柱2本+梁(まぐさ)+笠石。線路の上は開いている */
     [[t.from, 1], [t.to, -1]].forEach(([s, dir]) => {
@@ -1034,9 +1043,10 @@ export function buildTunnel(rs, o = {}) {
         }
         accGeo(acc, g, new THREE.Matrix4(), null);
       };
-      box(WR - 1.2, WR, -0.6, 8.6, -0.6, 0.6);
-      box(WL, WL + 1.2, -0.6, 8.6, -0.6, 0.6);
-      box(WR - 1.2, WL + 1.2, H, 8.6, -0.6, 0.6);
+      /* 柱の内側の面と梁の下の面は、内張り(壁・天井)と同じ面にならないよう4cmだけ内へ出す(ちらつき防止) */
+      box(WR - 1.2, WR + 0.04, -0.6, 8.6, -0.6, 0.6);
+      box(WL - 0.04, WL + 1.2, -0.6, 8.6, -0.6, 0.6);
+      box(WR - 1.2, WL + 1.2, H - 0.04, 8.6, -0.6, 0.6);
       box(WR - 1.5, WL + 1.5, 8.6, 9.0, -0.75, 0.75);
       /* 扁額(社名や駅名は入れない。無地の銘板)。トンネルの外側の面に付ける */
       box(-3.2, 1.2, 7.0, 7.9, dir > 0 ? -0.7 : 0.6, dir > 0 ? -0.6 : 0.7);

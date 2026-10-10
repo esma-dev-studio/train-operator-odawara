@@ -606,6 +606,9 @@ export class RailScene {
     this._buildPeople();
     this._buildCrowds();
     this._buildHills();
+    /* 占有グリッドは街・木・丘を置くときだけ使う(十数MBあるので捨てる)。
+     * これより前に捨てると occFree がどこでも「空き」と答え、線路や道路の上に木が生えるので、丘のあとで */
+    this._occ = null;
     this._splitInstances();
     this._splitRibbons();
     this.traffic = new Traffic(this, sim);
@@ -767,8 +770,53 @@ export class RailScene {
           if (this._usePost()) { r.setRenderTarget(null); r.render(this.scene, this.camera); }
         }
       }
+      if (r.shadowMap.enabled && this.sun && this.sun.castShadow) this._prewarmShadows();
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
+  }
+
+  /* 影の深度シェーダも先に作る。compile() は影のぶんを作らず、影は影の箱の中の物しか描かれないので、
+   * 遠くにある種類の物は走行中にはじめて作られてカクつく。そこで種類ごとに1つ、カリングを外して1回描く。
+   * 共有の深度材質は map/side が変わってもシェーダを選びなおさないので、needsUpdate で毎回選びなおさせる。
+   * 遠い木のかたまり(LODで今は影なし)も、近づくと影を落とすので数に入れる。
+   * さわった設定(カリング・影・onBeforeShadow)は、描画が失敗しても必ず元にもどす */
+  _prewarmShadows() {
+    const r = this.renderer;
+    const lod = new Map(((this._town && this._town.treeCells) || []).map((c) => [c.mesh, c.shadow]));
+    const reps = new Map();
+    this.scene.traverseVisible((o) => {
+      if (!o.isMesh || !(o.castShadow || lod.get(o))) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!m) return;
+      const k = [o.isInstancedMesh, !!o.instanceColor, o.customDepthMaterial ? o.customDepthMaterial.uuid : '',
+        !!m.map, !!m.alphaMap, m.alphaTest > 0 ? m.uuid : '', m.shadowSide == null ? m.side : m.shadowSide].join('|');
+      if (!reps.has(k)) reps.set(k, o);
+    });
+    if (!reps.size) return;
+    const saved = [];
+    try {
+      reps.forEach((o) => {
+        const own = Object.prototype.hasOwnProperty.call(o, 'onBeforeShadow');
+        const obs = o.onBeforeShadow;
+        saved.push({ o, fc: o.frustumCulled, cs: o.castShadow, own, obs });
+        o.frustumCulled = false;
+        o.castShadow = true;
+        o.onBeforeShadow = function (rr, ob, cam, sc, geo, dm, grp) {
+          dm.needsUpdate = true;
+          obs.call(this, rr, ob, cam, sc, geo, dm, grp);
+        };
+      });
+      r.shadowMap.needsUpdate = true;
+      r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+      r.render(this.scene, this.camera);
+    } finally {
+      saved.forEach(({ o, fc, cs, own, obs }) => {
+        o.frustumCulled = fc;
+        o.castShadow = cs;
+        if (own) o.onBeforeShadow = obs;
+        else delete o.onBeforeShadow;
+      });
+    }
   }
 
   /* fps低下時に段階的に画質を落とす: 解像度 → 影(小さく・1フレームおき) → ブルーム。
@@ -812,21 +860,37 @@ export class RailScene {
 
   _savePerf() {
     const P = this._perf;
-    /* 保存するのは自動軽量化が有効(opts.autoQ)のときだけ。古い呼び出し元の1回のカクつきで下げた段階を次回に持ちこまない */
-    if (!this.autoQ) return;
-    try { localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, dpr: P.dpr, shadowLevel: P.shadowLevel, bloom: P.bloom !== false })); } catch (e) { /* 保存できなくても動く */ }
+    /* 保存するのは自動軽量化が有効(opts.autoQ)のときだけ。古い呼び出し元の1回のカクつきで下げた段階を次回に持ちこまない。
+     * 30fpsちょうどで安定しているとき(_capLike: iPadの低電力モードなどで、書きかえが1秒30回に絞られている)は
+     * GPUの力不足ではないので、下げるのはこの回だけにして保存しない(保存すると低電力モードをやめても軽いまま) */
+    if (!this.autoQ || this._capLike) return;
+    try {
+      localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, dpr: P.dpr, shadowLevel: P.shadowLevel, bloom: P.bloom !== false }));
+      this._perfSaved = true;
+    } catch (e) { /* 保存できなくても動く */ }
   }
 
   /* 自動軽量化の見張り(毎フレーム呼ぶ)。1回のカクつきでは落とさない:
-   * 4秒ごとに平均fpsを見て、40未満が2回続き、直近2.5秒にカクつき(0.09秒以上)が無いときだけ1段下げる */
+   * 4秒ごとに平均fpsを見て、40未満が2回続き、直近2.5秒にカクつき(0.09秒以上)が無いときだけ1段下げる。
+   * 55fps以上が3回(12秒)続いたら、前の起動で保存した軽い段階は忘れる(次の起動はふつうの画質から) */
   autoQualityTick(dt, { busy = false } = {}) {
-    const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0 });
+    const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0, good: 0, mx: 0, forgot: false });
     const now = performance.now();
     if (dt >= 0.09) A.hitch = now;
     A.t += dt; A.n++;
+    if (dt > A.mx) A.mx = dt;
     if (A.t < 4 - 1e-6) return null;   // 1/30秒を120回足しても4にわずかに届かないので少し余裕を見る
-    const fps = A.n / A.t;
-    A.t = 0; A.n = 0;
+    const fps = A.n / A.t, mx = A.mx;
+    A.t = 0; A.n = 0; A.mx = 0;
+    /* 30fps前後で1コマの長さがそろっている = 画面の書きかえの上限(iPadの低電力モードなど)。GPUの限界ではないので保存しない */
+    this._capLike = fps > 27 && fps < 32 && mx < 0.045;
+    /* なめらかに動いている: 前の起動で保存した軽い段階を消す。
+     * ただし、この起動で自分で下げて保存した段階は消さない(下げたから速くなっただけなので) */
+    A.good = fps >= 55 ? A.good + 1 : 0;
+    if (A.good >= 3 && this.autoQ && !this._perfSaved && !A.forgot) {
+      A.forgot = true;
+      try { localStorage.removeItem(PERF_KEY); } catch (e) { /* 消せなくても動く */ }
+    }
     const bad = fps < 40 && now - A.hitch > 2500 && !busy;
     A.bad = bad ? A.bad + 1 : 0;
     if (A.bad < 2) return null;

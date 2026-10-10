@@ -376,8 +376,14 @@ function islandProfile(eA, eB) {
   return [...a, [(eA + eB) / 2, 1.05, A(0.94)], ...b];
 }
 
+/* 5mごとの骨組みにそろえた位置(buildStations の iOf と同じ丸め・はみ出し止め) */
+function snapS(rs, s) {
+  const N = rs.frames.length - 1;
+  return Math.max(0, Math.min(N, Math.round(s / rs.step))) * rs.step;
+}
+/* ホームの床が実際にある範囲か(buildStations の i0〜i1 と同じ。標識・信号の根元をホーム面に上げる判定) */
 export function inPlatform(rs, s) {
-  return rs.line.stations.some((st) => s > st.s - P_A - 5 && s < st.s + P_B + 5);
+  return rs.line.stations.some((st) => s >= snapS(rs, st.s - P_A) && s <= snapS(rs, st.s + P_B));
 }
 
 /* ---------- 駅(全駅) ---------- */
@@ -869,7 +875,15 @@ export function buildBoards(rs) {
 
 /* ---------- 信号機(種別が変わるたびに作り直す) ---------- */
 export function buildSignals(rs) {
-  buildSignalsAt(rs, (s) => inPlatform(rs, s));
+  const T = rs.terminal;
+  /* 信号の上にある天井の高さ(レール面から): トンネル・地下駅は天井の光る帯 6.1 /
+   * ホームの屋根は鼻隠しの下端 3.98 / なにもなければ Infinity。灯器がこの下に収まるようにする */
+  const cover = (s) => {
+    if (rs._inTunnel(s)) return 6.1;
+    return rs.line.stations.some((st) => !(T && st.name === '新宿') && !rs._inTunnel(st.s)
+      && s > snapS(rs, st.s - ROOF_A) - 1 && s < snapS(rs, st.s + ROOF_B) + 1) ? 3.98 : Infinity;
+  };
+  buildSignalsAt(rs, (s) => inPlatform(rs, s), cover);
   updateLedBoards(rs);
 }
 
@@ -929,6 +943,15 @@ export function buildFurniture(rs) {
   }
   rs._vendFrontMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 });
   const VF = bakerFor(rs, rs._vendFrontMat, rs._vendFrontMat);
+  /* 門型ビームの柱(線路方向±0.12m)にかぶらないよう、備品を線路方向へずらす(継電箱と同じ考え方) */
+  const gS = (rs._catSupports || []).filter((sp) => sp.type === 'gantry').map((sp) => sp.s);
+  const clearOfPoles = (s, half) => {
+    for (const g of gS) {
+      const d = s - g;
+      if (Math.abs(d) < half + 0.35) return g + (d < 0 ? -1 : 1) * (half + 0.35);
+    }
+    return s;
+  };
   rs.line.stations.forEach((st, si) => {
     if (T && st.name === '新宿') return;    // ターミナルは島式ホーム(ベンチは置かない)
     const B = stationBaker(rs, si);
@@ -936,13 +959,13 @@ export function buildFurniture(rs) {
     /* 左ホームの -45.5/-95.5m には停止位置の予告(50/100)が立つので、ベンチはずらす */
     [[1, 4.45, [-54, -86]], [-1, -8.25, [-45, -95]]].forEach(([dir, off, benchS]) => {
       benchS.forEach((ds) => {
-        frameInto(rs, st.s + ds, f);
+        frameInto(rs, clearOfPoles(st.s + ds, 0.75), f);
         q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));   // 線路のほうを向く
         m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05), q, one);
         rs._benchParts.forEach(([g, col]) => B.geo(g, { m: m4, col, white: true }));
       });
       /* 自販機(本体は駅の形に、光る前面は全線まとめて) */
-      frameInto(rs, st.s - 68, f);
+      frameInto(rs, clearOfPoles(st.s - 68, 0.43), f);
       q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));
       m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05 + 0.85), q, one);
       B.geo(rs._vendGeo, { m: m4, col: vendCols[(si + (dir > 0 ? 0 : 1)) % vendCols.length], white: true });
@@ -991,6 +1014,7 @@ function crowdRes(rs) {
   };
   matCrowd.customProgramCacheKey = () => 'st-crowd';
   matCrowd.name = 'st-crowd';
+  matCrowd.userData.noWeather = true;     // 屋根の下で待つ人の頭・肩に雪が積もらないように
   const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
   depth.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader.replace('#include <common>', vsPars).replace('#include <begin_vertex>', vsBag);
@@ -1008,6 +1032,7 @@ function crowdRes(rs) {
   };
   const matFig = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.88 });
   matFig.name = 'st-fig';
+  matFig.userData.noWeather = true;
   const R = rs._crowdRes = { v3: true, crowd, matCrowd, depth, fig, matFig };
   rs._keep.add(matCrowd); rs._keep.add(matFig); rs._keep.add(depth);
   return R;

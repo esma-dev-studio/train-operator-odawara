@@ -1,8 +1,8 @@
 /* =========================================================
  * scene/town.js — 沿線の街(P1): 線路に沿った街区・側道と電柱・戸建て・遠景・森の丘・木のLOD
  *
- * ・占有グリッド rs._occ (3mマス, キー `${ix},${iz}`)に線路・ホーム・駅舎・道路・建物を
- *   書き込み、建物どうしや線路との重なりを防ぐ。
+ * ・占有グリッド rs._occ (3mマス, キーは数値 (ix+16384)*32768+(iz+16384))に線路・ホーム・駅舎・道路・建物を
+ *   書き込み、建物どうしや線路との重なりを防ぐ。作るときだけ使い、ワールドができたら捨てる(setWorld)。
  * ・インスタンスは線路の距離 s ごとの「かたまり(チャンク)」に自前で分ける(視錐台カリング用。
  *   _splitInstances には任せず userData.noSplit)。影は「線路の近くのインスタンスだけ」を
  *   先頭に並べ、影描画のときだけ count を減らして描く(メッシュを2つに分けずに済む)。
@@ -48,7 +48,9 @@ const FR = () => ({ x: 0, y: 0, z: 0, tx: 0, tz: 1, lx: 1, lz: 0, yaw: 0 });
 const yawFromX = (dx, dz) => Math.atan2(-dz, dx);
 
 /* ---------- 占有グリッド ---------- */
-const okey = (x, z) => Math.floor(x / CELL) + ',' + Math.floor(z / CELL);
+/* キーは文字列にせず数値で(作り直しのたびに百万回以上よぶので、文字列だと遅くゴミも多い)。
+ * ±16384マス(±49km)まで1対1。路線は±11kmくらいなので足りる。小さな整数のままなので速い */
+const okey = (x, z) => (Math.floor(x / CELL) + 16384) * 32768 + (Math.floor(z / CELL) + 16384);
 function occPut(occ, x, z, v) {
   const k = okey(x, z);
   const o = occ.get(k);
@@ -1077,6 +1079,7 @@ function buildHouses(rs, T) {
     emitInstanced(T.groups.town, ag, M.ao, aos, 500, { colors: false, receive: false });
   }
   T.houseCount = gable.length + flat.length;
+  T.boxes = T.aos = null;   // 小物と接地影の表は作るときだけ使う(メモリを返す)
 }
 
 /* ---------- 遠景: 街並みと丘の稜線のリング + 新宿の高層ビル群(看板) ---------- */
