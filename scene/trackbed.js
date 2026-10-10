@@ -207,13 +207,19 @@ export function groundStrip(F, FS, i0, i1, side, opts = {}) {
   const shiftF = opts.shift || (() => 0);
   const vcol = opts.vcol || null;
   const C = GROUND_COLS.L.length + 1;
-  const rows = i1 - i0 + 1, nv = rows * C;
+  /* 地面は2行(10m)おきで十分(三角形を半分に)。最後の行は必ず入れる */
+  const rowStep = opts.rowStep || 2;
+  const list = [];
+  for (let i = i0; i < i1; i += rowStep) list.push(i);
+  list.push(i1);
+  const rows = list.length, nv = rows * C;
   const pos = new Float32Array(nv * 3), uv = new Float32Array(nv * 2);
   const col = vcol ? new Float32Array(nv * 3) : null;
   const idx = new Uint32Array((rows - 1) * (C - 1) * 6);
   let n = 0, k = 0;
   const L = new THREE.Vector3();
-  for (let i = i0; i <= i1; i++) {
+  for (let ri = 0; ri < rows; ri++) {
+    const i = list[ri];
     const f = F[i], sh = shiftF(i);
     const cols = groundColumnsAt(F, FS, i, side, sh);
     const inner = cols[1], out = cols[2];
@@ -231,8 +237,8 @@ export function groundStrip(F, FS, i0, i1, side, opts = {}) {
       if (col) { const cc = vcol(i, c, C); col[n * 3] = cc[0]; col[n * 3 + 1] = cc[1]; col[n * 3 + 2] = cc[2]; }
       n++;
     }
-    if (i > i0) {
-      const r = i - i0;
+    if (ri > 0) {
+      const r = ri;
       for (let c = 0; c < C - 1; c++) {
         /* 左側は列の並びが「右→左」なので、法線が上を向くように入れかえる */
         let a = (r - 1) * C + c, b = a + 1, c2 = r * C + c, d = c2 + 1;
@@ -247,7 +253,7 @@ export function groundStrip(F, FS, i0, i1, side, opts = {}) {
   if (col) g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeVertexNormals();
-  g.userData.rows = rows; g.userData.cols = C; g.userData.i0 = i0;
+  g.userData.rows = rows; g.userData.cols = C; g.userData.i0 = i0; g.userData.rowStep = rowStep;
   return g;
 }
 
@@ -267,7 +273,7 @@ export function mergeRibbons(world, rowsPer = 150) {
     if (!ud || !ud.rows || ud.rows < 2 || (o.userData && o.userData.noMerge) || ud.noMerge) continue;
     if (Array.isArray(o.material) || !g.index || g.groups.length || g.morphAttributes.position) continue;
     if (!isIdentity(o) || !o.visible || !o.frustumCulled) continue;
-    const C = ud.cols || 2, i0 = ud.i0 || 0, rows = ud.rows;
+    const C = ud.cols || 2, i0 = ud.i0 || 0, rows = ud.rows, rstep = ud.rowStep || 1;
     if (g.attributes.position.count !== rows * C) continue;
     const names = Object.keys(g.attributes).sort();
     if (names.some((nm) => g.attributes[nm].isInterleavedBufferAttribute)) continue;
@@ -279,16 +285,17 @@ export function mergeRibbons(world, rowsPer = 150) {
       const ra = (ix[t] / C) | 0, rb = (ix[t + 1] / C) | 0, rc = (ix[t + 2] / C) | 0;
       const r = Math.min(ra, rb, rc);
       if (Math.max(ra, rb, rc) - r > 1) { ok = false; break; }
-      const ch = Math.floor((i0 + r) / rowsPer);
-      let arr = tri.get(ch);
-      if (!arr) { arr = []; tri.set(ch, arr); }
-      arr.push(t);
+      const ch = Math.floor((i0 + r * rstep) / rowsPer);
+      let e = tri.get(ch);
+      if (!e) { e = { tl: [], rmin: r, rmax: r + 1 }; tri.set(ch, e); }
+      e.tl.push(t);
+      if (r < e.rmin) e.rmin = r;
+      if (r + 1 > e.rmax) e.rmax = Math.min(rows - 1, r + 1);
     }
     if (!ok) continue;
     victims.push(o);
     const kb = `${o.material.uuid}|${o.castShadow}|${o.receiveShadow}|${o.renderOrder}|${names.join(',')}`;
-    tri.forEach((tl, ch) => {
-      const r0 = Math.max(0, ch * rowsPer - i0), r1 = Math.min(rows - 1, (ch + 1) * rowsPer - i0);
+    tri.forEach(({ tl, rmin: r0, rmax: r1 }, ch) => {
       const key = kb + '|' + ch;
       let b = buckets.get(key);
       if (!b) { b = { o, names, parts: [], nv: 0, ni: 0 }; buckets.set(key, b); }
@@ -655,10 +662,11 @@ export function buildTrackBed(rs, o = {}) {
   });
 
   /* レール: 頭面+両側の腹+底(フット) */
-  const rail = (a, b, off) => {
+  /* side: 腹を両側に付けるか(0)、外側だけか(+1/-1。遠くを走る急行線は外側だけで十分) */
+  const rail = (a, b, off, side = 0) => {
     add(flatStrip(F, a, b, off, 0.068, 0.19, 25, step), M.railHead);
-    add(wallStrip(F, a, b, plus(off, 0.034), 0.05, 0.178, 8, step), M.railWeb);
-    add(wallStrip(F, a, b, plus(off, -0.034), 0.05, 0.178, 8, step), M.railWeb);
+    if (side >= 0) add(wallStrip(F, a, b, plus(off, 0.034), 0.05, 0.178, 8, step), M.railWeb);
+    if (side <= 0) add(wallStrip(F, a, b, plus(off, -0.034), 0.05, 0.178, 8, step), M.railWeb);
     add(flatStrip(F, a, b, off, 0.127, 0.065, 25, step), M.railWeb);
   };
   /* 枕木の帯(3Dの枕木とちょうど重なる位置。橋の上は木のまくら木で、すき間から川が見える) */
@@ -673,7 +681,7 @@ export function buildTrackBed(rs, o = {}) {
   [0, 1].forEach((k) => {
     const offk = k ? e1 : e0;
     rowRanges(0, N, (i) => quadSep(i * step, k, qi) >= 0.15).forEach(([a, b]) => {
-      [-RAIL_HALF, RAIL_HALF].forEach((d) => rail(a, b, plus(offk, d)));
+      [-RAIL_HALF, RAIL_HALF].forEach((d) => rail(a, b, plus(offk, d), Math.sign(d)));
     });
     rowRanges(0, N, (i) => quadSep(i * step, k, qi) >= 2.0).forEach(([a, b]) => band(a, b, offk));
   });
@@ -788,11 +796,11 @@ function gantryGeo(xL, xR) {
   }
   const x0 = xR - 0.12, x1 = xL + 0.12, yb = 6.635, yt = 7.165, zz = 0.225;
   for (const z of [-zz, zz]) for (const y of [yb, yt]) accBar(acc, V3(x0, y, z), V3(x1, y, z), 0.07, 0.07, AZ, steel);
-  const n = Math.max(4, Math.round((x1 - x0) / 0.8)), P = (x1 - x0) / n;
+  const n = Math.max(4, Math.round((x1 - x0) / 1.0)), P = (x1 - x0) / n;
   for (let j = 0; j < n; j++) {
     const xa = x0 + j * P, xb = xa + P, up = j % 2 === 0;
     for (const z of [-zz, zz]) accBar(acc, V3(xa, up ? yb : yt, z), V3(xb, up ? yt : yb, z), 0.045, 0.045, AZ, steel);
-    if (j % 2 === 0) {
+    if (j % 4 === 0) {
       accBar(acc, V3(xa, yt, -zz), V3(xa, yt, zz), 0.04, 0.04, AX, steel);
       accBar(acc, V3(xa, yb, -zz), V3(xa, yb, zz), 0.04, 0.04, AX, steel);
     }
@@ -893,7 +901,7 @@ export function buildCatenary(rs, o = {}) {
     });
   });
   const shadows = !!o.shadows;
-  /* 門型ビームは450mごとのまとまりにして、カメラから約1.1km以内だけ描く(遠くは霧で見えない) */
+  /* 門型ビームは450mごとのまとまりにして、カメラから約800m以内だけ描く(遠くは霧でほとんど見えない) */
   rs._brkCells = [];
   [['double', gantryGeo(POLE.L, POLE.R)], ['station', gantryGeo(POLE.stL, POLE.stR)], ['quad', gantryGeo(POLE.quadL, POLE.R)]].forEach(([k, geo]) => {
     const cells = new Map();
@@ -909,10 +917,10 @@ export function buildCatenary(rs, o = {}) {
       im.userData.noSplit = true;
       im.computeBoundingSphere();
       rs.world.add(im);
-      rs._brkCells.push({ mesh: im, s0: c * 450, s1: c * 450 + 450, r: 1100 });
+      rs._brkCells.push({ mesh: im, s0: c * 450, s1: c * 450 + 450, r: 800 });
     });
   });
-  /* ブラケットは小さいので、カメラから約500m以内の区間だけ描く(300mごとのまとまり) */
+  /* ブラケットは小さいので、カメラから約400m以内の区間だけ描く(300mごとのまとまり) */
   [['normal', bracketGeo(BRK.normal)], ['tunnel', bracketGeo(BRK.tunnel)]].forEach(([k, geo]) => {
     const cells = new Map();
     bList[k].forEach((m, i) => {
@@ -927,7 +935,7 @@ export function buildCatenary(rs, o = {}) {
       im.userData.noSplit = true;
       im.computeBoundingSphere();
       rs.world.add(im);
-      rs._brkCells.push({ mesh: im, s0: c * 300, s1: c * 300 + 300, r: 520 });
+      rs._brkCells.push({ mesh: im, s0: c * 300, s1: c * 300 + 300, r: 420 });
     });
   });
 

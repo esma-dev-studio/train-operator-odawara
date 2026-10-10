@@ -17,7 +17,7 @@ import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
-import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, onBridge, mergeRibbons, texPCSleeper, wallStrip, flatStrip } from './trackbed.js';
+import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper } from './trackbed.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -856,6 +856,7 @@ export class RailScene {
   _buildTrack() {
     this.quadOff = QUAD_OFF;
     this._qi = quadInfo(this.line);
+    this._exitGlow = null; this._brkCells = null;   // 前の路線の分(作り直しで捨てられる)は使わない
     buildTrackBed(this, { aniso: QUALITY[this.quality].aniso });
   }
 
@@ -863,6 +864,9 @@ export class RailScene {
    * 遠くは枕木の帯(テクスチャ)が同じ位置に描かれているので、近くだけ立体の枕木を重ねる */
   _buildSleepers() {
     const geo = new THREE.BoxGeometry(2.0, 0.14, 0.24);   // 狭軌用のPCまくら木
+    /* 底面は見えないので三角形を省く(BoxGeometry の面の順: +x,-x,+y,-y,+z,-z) */
+    geo.setIndex(Array.from(geo.index.array).filter((v, k) => k < 18 || k >= 24));
+    geo.clearGroups();
     if (!this._slpCol) {
       const t = texPCSleeper();
       this._keep.add(t);
@@ -875,12 +879,12 @@ export class RailScene {
       };
       this.M.sleeper.color.copy(this._slpCol.base);
     }
-    /* own: -45..+195, up: -45..+140, 急行線: -30..+140 (間隔0.625m) */
+    /* own: -45..+195, up: -45..+140, 急行線: -20..+110 (間隔0.625m) */
     this._slpSpec = [
       { off: 0, back: 45, fwd: 195 },
       { off: -3.8, back: 45, fwd: 140 },
-      { k: 0, back: 30, fwd: 140, zone: 'quad' },
-      { k: 1, back: 30, fwd: 140, zone: 'quad' },
+      { k: 0, back: 20, fwd: 110, zone: 'quad' },
+      { k: 1, back: 20, fwd: 110, zone: 'quad' },
     ];
     let total = 0;
     this._slpSpec.forEach((sp) => { sp.count = Math.floor((sp.back + sp.fwd) / 0.625); total += sp.count; });
@@ -1856,11 +1860,10 @@ export class RailScene {
       const top = new THREE.Mesh(ribbon(F, a, b, off, 0.3, -0.3, 0.6), this.M.trough);
       top.receiveShadow = true;
       this.world.add(top);
-      [-0.15, 0.15].forEach((d) => {
-        const sd = new THREE.Mesh(vribbon(F, a, b, off + d, -0.43, -0.3, 0.6), this.M.trough);
-        sd.receiveShadow = true;
-        this.world.add(sd);
-      });
+      /* 側面は線路から見える側だけ */
+      const sd = new THREE.Mesh(vribbon(F, a, b, off - Math.sign(off) * 0.15, -0.43, -0.3, 0.6), this.M.trough);
+      sd.receiveShadow = true;
+      this.world.add(sd);
     };
     bedRuns(this).forEach(({ type, i0, i1 }) => {
       if (type !== 'bed') return;
