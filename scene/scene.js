@@ -479,7 +479,7 @@ export class RailScene {
     this.U = makeWeatherUniforms();
     this.U.uWxMacro.value = makeMacroTex();
     this._camS = sim ? sim.pos : 0;
-    this._k = 1; this._kFog = 1; this._kEnv = 1; this._kInit = false;
+    this._k = 1; this._kFog = 1; this._kWx = 1; this._kEnv = 1; this._kInit = false;
     this._envMats = new Set();
     this._fogDirect = new THREE.Color(LOOK.day.fogFallback);
     this._fogPost = new THREE.Color(LOOK.day.fogFallback);
@@ -786,38 +786,30 @@ export class RailScene {
 
   /* 使うシェーダを走り出す前に全部コンパイルしておく(走行中のカクつき防止)。
    * 直接描く場合とブルーム用の描画先に描く場合でシェーダが別なので、使うほうを両方。
-   * 背景(HDRの箱)はシーンの外にあるので、1画素だけ描いて作らせる */
+   * 背景(HDRの箱)とブルームの各パスはシーンの外にあって compile() では作られないので、実際に1回描いて作らせる。
+   * (背景を空のシーンで描くと、光源0個の使わない版ができ、しかも本番の版への切りかえが起きなくなる) */
   prewarm() {
     this._needPrewarm = false;
     const r = this.renderer;
     if (!r || !this.scene) return;
     const direct = !this.composer || (this.timeOfDay === 'day' && this.weather === 'clear');
-    const bg = this.scene.background && this.scene.background.isTexture ? this.scene.background : null;
     const rt0 = r.getRenderTarget();
     try {
-      if (!this._bgScene) this._bgScene = new THREE.Scene();
-      const bs = this._bgScene;
-      bs.background = bg;
-      bs.backgroundIntensity = this.scene.backgroundIntensity;
-      const vp = r.getViewport(new THREE.Vector4()), sc = r.getScissor(new THREE.Vector4()), st = r.getScissorTest();
-      const tiny = (target) => {
-        if (!bg) return;
-        r.setRenderTarget(target);
-        r.setViewport(0, 0, 1, 1); r.setScissor(0, 0, 1, 1); r.setScissorTest(true);
-        r.render(bs, this.camera);
-        r.setViewport(vp); r.setScissor(sc); r.setScissorTest(st);
-      };
       if (direct) {
         r.setRenderTarget(null);
         r.compile(this.scene, this.camera);
-        tiny(null);
       }
       if (this.composer) {
         r.setRenderTarget(this.composer.renderTarget1);
         r.compile(this.scene, this.camera);
-        tiny(this.composer.renderTarget1);
+        /* 昼の晴れ(ふだんは直接描く)でも、トンネルやターミナルに入るとブルーム経由に切りかわる。
+         * そのときに背景・にじみ・合成・出力のシェーダを作ると止まるので、ここで1回通しておく */
+        if (direct) {
+          this.composer.render(0);
+          /* いまブルーム経由で描いている(ターミナルの中など)なら、外に出たときの直接描く版も */
+          if (this._usePost()) { r.setRenderTarget(null); r.render(this.scene, this.camera); }
+        }
       }
-      bs.background = null;
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
   }
@@ -863,6 +855,8 @@ export class RailScene {
 
   _savePerf() {
     const P = this._perf;
+    /* 保存するのは自動軽量化が有効(opts.autoQ)のときだけ。古い呼び出し元の1回のカクつきで下げた段階を次回に持ちこまない */
+    if (!this.autoQ) return;
     try { localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, dpr: P.dpr, shadowLevel: P.shadowLevel, bloom: P.bloom !== false })); } catch (e) { /* 保存できなくても動く */ }
   }
 
@@ -934,7 +928,9 @@ export class RailScene {
     const { mesh, U } = makeNightSky(this.eveSky.geometry);
     mesh.scale.setScalar(2300);
     this._nightU = U;
-    this._moonDir = U.uMoon.value.clone();
+    /* 月明かり(夜の平行光)の向きは高い空から。見えている低い月の向きにすると、
+     * レールの頭がまっすぐこちらへ光って白くにじむため */
+    this._moonDir = new THREE.Vector3(-0.35, 0.42, 0.84).normalize();
     this._glowCity = new THREE.Color(0x4a3426);
     this._glowSub = new THREE.Color(0x2a2422);
     this._glowWet = new THREE.Color(0x3a3a40);
@@ -1058,8 +1054,8 @@ export class RailScene {
       if (this.eveSky) this.eveSky.scale.setScalar(sk);
       if (this.nightSky) this.nightSky.scale.setScalar(sk);
     }
-    /* ぬれ・雪: トンネルの奥(k小)ではトンネル内の道床が見えているので、雪も水たまりも消す */
-    const kw = Math.min(1, Math.max(0, (k - 0.1) / 0.5));
+    /* ぬれ・雪: トンネルの奥・地下駅・ターミナルの屋根の下では消す(_updateLightLevel で目の慣れと同じ速さでなじませる) */
+    const kw = this._kWx;
     this.U.uWet.value = L.wet * kw;
     this.U.uSnow.value = L.snow * kw;
     /* 前照灯(昼の屋外は0、トンネルでは点ける) */
@@ -2927,7 +2923,7 @@ export class RailScene {
   /* 目の慣れ: カメラがトンネル・ターミナルにいると暗く(k<1)、出入り口は約1秒でなじむ */
   _updateLightLevel(dt) {
     const s = this._camS;
-    let kT = 1, kfT = 1, indoor = false;
+    let kT = 1, kfT = 1, wxT = 1, indoor = false;
     if (this.camMode !== 'drone' && this.line) {
       const tn = this.line.sections.tunnel.find((t) => s > t.from && s < t.to);
       if (tn) {
@@ -2937,21 +2933,28 @@ export class RailScene {
         if (this.line.stations.some((st) => st.s > tn.from && st.s < tn.to && s > st.s - 175 && s < st.s + 30)) kT = Math.max(kT, 0.30);
         kfT = kT;
         indoor = true;
+        /* 雪・ぬれは出入り口の近く(外が見えるところ)だけ。奥や地下駅のホームは乾いている */
+        wxT = Math.max(0, 1 - d / 60);
       } else if (this._inTerminal(s)) {
         kT = 0.30;
         indoor = true;
+        /* ターミナルの屋根の下も乾いている(線路側の出口に近づくと外の雪・ぬれが見えてくる) */
+        const T = this.terminal;
+        wxT = Math.max(0, 1 - (T.up ? s - T.a : T.b - s) / 60);
       }
     }
     const jump = !this._kInit || Math.abs(s - this._kLastS) > 60;
     this._kInit = true;
     this._kLastS = s;
-    if (jump) { this._k = kT; this._kFog = kfT; }
+    if (jump) { this._k = kT; this._kFog = kfT; this._kWx = wxT; }
     else if (dt > 0) {
       const a = 1 - Math.exp(-dt * 1.2);
       this._k += (kT - this._k) * a;
       this._kFog += (kfT - this._kFog) * a;
+      this._kWx += (wxT - this._kWx) * a;
       if (Math.abs(kT - this._k) < 0.002) this._k = kT;
       if (Math.abs(kfT - this._kFog) < 0.002) this._kFog = kfT;
+      if (Math.abs(wxT - this._kWx) < 0.002) this._kWx = wxT;
     }
     this.look.k = this._k;
     this.look.indoor = indoor;

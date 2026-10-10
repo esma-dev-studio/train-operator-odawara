@@ -218,9 +218,14 @@ const WX_MACRO = `
     diffuseColor.rgb *= mix( vec3( 0.80, 0.86, 0.74 ), vec3( 1.10, 1.06, 0.92 ), wxM1 ) * ( 0.9 + 0.2 * wxM2 );
     diffuseColor.rgb = mix( diffuseColor.rgb, vec3( 0.42, 0.50, 0.36 ) * uWxFar, smoothstep( 150.0, 600.0, distance( vWxP, cameraPosition ) ) * 0.35 );
     if ( uSnow > 0.0 ) {
+      /* 雪の凹凸: 芝の細かい模様は少し離れると平均されて消えるので、1〜2m(9m周期の値ノイズ)の
+       * ムラと吹きだまり(37m)で明るさを変える。足もとだけ芝の模様も凹凸として残す。
+       * 雪は明るくトーンマップで差がつぶれやすいので、反射率の差は大きめにとる */
       float wxL = dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
-      vec3 wxRel = mix( uSnowCol * 0.78, uSnowCol, smoothstep( 0.06, 0.4, wxL + ( wxM2 - 0.5 ) * 0.25 ) );
-      wxCov = uSnow;
+      float wxN1 = texture2D( uWxMacro, vWxP.xz * ( 1.0 / 9.0 ) ).r;
+      vec3 wxRel = uSnowCol * ( 0.58 + 0.42 * wxN1 * wxN1 ) * ( 0.82 + 0.18 * wxM2 ) * ( 0.88 + 0.12 * smoothstep( 0.05, 0.2, wxL ) );
+      /* 風で雪がうすい所は芝が少し透ける(真っ白で何もない面にしない) */
+      wxCov = uSnow * ( 1.0 - 0.45 * smoothstep( 0.56, 0.78, wxM2 ) * ( 0.6 + 0.4 * wxN1 ) );
       diffuseColor.rgb = mix( diffuseColor.rgb, wxRel, wxCov );
     }
   }
@@ -233,6 +238,13 @@ const WX_GENERIC = `
   if ( uWet > 0.0 ) {
     wxWet = uWet * ( 0.55 + 0.45 * wxUp );
     diffuseColor.rgb *= 1.0 - 0.38 * wxWet;
+    #ifdef USE_MAP
+      /* 模様のある面(砂利など): すき間(暗い所)は水がしみてさらに暗く、明るい石の上だけ光る。
+       * 全体を鏡のようにすると、空が映って乾いた時より白っぽい板に見えてしまう */
+      float wxG = smoothstep( 0.08, 0.32, dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );
+      diffuseColor.rgb *= 1.0 - 0.3 * wxWet * ( 1.0 - wxG );
+      wxWet *= 0.3 + 0.7 * wxG;
+    #endif
   }
   if ( uSnow > 0.0 ) {
     float wxH = fract( sin( dot( floor( vWxP.xz * 1.7 ), vec2( 12.99, 78.23 ) ) ) * 43758.5 );
@@ -309,7 +321,8 @@ export function makeNightSky(geometry) {
     uZen: { value: new THREE.Color(0x03060d) },
     uHor: { value: new THREE.Color(0x18202f) },
     uGlow: { value: new THREE.Color(0x4a3426) },
-    uMoon: { value: new THREE.Vector3(-0.35, 0.42, 0.84).normalize() },
+    /* 月は西の空・高さ15°(くだりの運転台の正面〜右前に見える。高いと屋根や表示に隠れる) */
+    uMoon: { value: new THREE.Vector3(-0.965, 0.259, -0.034).normalize() },
     uStars: { value: 1 },
   };
   const mat = new THREE.ShaderMaterial({
@@ -337,7 +350,7 @@ export function makeNightSky(geometry) {
         float star = step( 0.9965, r ) * smoothstep( 0.38, 0.0, length( fract( g ) - 0.5 ) ) * smoothstep( 0.05, 0.22, h ) * uStars;
         c += vec3( 0.9, 0.95, 1.0 ) * star * ( 0.5 + 1.6 * fract( r * 37.0 ) );
         float m = dot( d, uMoon );
-        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.9999, 0.99994, m ) * 3.0 + pow( max( m, 0.0 ), 600.0 ) * 0.25 );
+        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.9999, 0.99994, m ) * 1.7 + pow( max( m, 0.0 ), 600.0 ) * 0.14 );
         gl_FragColor = vec4( c, 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
