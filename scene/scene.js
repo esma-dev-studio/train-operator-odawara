@@ -17,6 +17,7 @@ import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
+import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, onBridge, mergeRibbons, texPCSleeper, wallStrip, flatStrip } from './trackbed.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -56,13 +57,16 @@ export function frameAt(frames, step, s) {
 }
 
 /* 中心線から横にoffsetした帯状ジオメトリ（UV: u=横, v=距離/uvScale）
- * vcol(i, u01) を渡すと頂点色を付ける（地面のムラ・市街地の色調に使用） */
+ * offset は数か (i)=>数(複々線の分岐のように行ごとに横位置が変わる帯)。
+ * vcol(i, u01) を渡すと頂点色を付ける（地面のムラ・市街地の色調に使用）。
+ * 三角形は法線が上を向く向き(材質は両面)。userData.rows/cols/i0 は帯の結合で使う */
 function ribbon(frames, i0, i1, offset, width, lift, uvScale, vcol) {
   const pos = [], uv = [], idx = [], col = [];
+  const of = typeof offset === 'function' ? offset : () => offset;
   let n = 0;
   for (let i = i0; i <= i1; i++) {
     const f = frames[i];
-    const c = f.p.clone().addScaledVector(f.left, offset);
+    const c = f.p.clone().addScaledVector(f.left, of(i));
     const l = c.clone().addScaledVector(f.left, width / 2);
     const r = c.clone().addScaledVector(f.left, -width / 2);
     pos.push(l.x, l.y + lift, l.z, r.x, r.y + lift, r.z);
@@ -71,7 +75,7 @@ function ribbon(frames, i0, i1, offset, width, lift, uvScale, vcol) {
     if (vcol) { const a = vcol(i, 0), b = vcol(i, 1); col.push(a[0], a[1], a[2], b[0], b[1], b[2]); }
     if (i > i0) {
       const a = n - 2, b = n - 1, c2 = n, d = n + 1;
-      idx.push(a, c2, b, b, c2, d);
+      idx.push(a, b, c2, b, d, c2);
     }
     n += 2;
   }
@@ -82,43 +86,51 @@ function ribbon(frames, i0, i1, offset, width, lift, uvScale, vcol) {
   g.setIndex(idx);
   g.computeVertexNormals();
   g.userData.rows = i1 - i0 + 1;
+  g.userData.cols = 2;
+  g.userData.i0 = i0;
   return g;
 }
 
-/* 長い帯(ribbon/vribbon)を行単位でいくつかに切り分ける(視錐台カリングを効かせるため) */
+/* 長い帯(1行に cols 個の頂点が並ぶ形)を行単位でいくつかに切り分ける */
 function splitRows(g, rowsPer) {
-  const rows = g.userData.rows;
+  const rows = g.userData.rows, C = g.userData.cols || 2;
   const out = [];
   const A = g.attributes;
+  const ix = g.index.array;
   for (let r0 = 0; r0 < rows - 1; r0 += rowsPer) {
     const r1 = Math.min(rows - 1, r0 + rowsPer);
     const ng = new THREE.BufferGeometry();
     Object.keys(A).forEach((k) => {
       const it = A[k].itemSize;
-      ng.setAttribute(k, new THREE.Float32BufferAttribute(A[k].array.slice(r0 * 2 * it, (r1 + 1) * 2 * it), it));
+      ng.setAttribute(k, new THREE.Float32BufferAttribute(A[k].array.slice(r0 * C * it, (r1 + 1) * C * it), it));
     });
+    /* 元の三角形のうち、この行範囲に入るものだけを番号をずらして使う(向きはそのまま) */
     const idx = [];
-    const flip = g.userData.vr;
-    for (let r = 1; r <= r1 - r0; r++) {
-      const n = r * 2;
-      if (flip) idx.push(n - 2, n, n - 1, n - 1, n, n + 1);
-      else idx.push(n - 2, n, n - 1, n - 1, n, n + 1);
+    const lo = r0 * C, hi = (r1 + 1) * C;
+    for (let t = 0; t < ix.length; t += 3) {
+      const a = ix[t], b = ix[t + 1], c = ix[t + 2];
+      if (Math.min(a, b, c) >= lo && Math.max(a, b, c) < hi) idx.push(a - lo, b - lo, c - lo);
     }
     ng.setIndex(idx);
     ng.computeBoundingSphere();
+    ng.userData.rows = r1 - r0 + 1; ng.userData.cols = C; ng.userData.i0 = (g.userData.i0 || 0) + r0;
     out.push(ng);
   }
   return out;
 }
 
-/* 縦の帯（壁・レール腹・柵など。UV: u=距離/uvScale, v=縦0..1） */
+/* 縦の帯（壁・レール腹・柵など。UV: u=距離/uvScale, v=縦0..1）
+ * offset・y0・y1 は数か (i)=>数 */
 function vribbon(frames, i0, i1, offset, y0, y1, uvScale) {
   const pos = [], uv = [], idx = [];
+  const of = typeof offset === 'function' ? offset : () => offset;
+  const y0f = typeof y0 === 'function' ? y0 : () => y0;
+  const y1f = typeof y1 === 'function' ? y1 : () => y1;
   let n = 0;
   for (let i = i0; i <= i1; i++) {
     const f = frames[i];
-    const b = f.p.clone().addScaledVector(f.left, offset);
-    pos.push(b.x, b.y + y0, b.z, b.x, b.y + y1, b.z);
+    const b = f.p.clone().addScaledVector(f.left, of(i));
+    pos.push(b.x, b.y + y0f(i), b.z, b.x, b.y + y1f(i), b.z);
     const u = (i * 5) / uvScale;
     uv.push(u, 0, u, 1);
     if (i > i0) idx.push(n - 2, n, n - 1, n - 1, n, n + 1);
@@ -130,6 +142,8 @@ function vribbon(frames, i0, i1, offset, y0, y1, uvScale) {
   g.setIndex(idx);
   g.computeVertexNormals();
   g.userData.rows = i1 - i0 + 1;
+  g.userData.cols = 2;
+  g.userData.i0 = i0;
   g.userData.vr = true;
   return g;
 }
@@ -580,23 +594,12 @@ export class RailScene {
     this._applyWeather();
   }
 
-  /* 全線ぶんを1つにまとめた InstancedMesh は視錐台カリングが効かず、21kmぶんの
-   * 木やビルを毎フレーム全部描いてしまう。約700m四方のマスごとに分割して、
-   * 画面に入るマスだけ描かれるようにする(三角形数がおよそ1/5になる) */
+  /* 帯(ribbon など行のある形)を、全線共通の区切り(5m×150行=750m)で切り、
+   * 同じ材質・同じ影の設定のものを区切りごとに1つのメッシュへまとめる。
+   * 画面に入る区切りだけが描かれ、しかも材質ごとに1回の描画で済む(描画コールが大きく減る)。
+   * 参照を持ち続ける帯には userData.noMerge を付けておくこと */
   _splitRibbons() {
-    const ROWS = 150;   // 5m×150 = 750m ごと
-    this.world.children.slice().forEach((o) => {
-      if (!o.isMesh || o.isInstancedMesh || !o.geometry.userData.rows || o.geometry.userData.rows <= ROWS * 1.5) return;
-      const parts = splitRows(o.geometry, ROWS);
-      parts.forEach((ng) => {
-        const m = new THREE.Mesh(ng, o.material);
-        m.castShadow = o.castShadow; m.receiveShadow = o.receiveShadow; m.renderOrder = o.renderOrder;
-        m.position.copy(o.position); m.quaternion.copy(o.quaternion); m.scale.copy(o.scale);
-        this.world.add(m);
-      });
-      this.world.remove(o);
-      o.geometry.dispose();
-    });
+    this._mergeStat = mergeRibbons(this.world, 150);
   }
 
   _splitInstances() {
@@ -847,80 +850,37 @@ export class RailScene {
     }
   }
 
-  /* ---------- 軌道 ---------- */
+  /* ---------- 軌道 ----------
+   * 道床(バラストの肩・犬走り)・レール(頭面/腹/底)・枕木の帯・地面は scene/trackbed.js で作る。
+   * 複々線の急行線は QUAD_OFF(7.0 / 10.8m)。駅の先で分岐器のようになめらかに分かれる */
   _buildTrack() {
-    const F = this.frames, N = F.length - 1;
-    const recv = (m) => { m.receiveShadow = true; return m; };
-
-    /* 1本のレール: 頭面(金属)+両側の腹(垂直帯) */
-    const addRail = (offset, full) => {
-      this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, offset, 0.068, 0.19, 25), this.M.railHead)));
-      this.world.add(new THREE.Mesh(vribbon(F, 0, N, offset + 0.034, 0.05, 0.178, 8), this.M.railWeb));
-      if (full) this.world.add(new THREE.Mesh(vribbon(F, 0, N, offset - 0.034, 0.05, 0.178, 8), this.M.railWeb));
-    };
-    const addTrack = (offset, full) => {
-      this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, offset, 4.2, 0, 2.5), this.M.ballast)));
-      [-RAIL_HALF, RAIL_HALF].forEach((o) => addRail(offset + o, full));
-    };
-    addTrack(0, true);       // 自列車（下り）
-    addTrack(-3.8, true);    // 上り線
-
-    /* 複々線区間: 急行線2本を追加(頭面+外側の腹のみ) */
-    const q = this.line.sections.quad;
-    const qi0 = Math.floor(q.from / this.step), qi1 = Math.ceil(q.to / this.step);
-    [3.8, 7.6].forEach((off) => {
-      this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off, 4.2, 0, 2.5), this.M.ballast)));
-      [-RAIL_HALF, RAIL_HALF].forEach((o) => {
-        this.world.add(recv(new THREE.Mesh(ribbon(F, qi0, qi1, off + o, 0.068, 0.19, 25), this.M.railHead)));
-        this.world.add(new THREE.Mesh(vribbon(F, qi0, qi1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
-      });
-    });
-
-    /* 軌道間の埋め（複線間・肩） */
-    this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, -1.9, 3.0, -0.18, 3.0), this.M.sub)));
-    /* 保守通路 */
-    this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, 3.6, 3.0, -0.12, 3.0), this.M.apron)));
-    this.world.add(recv(new THREE.Mesh(ribbon(F, 0, N, -7.2, 3.0, -0.12, 3.0), this.M.apron)));
-
-    /* 地形（線路に沿った広い帯。標高に追従するので遠くまで地面がある）
-     * 多摩川の区間だけは水面が見えるように帯を切る */
-    const urban = this.line.sections.urban;
-    const kindOf = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
-    const gVcol = (i, u) => {
-      const s = i * this.step;
-      const n = 0.86 + 0.11 * Math.sin(s * 0.013 + u * 2.1) * Math.sin(s * 0.0047 + 3.1)
-        + 0.05 * Math.sin(s * 0.041 + u * 5.3);
-      const k = kindOf(s);
-      /* 市街地ほど芝の緑を殺して乾いた土色に寄せる */
-      const urb = k === 0 ? 0.88 : k === 1 ? 0.7 : k === 2 ? 0.36 : 0.18;
-      const r = n * (1 + (0.66 - 1) * urb);
-      const g = n * (1 + (0.63 - 1) * urb);
-      const b = n * (1 + (0.55 - 1) * urb);
-      /* 頂点色はリニア解釈なので、見た目(sRGB)の減光率に合わせてガンマ変換 */
-      return [Math.pow(r, 2.2), Math.pow(g, 2.2), Math.pow(b, 2.2)];
-    };
-    const cuts = this.line.sections.river.map((r) => [r.from - 240, r.to + 240]);
-    let segStart = 0;
-    const addGround = (i0, i1) => {
-      if (i1 - i0 < 4) return;
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, 260.5, 512, -0.5, 5, gVcol), this.M.ground));
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, -264, 512, -0.5, 5, gVcol), this.M.ground));
-    };
-    cuts.sort((a, b) => a[0] - b[0]).forEach(([cf, ct]) => {
-      addGround(Math.floor(segStart / this.step), Math.floor(cf / this.step));
-      segStart = ct;
-    });
-    addGround(Math.floor(segStart / this.step), N);
-    this.world.children.forEach((o) => { if (o.material === this.M.ground) o.receiveShadow = true; });
+    this.quadOff = QUAD_OFF;
+    this._qi = quadInfo(this.line);
+    buildTrackBed(this, { aniso: QUALITY[this.quality].aniso });
   }
 
-  /* ---------- 枕木(自列車近傍のみ実体を置くムービングウィンドウ) ---------- */
+  /* ---------- 枕木(自列車近傍のみ実体を置くムービングウィンドウ) ----------
+   * 遠くは枕木の帯(テクスチャ)が同じ位置に描かれているので、近くだけ立体の枕木を重ねる */
   _buildSleepers() {
-    const geo = new THREE.BoxGeometry(2.0, 0.14, 0.24);   // 狭軌用の枕木
-    /* own: -45..+195, up: -45..+140 (間隔0.625m) */
+    const geo = new THREE.BoxGeometry(2.0, 0.14, 0.24);   // 狭軌用のPCまくら木
+    if (!this._slpCol) {
+      const t = texPCSleeper();
+      this._keep.add(t);
+      this.M.sleeper.map = t;
+      this.M.sleeper.roughness = 1;
+      /* 帯の枕木(#85817a)と同じ明るさに見える色。速いときは砂利の明るさへ寄せる */
+      this._slpCol = {
+        base: new THREE.Color(0xe6e2da), far: new THREE.Color(0xbdb9b1),
+        white: new THREE.Color(1, 1, 1), timber: new THREE.Color().setRGB(0.34, 0.22, 0.14),
+      };
+      this.M.sleeper.color.copy(this._slpCol.base);
+    }
+    /* own: -45..+195, up: -45..+140, 急行線: -30..+140 (間隔0.625m) */
     this._slpSpec = [
       { off: 0, back: 45, fwd: 195 },
       { off: -3.8, back: 45, fwd: 140 },
+      { k: 0, back: 30, fwd: 140, zone: 'quad' },
+      { k: 1, back: 30, fwd: 140, zone: 'quad' },
     ];
     let total = 0;
     this._slpSpec.forEach((sp) => { sp.count = Math.floor((sp.back + sp.fwd) / 0.625); total += sp.count; });
@@ -928,109 +888,65 @@ export class RailScene {
     this.sleepers.userData.noSplit = true;
     this.sleepers.frustumCulled = false;
     this.sleepers.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < total; i++) this.sleepers.setColorAt(i, this._slpCol.white);
+    this.sleepers.instanceColor.setUsage(THREE.DynamicDrawUsage);
     this.world.add(this.sleepers);
+    /* 毎フレームの更新で new しないための作業用 */
+    this._slpTmp = {
+      f: newFrame(), m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: new THREE.Vector3(),
+      one: new THREE.Vector3(1, 1, 1), zero: new THREE.Matrix4().makeScale(0, 0, 0), X: new THREE.Vector3(1, 0, 0),
+    };
     this._slpBase = -1e9;
     this._updateSleepers(0);
   }
 
+  /* 毎フレーム(render から): 枕木の明るさ・トンネル出口の明るさ・近くの枕木の並べ直し */
   _updateSleepers(s) {
+    const C = this._slpCol;
+    if (C) {
+      /* 速度が上がったら枕木を砂利の明るさに近づける(細かい縞のちらつきを抑える) */
+      const v = this.sim ? this.sim.v : 0;
+      this.M.sleeper.color.lerpColors(C.base, C.far, 0.55 * smoothstep(45, 100, v));
+    }
+    updateExitGlow(this);
+    updateCatenaryLod(this);
     if (Math.abs(s - this._slpBase) < 12) return;
     this._slpBase = s;
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);
-    const X = new THREE.Vector3(1, 0, 0);
+    const T = this._slpTmp, f = T.f, m = T.m, q = T.q, p = T.p;
+    const L = this.line.meta.length, qi = this._qi, rivers = this.line.sections.river;
+    const im = this.sleepers;
     let n = 0;
-    const L = this.line.meta.length;
-    this._slpSpec.forEach((sp) => {
+    for (let si = 0; si < this._slpSpec.length; si++) {
+      const sp = this._slpSpec[si];
       const s0 = Math.floor((s - sp.back) / 0.625) * 0.625;
       for (let i = 0; i < sp.count; i++) {
         const ss = s0 + i * 0.625;
-        if (ss < 2 || ss > L - 2) {   // 範囲外は潰して非表示に
-          m.makeScale(0, 0, 0);
-          this.sleepers.setMatrixAt(n++, m);
-          continue;
-        }
-        const f = frameAt(this.frames, this.step, ss);
-        const p = f.p.clone().addScaledVector(f.left, sp.off);
+        let off = sp.off || 0;
+        let ok = ss >= 2 && ss <= L - 2;
+        /* 急行線: となりの線路から十分はなれたところだけ(分岐の手前は本線の枕木が受け持つ) */
+        if (ok && sp.zone) { ok = quadSep(ss, sp.k, qi) >= 2.0; off = quadOffAt(ss, sp.k, qi); }
+        if (!ok) continue;   // 範囲外は描かない(描く数を詰める)
+        frameInto(this.frames, this.step, ss, f);
+        p.copy(f.p).addScaledVector(f.left, off);
         p.y -= 0.01;
-        q.setFromUnitVectors(X, f.left);
-        m.compose(p, q, sc);
-        this.sleepers.setMatrixAt(n++, m);
+        q.setFromUnitVectors(T.X, f.left);
+        m.compose(p, q, T.one);
+        im.setMatrixAt(n, m);
+        let br = false;
+        for (let r = 0; r < rivers.length; r++) if (ss >= rivers[r].from && ss <= rivers[r].to) br = true;
+        im.setColorAt(n, br ? C.timber : C.white);
+        n++;
       }
-    });
-    this.sleepers.instanceMatrix.needsUpdate = true;
+    }
+    im.count = n;
+    im.instanceMatrix.needsUpdate = true;
+    im.instanceColor.needsUpdate = true;
   }
 
-  /* ---------- 架線柱と架線 ---------- */
+  /* ---------- 架線(門型のトラスビーム・可動ブラケット・ジグザグのトロリ線) ---------- */
   _buildLineside() {
-    const F = this.frames;
-    const poleGeo = new THREE.CylinderGeometry(0.14, 0.17, 7.6, 6);
-    const armGeo = new THREE.BoxGeometry(8.4, 0.14, 0.14);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x565e63, metalness: 0.6, roughness: 0.55 });
-    const count = Math.floor(this.line.meta.length / 45);
-    const poles = new THREE.InstancedMesh(poleGeo, mat, count);
-    const arms = new THREE.InstancedMesh(armGeo, mat, count);
-    poles.castShadow = true; arms.castShadow = true;
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1);
-    let n = 0;
-    const poleS = [];
-    for (let s = 20; s < this.line.meta.length - 20 && n < count; s += 45) {
-      const f = frameAt(F, this.step, s);
-      const inTun = this._inTunnel(s);
-      if (inTun || this._inTerminal(s, 4)) continue;
-      poleS.push(s);
-      const side = -6.4;   // 上り線の外側
-      const p = f.p.clone().addScaledVector(f.left, side);
-      p.y += 3.8;
-      q.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.left);
-      m.compose(p, q, sc);
-      poles.setMatrixAt(n, m);
-      const pa = f.p.clone().addScaledVector(f.left, -2.2);
-      pa.y += 6.4;
-      m.compose(pa, q, sc);
-      arms.setMatrixAt(n, m);
-      n++;
-    }
-    poles.count = n; arms.count = n;
-    this.world.add(poles, arms);
-
-    /* トロリ線（自線と上り線の上・全線） */
-    const wireMat = new THREE.LineBasicMaterial({ color: 0x2b2f33 });
-    [0, -3.8].forEach((off) => {
-      const pos = [];
-      for (let i = 0; i < F.length; i += 2) {
-        const f = F[i];
-        const p = f.p.clone().addScaledVector(f.left, off);
-        pos.push(p.x, p.y + 5.1, p.z);
-      }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      this.world.add(new THREE.Line(g, wireMat));
-    });
-
-    /* 吊架線(径間で垂れる)+ハンガー: 架線柱の径間ごとに生成 */
-    const segs = [];
-    const sag = 0.5, topY = 6.1, troY = 5.1;
-    [0, -3.8].forEach((off) => {
-      for (let i = 0; i + 1 < poleS.length; i++) {
-        const a = poleS[i], b = poleS[i + 1];
-        if (b - a > 60) continue;   // トンネル等で径間が飛んだ所は張らない
-        let prev = null;
-        for (let k = 0; k <= 4; k++) {
-          const t = k / 4;
-          const s = a + (b - a) * t;
-          const f = frameAt(F, this.step, s);
-          const p = f.p.clone().addScaledVector(f.left, off);
-          const yy = p.y + topY - sag * (4 * t * (1 - t));
-          const pt = [p.x, yy, p.z];
-          if (prev) segs.push(prev[0], prev[1], prev[2], pt[0], pt[1], pt[2]);
-          prev = pt;
-          if (k > 0 && k < 4) segs.push(p.x, yy, p.z, p.x, p.y + troY, p.z);   // ハンガー
-        }
-      }
-    });
-    const wg = new THREE.BufferGeometry();
-    wg.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
-    this.world.add(new THREE.LineSegments(wg, wireMat));
+    const Q = QUALITY[this.quality];
+    buildCatenary(this, { aniso: Q.aniso, shadows: Q.shadowsOn });
   }
 
   _inTunnel(s) {
@@ -1405,28 +1321,41 @@ export class RailScene {
     }
   }
 
-  /* ---------- 沿線の柵・防音壁 ---------- */
+  /* ---------- 沿線の柵・防音壁 ----------
+   * 市街地は厚みのある防音壁(パネルの継ぎ目・H形鋼の柱・笠木)、郊外は金網フェンス。
+   * 左側は複々線では上り急行線の外(QUAD_OFF[1]+3.6m)。トンネルの掘割・駅・川・踏切では切る */
   _buildFences() {
-    const F = this.frames, L = this.line.meta.length;
+    const F = this.frames, L = this.line.meta.length, step = this.step;
     const urban = this.line.sections.urban;
     const kindAt = (s) => (urban.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
-    const q = this.line.sections.quad;
+    const qi = this._qi || quadInfo(this.line);
     const nearStation = (s) => this.line.stations.some((st) => s > st.s - 170 && s < st.s + 30);
     const inRiver = (s) => this.line.sections.river.some((r) => s > r.from - 30 && s < r.to + 30);
-    const matWall = new THREE.MeshStandardMaterial({ map: this.T.concWallC, color: 0xc8c6be, roughness: 0.95, side: DS });
-    matWall.envMapIntensity = 1.35;
+    /* 川の前後は盛り土の上なので、足元を深くする */
+    const onEmb = (s) => this.line.sections.river.some((r) => s > r.from - 245 && s < r.to + 245);
+    const inCut = (s) => this.line.sections.tunnel.some((t) => s > t.from - 165 && s < t.to + 165);
     const matFence = new THREE.MeshStandardMaterial({
       map: texFence(), alphaTest: 0.3, side: DS, roughness: 0.8, metalness: 0.3,
     });
-    const emit = (run) => {
-      const i0 = Math.floor(run.s0 / this.step), i1 = Math.ceil(run.s1 / this.step);
+    const ends = [];
+    const emit = (run, side) => {
+      const i0 = Math.floor(run.s0 / step), i1 = Math.ceil(run.s1 / step);
       if (i1 - i0 < 3) return;
+      const off = side > 0 ? (i) => fenceOffL(i * step, qi) : () => -8.9;
+      const y0 = (i) => (onEmb(i * step) ? -1.7 : -0.55);
       if (run.type === 'wall') {
-        const wMesh = new THREE.Mesh(vribbon(F, i0, i1, run.off, -0.4, 1.9, 3), matWall);
-        wMesh.castShadow = true;
-        this.world.add(wMesh);
+        /* 外の面と、0.2m内側の面(厚み)+上の笠木 */
+        [off, (i) => off(i) - side * 0.2].forEach((o) => {
+          const w = new THREE.Mesh(vribbon(F, i0, i1, o, y0, 1.9, 2), this.M.soundWall);
+          w.castShadow = true; w.receiveShadow = true;
+          this.world.add(w);
+        });
+        const cap = new THREE.Mesh(ribbon(F, i0, i1, (i) => off(i) - side * 0.1, 0.32, 1.93, 0.6), this.M.trough);
+        cap.receiveShadow = true;
+        this.world.add(cap);
+        [i0, i1].forEach((i) => ends.push({ i, off: off(i) - side * 0.1 }));
       } else {
-        this.world.add(new THREE.Mesh(vribbon(F, i0, i1, run.off, -0.25, 1.05, 2), matFence));
+        this.world.add(new THREE.Mesh(vribbon(F, i0, i1, off, y0, 1.05, 2), matFence));
       }
     };
     const nearCross = (s) => this.crossSpots.some((c) => Math.abs(c - s) < 14);
@@ -1434,21 +1363,34 @@ export class RailScene {
       let cur = null;
       for (let s = 25; s < L - 25; s += 5) {
         let type = null;
-        if (!this._inTunnel(s) && !nearStation(s) && !inRiver(s) && !nearCross(s) && !this._inTerminal(s, 5)) {
+        if (!this._inTunnel(s) && !inCut(s) && !nearStation(s) && !inRiver(s) && !nearCross(s) && !this._inTerminal(s, 5)) {
           type = kindAt(s) <= 1 ? 'wall' : 'fence';
         }
-        let off = side > 0 ? 5.4 : -8.9;
-        if (side > 0 && s > q.from - 30 && s < q.to + 30) off = 9.6;
         if (type === null) {
-          if (cur) { emit(cur); cur = null; }
-        } else if (!cur || cur.type !== type || cur.off !== off) {
-          if (cur) emit(cur);
-          cur = { s0: s, s1: s, type, off };
+          if (cur) { emit(cur, side); cur = null; }
+        } else if (!cur || cur.type !== type) {
+          if (cur) emit(cur, side);
+          cur = { s0: s, s1: s, type };
         } else {
           cur.s1 = s;
         }
       }
-      if (cur) emit(cur);
+      if (cur) emit(cur, side);
+    }
+    /* 防音壁の端の柱(H形鋼) */
+    if (ends.length) {
+      const g = new THREE.BoxGeometry(0.34, 2.6, 0.3);
+      g.translate(0, 1.3 - 0.65, 0);
+      const im = new THREE.InstancedMesh(g, new THREE.MeshStandardMaterial({ color: 0x8e959b, metalness: 0.4, roughness: 0.6 }), ends.length);
+      const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1), X = new THREE.Vector3(1, 0, 0);
+      ends.forEach(({ i, off }, k) => {
+        const f = F[Math.max(0, Math.min(F.length - 1, i))];
+        qq.setFromUnitVectors(X, f.left);
+        m4.compose(f.p.clone().addScaledVector(f.left, off), qq, one);
+        im.setMatrixAt(k, m4);
+      });
+      im.castShadow = true;
+      this.world.add(im);
     }
   }
 
@@ -1526,104 +1468,19 @@ export class RailScene {
     });
   }
 
-  /* ---------- トンネル（下北沢地下区間） ---------- */
+  /* ---------- トンネル（下北沢地下区間） ----------
+   * 坑口は線路の上が開いた門形(柱+梁+笠石)。上には土かぶり、出入口には掘割。
+   * 壁は型枠の目地とケーブル受け。中から見た出口は明るく抜ける(scene/trackbed.js)。
+   * 照明(灯具・光だまり)は駅の担当(_buildTunnelLights)で作る */
   _buildTunnel() {
-    const F = this.frames;
-    const mat = this.M.tunnel;
-    const dim = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, side: DS, depthWrite: false });
-    this.line.sections.tunnel.forEach((t) => {
-      const i0 = Math.floor(t.from / this.step), i1 = Math.ceil(t.to / this.step);
-      this.world.add(new THREE.Mesh(vribbon(F, i0, i1, 7.2, -0.5, 6.2, 6), mat));
-      this.world.add(new THREE.Mesh(vribbon(F, i0, i1, -9.5, -0.5, 6.2, 6), mat));
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, -1.15, 17, 6.2, 6), mat));
-      /* 地表の明るさをトンネル内だけ抑える減光膜(駅ホーム部は照明ありとして除外) */
-      const stops = this.line.stations.filter((st) => st.s > t.from && st.s < t.to);
-      let s0 = t.from;
-      const ranges = [];
-      stops.forEach((st) => { ranges.push([s0, st.s - 175]); s0 = st.s + 30; });
-      ranges.push([s0, t.to]);
-      ranges.forEach(([a, b]) => {
-        if (b - a < 30) return;
-        const ia = Math.max(0, Math.floor(a / this.step)), ib = Math.min(F.length - 1, Math.ceil(b / this.step));
-        this.world.add(new THREE.Mesh(ribbon(F, ia, ib, -1.8, 11.8, 0.3, 40), dim));
-      });
-      /* 坑口 */
-      [t.from, t.to].forEach((s) => {
-        const f = frameAt(F, this.step, s);
-        const portal = new THREE.Mesh(new THREE.BoxGeometry(19, 9.5, 1.2),
-          new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xc7c5bd, roughness: 0.95 }));
-        portal.position.copy(f.p).addScaledVector(f.left, -1.15);
-        portal.position.y += 3.6;
-        portal.lookAt(portal.position.clone().add(f.t));
-        portal.castShadow = true;
-        this.world.add(portal);
-      });
-      /* トンネル照明 */
-      const lampGeo = new THREE.BoxGeometry(0.12, 0.12, 1.3);
-      const lampMat = new THREE.MeshBasicMaterial({ color: 0xd8e6c8 });
-      const count = Math.floor((t.to - t.from) / 18);
-      const lamps = new THREE.InstancedMesh(lampGeo, lampMat, count);
-      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
-      for (let i = 0; i < count; i++) {
-        const f = frameAt(F, this.step, t.from + i * 18);
-        q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.t);
-        m4.compose(new THREE.Vector3().copy(f.p).addScaledVector(f.left, 3.1).setY(f.p.y + 5.4), q, new THREE.Vector3(1, 1, 1));
-        lamps.setMatrixAt(i, m4);
-      }
-      this.world.add(lamps);
-    });
+    buildTunnel(this, { aniso: QUALITY[this.quality].aniso });
   }
 
-  /* ---------- 多摩川橋梁 ---------- */
+  /* ---------- 多摩川橋梁 ----------
+   * 自線・上り線の組と急行線の組、2本並んだワーレントラス(斜材・上横構・端柱)。
+   * 橋の上は木のまくら木のすき間から川面が見える。前後は堤防と盛り土 */
   _buildRiver() {
-    const F = this.frames;
-    const dryVcol = (i, u) => {
-      const s = i * this.step;
-      const n = 0.85 + 0.1 * Math.sin(s * 0.021 + u * 3.3) * Math.sin(s * 0.006 + 1.2);
-      return [Math.pow(n * 1.02, 2.2), Math.pow(n * 0.97, 2.2), Math.pow(n * 0.86, 2.2)];
-    };
-    this.line.sections.river.forEach((r) => {
-      const i0 = Math.floor((r.from - 130) / this.step), i1r = Math.ceil((r.to + 130) / this.step);
-      /* 水面と河川敷は線路に沿った幅広リボンで（橋の角度に自然に追従する） */
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1r, 0, 760, -7.5, 200), this.M.water));
-      this.world.add(new THREE.Mesh(ribbon(F, Math.floor((r.from - 260) / this.step), i0 + 6, 0, 760, -6.7, 5, dryVcol), this.M.bank));
-      this.world.add(new THREE.Mesh(ribbon(F, i1r - 6, Math.ceil((r.to + 260) / this.step), 0, 760, -6.7, 5, dryVcol), this.M.bank));
-      /* トラス橋（骨組み） */
-      const iA = Math.floor(r.from / this.step), iB = Math.ceil(r.to / this.step);
-      const truss = new THREE.MeshStandardMaterial({ color: 0x3c5e50, metalness: 0.35, roughness: 0.55, side: DS });
-      [6.2, -8.5].forEach((off) => {
-        /* 上弦・下弦は縦帯で(横から見て存在感が出るように) */
-        const t1 = new THREE.Mesh(vribbon(F, iA, iB, off, 3.0, 3.55, 20), truss);
-        const t2 = new THREE.Mesh(vribbon(F, iA, iB, off, 0.25, 0.85, 20), truss);
-        t1.castShadow = true; t2.castShadow = true;
-        this.world.add(t1, t2);
-      });
-      for (let s = r.from; s < r.to; s += 14) {
-        const f = frameAt(F, this.step, s);
-        [6.2, -8.5].forEach((off) => {
-          const post = new THREE.Mesh(new THREE.BoxGeometry(0.35, 4.2, 0.35), truss);
-          post.position.copy(f.p).addScaledVector(f.left, off);
-          post.position.y += 2.2;
-          post.castShadow = true;
-          this.world.add(post);
-        });
-      }
-      /* 橋桁(側面の鋼板) */
-      const girder = new THREE.MeshStandardMaterial({ color: 0x474c50, metalness: 0.5, roughness: 0.6, side: DS });
-      [5.9, -8.2].forEach((off) => {
-        this.world.add(new THREE.Mesh(vribbon(F, iA, iB, off, -1.5, -0.05, 10), girder));
-      });
-      /* 橋脚 */
-      const pierMat = new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xd0cec6, roughness: 0.95 });
-      for (let s = r.from + 30; s < r.to; s += 60) {
-        const f = frameAt(F, this.step, s);
-        const pier = new THREE.Mesh(new THREE.BoxGeometry(11, 9, 2.4), pierMat);
-        pier.position.copy(f.p).addScaledVector(f.left, -1.2);
-        pier.position.y -= 5.2;
-        pier.lookAt(pier.position.clone().add(f.t));
-        this.world.add(pier);
-      }
-    });
+    buildRiver(this, { aniso: QUALITY[this.quality].aniso });
   }
 
   /* ---------- 車両(TrainKit: scene/trains.js) ---------- */
@@ -1989,55 +1846,54 @@ export class RailScene {
     this.world.add(fols, trs);
   }
 
-  /* ---------- 線路ぎわの小物(ケーブルトラフ・継電箱・キロポスト) ---------- */
+  /* ---------- 線路ぎわの小物(ケーブルトラフ・継電箱) ----------
+   * キロポスト・100m標は駅・標識の担当で作り直す */
   _buildRailsideDetails() {
-    const F = this.frames, N = F.length - 1, L = this.line.meta.length;
-    /* ケーブルトラフ(線路脇を走る細いコンクリの列) */
-    const trough = new THREE.Mesh(ribbon(F, 0, N, 2.62, 0.36, 0.05, 3),
-      new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xb2afa7, roughness: 0.95, side: DS }));
-    this.world.add(trough);
-    /* 継電箱(信号機器の箱) */
+    const F = this.frames, L = this.line.meta.length, step = this.step;
+    const qi = this._qi || quadInfo(this.line);
+    /* ケーブルトラフ: 犬走りの上に置いた、ふた付きのコンクリートの箱(右は全線、左は複線の区間) */
+    const trough = (a, b, off) => {
+      const top = new THREE.Mesh(ribbon(F, a, b, off, 0.3, -0.3, 0.6), this.M.trough);
+      top.receiveShadow = true;
+      this.world.add(top);
+      [-0.15, 0.15].forEach((d) => {
+        const sd = new THREE.Mesh(vribbon(F, a, b, off + d, -0.43, -0.3, 0.6), this.M.trough);
+        sd.receiveShadow = true;
+        this.world.add(sd);
+      });
+    };
+    bedRuns(this).forEach(({ type, i0, i1 }) => {
+      if (type !== 'bed') return;
+      trough(i0, i1, -7.3);
+      rowRanges(i0, i1, (i) => quadOffAt(i * step, 1, qi) < 0.05).forEach(([a, b]) => trough(a, b, 3.2));
+    });
+    /* 継電箱(信号機器の箱): 右側の犬走りの外、架線柱の足元は避ける */
     const nearStation = (s) => this.line.stations.some((st) => Math.abs(st.s - s) < 90);
-    const inRiver = (s) => this.line.sections.river.some((r) => s > r.from - 60 && s < r.to + 60);
+    const inRiver = (s) => this.line.sections.river.some((r) => s > r.from - 250 && s < r.to + 250);
+    const inCut = (s) => this.line.sections.tunnel.some((t) => s > t.from - 165 && s < t.to + 165);
+    const poles = (this._catSupports || []).map((sp) => sp.s);
     const boxes = [];
-    for (let s = 140; s < L - 100; s += 173) {
-      if (this._inTunnel(s) || nearStation(s) || inRiver(s)) continue;
+    for (let s0 = 140; s0 < L - 100; s0 += 173) {
+      const s = poles.some((x) => Math.abs(x - s0) < 2.5) ? s0 + 5 : s0;
+      if (this._inTunnel(s) || inCut(s) || nearStation(s) || inRiver(s) || this._inTerminal(s, 20)) continue;
       boxes.push(s);
     }
-    const bGeo = new THREE.BoxGeometry(0.85, 1.05, 0.5);
+    const bGeo = new THREE.BoxGeometry(0.5, 1.05, 0.85);
     bGeo.translate(0, 0.52, 0);
     const bMat = new THREE.MeshStandardMaterial({ color: 0x8f959b, roughness: 0.6, metalness: 0.25 });
-    const bIm = new THREE.InstancedMesh(bGeo, bMat, boxes.length);
+    const bIm = new THREE.InstancedMesh(bGeo, bMat, Math.max(1, boxes.length));
+    bIm.count = boxes.length;
     bIm.castShadow = true;
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
     boxes.forEach((s, i) => {
-      const f = frameAt(F, this.step, s);
+      const f = frameAt(F, step, s);
       q.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.left);
-      m4.compose(f.p.clone().addScaledVector(f.left, -7.7), q, new THREE.Vector3(1, 1, 1));
+      const p = f.p.clone().addScaledVector(f.left, -8.45);
+      p.y -= 0.42;
+      m4.compose(p, q, new THREE.Vector3(1, 1, 1));
       bIm.setMatrixAt(i, m4);
     });
     this.world.add(bIm);
-    /* キロポスト(1kmごと。数字を数えながら走れる) */
-    const postGeo = new THREE.CylinderGeometry(0.045, 0.05, 1.15, 6);
-    const postMat = new THREE.MeshStandardMaterial({ color: 0xe8e6de, roughness: 0.8 });
-    for (let km = 1; km <= Math.floor((L - 100) / 1000); km++) {
-      const s = km * 1000;
-      if (this._inTunnel(s)) continue;
-      const f = frameAt(F, this.step, s);
-      const g = new THREE.Group();
-      const post = new THREE.Mesh(postGeo, postMat);
-      post.position.y = 0.57;
-      g.add(post);
-      const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4),
-        new THREE.MeshBasicMaterial({
-          map: boardTexture([[String(km), 40, 40]], { bg: '#f2f2ee', fg: '#16283a', border: '#16283a', w: 64, h: 64 }),
-        }));
-      plate.position.y = 1.05;
-      g.add(plate);
-      g.position.copy(f.p).addScaledVector(f.left, 2.35);
-      g.lookAt(g.position.clone().addScaledVector(f.t, -10));
-      this.world.add(g);
-    }
   }
 
   /* ---------- ホームの備品(ベンチ・自販機) ---------- */

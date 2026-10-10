@@ -7,6 +7,7 @@
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
 import { frameAt } from './scene.js';
+import { quadInfo, quadOffAt, quadFullZone } from './trackbed.js';
 
 const CAR = 20.0;          // 連結面間(m)
 const BOGIE = 6.9;         // 台車中心の前後位置
@@ -14,16 +15,19 @@ const RAIL_TOP = 0.19;
 
 const _p1 = new THREE.Vector3(), _p2 = new THREE.Vector3(), _dir = new THREE.Vector3();
 
-/* 1編成を線路に沿わせて置く。headS=先頭の位置、dir=+1(s増える向きに走る)/-1 */
+/* 1編成を線路に沿わせて置く。headS=先頭の位置、dir=+1(s増える向きに走る)/-1
+ * offset は線路中心からの横位置(数)か、s を受け取る関数(複々線の分岐で横位置が変わる線路) */
 export function placeTrain(rs, train, headS, dir, offset) {
   const L = rs.line.meta.length;
+  const fn = typeof offset === 'function';
   train.cars.forEach((car, i) => {
     const center = headS - dir * (CAR * (i + 0.5));
     const a = Math.max(1, Math.min(L - 1, center + BOGIE));
     const b = Math.max(1, Math.min(L - 1, center - BOGIE));
     const fa = frameAt(rs.frames, rs.step, a), fb = frameAt(rs.frames, rs.step, b);
-    _p1.copy(fa.p).addScaledVector(fa.left, offset);
-    _p2.copy(fb.p).addScaledVector(fb.left, offset);
+    /* 台車ごとに横位置を求める(分岐の上でも車体が線路に沿う) */
+    _p1.copy(fa.p).addScaledVector(fa.left, fn ? offset(a) : offset);
+    _p2.copy(fb.p).addScaledVector(fb.left, fn ? offset(b) : offset);
     car.position.copy(_p1).add(_p2).multiplyScalar(0.5);
     car.position.y += RAIL_TOP;
     _dir.copy(_p1).sub(_p2).multiplyScalar(dir);
@@ -32,10 +36,22 @@ export function placeTrain(rs, train, headS, dir, offset) {
 }
 
 class AiTrain {
-  constructor(rs, opts) {
+  /* pool: 使い終わった編成の置き場(Traffic.pool)。同じ両数のものがあれば作らずに使い回す */
+  constructor(rs, opts, pool) {
     this.rs = rs;
     Object.assign(this, opts);   // offset, dir, stops, vmax, cars, kind, dest, zone
-    this.model = rs.makeTrainModel(this.nCars, { kind: this.kind, dest: this.dest });
+    this.pool = pool;
+    const reuse = pool && pool[this.nCars] && pool[this.nCars].pop();
+    if (reuse) {
+      this.model = reuse;
+      /* 行先表示は変わったときだけ描き直す(描き直しは重いので) */
+      const tag = `${this.kind}|${this.dest}`;
+      if (reuse.group.userData.aiTag !== tag) rs.setTrainDest(reuse, this.kind, this.dest);
+      reuse.group.visible = true;
+    } else {
+      this.model = rs.makeTrainModel(this.nCars, { kind: this.kind, dest: this.dest });
+    }
+    this.model.group.userData.aiTag = `${this.kind}|${this.dest}`;
     rs.world.add(this.model.group);
     rs.setTrainLights(this.model, { head: true, tail: true });
     this.v = this.v0 || 0;
@@ -103,12 +119,17 @@ class AiTrain {
     const dist = center - (me - 80);
     const vRel = this.dir * this.v - vMe;
     const closing = dist === 0 ? 0 : -Math.sign(dist) * vRel;
-    return { dist, relSpeed: closing, offset: this.offset };
+    const offset = typeof this.offset === 'function' ? this.offset(this.s) : this.offset;
+    return { dist, relSpeed: closing, offset };
   }
 
+  /* 役目を終えた編成は捨てずに置き場へ(次に出てくる列車が使い回す。出現時のカクつき防止) */
   dispose() {
     this.rs.world.remove(this.model.group);
-    this.rs.disposeTrainModel(this.model);
+    this.model.group.visible = false;
+    if (this.pool && this.pool[this.nCars]) this.pool[this.nCars].push(this.model);
+    else this.rs.disposeTrainModel(this.model);
+    this.model = null;
   }
 }
 
@@ -116,6 +137,7 @@ export class Traffic {
   constructor(rs, sim) {
     this.rs = rs;
     this.list = [];
+    this.pool = { 8: [], 10: [] };
     this.cool = { opp: 8, quadSame: 25, quadOpp: 40 };
     this.rng = 1234567;
     /* 自列車(外から見るカメラ用) */
@@ -153,24 +175,29 @@ export class Traffic {
       return new AiTrain(this.rs, {
         offset: -3.8, dir: -1, stops: local, vmax: (local ? 85 : 95) / 3.6, v0: 20,
         nCars: local ? 8 : 10, kind: local ? 'local' : (this._rand() < 0.5 ? 'exp' : 'rapid'), dest: thereDest, s,
-      });
+      }, this.pool);
     }
+    /* 急行線(QUAD_OFF)を走る列車は、急行線が全幅で並ぶ区間(分岐の外)だけを走る */
+    const qi = quadInfo(this.rs.line);
+    const zone = quadFullZone(qi) || q;
     if (rule === 'quadSame') {
       /* 自列車が複々線内でゆっくり(または停車)しているとき、急行が追い抜いていく */
       if (me < q.from + 400 || me > q.to - 900 || sim.v > 70) return null;
-      const s = Math.max(q.from + 220, me - 650);
+      const s = Math.max(zone.from + 220, me - 650);
+      if (s > zone.to - 60) return null;
       return new AiTrain(this.rs, {
-        offset: 3.8, dir: 1, stops: false, vmax: 96 / 3.6, v0: 24, nCars: 10,
-        kind: 'rapid', dest: hereDest, s, zone: q,
-      });
+        offset: (a) => quadOffAt(a, 0, qi), dir: 1, stops: false, vmax: 96 / 3.6, v0: 24, nCars: 10,
+        kind: 'rapid', dest: hereDest, s, zone,
+      }, this.pool);
     }
     if (rule === 'quadOpp') {
       if (me < q.from + 200 || me > q.to - 1200) return null;
-      const s = Math.min(q.to - 20, me + 1500 + this._rand() * 600);
+      const s = Math.min(zone.to - 210, me + 1500 + this._rand() * 600);
+      if (s < me + 300) return null;
       return new AiTrain(this.rs, {
-        offset: 7.6, dir: -1, stops: false, vmax: 96 / 3.6, v0: 25, nCars: 10,
-        kind: 'exp', dest: thereDest, s, zone: q,
-      });
+        offset: (a) => quadOffAt(a, 1, qi), dir: -1, stops: false, vmax: 96 / 3.6, v0: 25, nCars: 10,
+        kind: 'exp', dest: thereDest, s, zone,
+      }, this.pool);
     }
     return null;
   }
@@ -204,9 +231,12 @@ export class Traffic {
     return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 700);
   }
 
+  /* ここで初めて編成を本当に解放する(置き場の分も) */
   dispose() {
     this.list.forEach((t) => t.dispose());
     this.list = [];
+    Object.values(this.pool).forEach((arr) => arr.forEach((m) => this.rs.disposeTrainModel(m)));
+    this.pool = { 8: [], 10: [] };
     if (this.own) { this.rs.world.remove(this.own.group); this.rs.disposeTrainModel(this.own); this.own = null; }
   }
 }
