@@ -251,7 +251,12 @@ export class Cockpit {
 
   /* light: 0..1 室内の明るさ(計器盤 #cab の減光にも使う: cab.setLight) */
   update(dt, { light = 1, night = false, wiper = false } = {}) {
-    this.light += (light - this.light) * Math.min(1, dt * 3);
+    /* なめらかに追従(時定数0.33秒)。dt は描画側で0.1秒に切られるので、
+     * 描画が重い端末でも実時間で追いつくよう経過時間の大きいほうを使う */
+    const now = typeof performance !== 'undefined' ? performance.now() : 0;
+    const rdt = this._lt != null ? Math.min(2, (now - this._lt) / 1000) : dt;
+    this._lt = now;
+    this.light += (light - this.light) * Math.min(1, Math.max(dt, rdt) * 3);
     const k = this.light;
     this.matFrame.color.setScalar(0.35 + 0.65 * k);
     /* 天板: 昼の見た目が #262b2f 前後(パネル上端 --console-hi とつながる)になるよう係数を合わせた */
