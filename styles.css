@@ -963,6 +963,17 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .book-prog i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, var(--acc), var(--acc-2)); transform: scaleX(0); transform-origin: left; transition: transform 0.6s cubic-bezier(.2,.8,.2,1); }
 
 /* ---- 画面サイズ別(上書きした部品の分) ---- */
+/* 路線は 大型HUD(左上)と ボタン(右上)の あいだに 中央そろえで おさめる */
+@media (min-width: 861px) and (min-height: 541px) {
+  #drive-head { width: min(560px, calc(100vw - 760px)); }
+}
+@media (min-width: 861px) and (max-width: 1240px) and (min-height: 541px) {
+  .rs-after, .rs-seg2 { display: none; }
+}
+@media (min-width: 861px) and (max-width: 1100px) and (min-height: 541px) {
+  #drive-head { top: 98px; width: min(560px, calc(100vw - 24px)); }
+  .rs-after, .rs-seg2 { display: flex; }
+}
 @media (max-width: 860px) {
   #stop-card { top: 12%; }
   .res-btns { grid-auto-flow: row; }
