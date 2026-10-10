@@ -31,6 +31,10 @@ export const ADHESION = { clear: 4.4, rain: 3.3, snow: 2.9 };
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+/* 手前すぎ(2〜12m)で止まったときの待ち時間(秒)。このあいだに少し進めば止めなおせる。
+ * 自動運転は±2m以内に止まるので、この猶予は使わない(ダイヤの校正には影響しない) */
+const SHORT_GRACE = 4;
+
 export class TrainSim {
   /* line: data/line.json の内容 / opts: {service:'local'|'exp'|'rapid', weather:'clear'|'rain'} */
   constructor(line, opts = {}) {
@@ -127,6 +131,7 @@ export class TrainSim {
     this._departDone = false;                 // 「つぎは」を出したか
     this._left = false;
     this._pastWarn = -1;
+    this._settleAt = null;                    // 手前で止まって待っている(猶予の始まり)
     this._eventCb = null;
   }
 
@@ -343,7 +348,8 @@ export class TrainSim {
       const vp = this.patternSpeed(rest);
       this.atsInfo = { target: rest.v, at: rest.from, pattern: vp, kind: rest.kind || 'limit' };
       if (this.v > vp + 2 && this.v > 8) {   // +2km/hは照査余裕（実物の設計余裕相当）
-        if (this.atsLamp !== 'brake') { this._emit('ats-brake'); this.score.overspeed++; }
+        /* 理由(kind)をつけて知らせる: 'limit'=この先の制限 / 'stop'=停車駅 / 'signal'=信号 */
+        if (this.atsLamp !== 'brake') { this._emit('ats-brake', { kind: rest.kind || 'limit', target: rest.v }); this.score.overspeed++; }
         this.atsLamp = 'brake';
         this.atsBrakeUntil = this.t + 2;
       } else if (this.v > vp - 5) {
@@ -361,7 +367,8 @@ export class TrainSim {
     const curLimit = this.limitAt(this.pos);
     if (this.v > curLimit + 1) this.score.overspeedTime += dt;
     if (this.v > curLimit + 3) {
-      if (this.atsLamp !== 'brake') { this._emit('ats-brake'); this.score.overspeed++; }
+      /* 'over' = いまの制限速度をこえた(下り坂の惰行などで) */
+      if (this.atsLamp !== 'brake') { this._emit('ats-brake', { kind: 'over', target: curLimit }); this.score.overspeed++; }
       this.atsLamp = 'brake';
       this.atsBrakeUntil = this.t + 2;
       atsBrake = TRAIN.maxServiceB;
@@ -383,7 +390,11 @@ export class TrainSim {
     /* --- ジャーク計測（乗り心地）: 通常のノッチ操作では出ない急変だけ数える --- */
     const jerk = Math.abs(a - this._lastA) / dt;
     if (jerk > 4.5 && this.v > 3) {
-      if (this.t - (this._lastJerkT || -9) > 1.0) this.score.jerkEvents++;
+      if (this.t - (this._lastJerkT || -9) > 1.0) {
+        this.score.jerkEvents++;
+        /* 画面で「ガクン」を見せる(dir: +1=前へ押された/-1=つんのめった) */
+        this._emit('jerk', { n: this.score.jerkEvents, dir: Math.sign(a - this._lastA) });
+      }
       this._lastJerkT = this.t;
     }
     this._lastA = a;
@@ -407,10 +418,19 @@ export class TrainSim {
 
     /* --- 停車判定 --- */
     const target = this.stops[this.stopIdx] ? this.stops[this.stopIdx].stopAt : null;
-    if (this.v > 0.5) this._left = true;   // 一度動き出してから停まったら「到着」扱いにする
+    if (this.v > 0.5) { this._left = true; this._settleAt = null; }   // 一度動き出してから停まったら「到着」扱いにする
     if (target != null && this._left && this.stoppedAt == null && this.v < 0.05) {
       const err = this.pos - target;
-      if (err >= -12 && err <= 12) {
+      if (err < -2 && err >= -12) {
+        /* 手前で止まった: SHORT_GRACE 秒だけ待つ(そのあいだに▲で少し進めば、止まりなおせる) */
+        /* ▲を入れている間は待つ(動き出す前に時間切れでドアが開かないように) */
+        if (this._settleAt == null || this.notch > 0) this._settleAt = this.t;
+        if (this.t - this._settleAt >= SHORT_GRACE) {
+          this._settleAt = null;
+          this._arrive(err);
+        }
+      } else if (err >= -12 && err <= 12) {
+        this._settleAt = null;
         this._arrive(err);
       } else if (err > 12) {
         this._emit('overrun-stop', { err });   // 大オーバーラン: UI側でリトライ案内
@@ -442,6 +462,7 @@ export class TrainSim {
 
   _arrive(err) {
     this.stoppedAt = this.t;
+    this._settleAt = null;
     const sch = this.timetable[this.stopIdx];
     const late = Math.max(0, this.t - sch.arr);
     const early = Math.max(0, sch.arr - this.t);
@@ -473,6 +494,17 @@ export class TrainSim {
     this._melodyDone = false;
     this._departDone = false;
     this._emit('door-open', { departAt: this._departTime });
+  }
+
+  /* 大きく行きすぎて止まった(overrun-stop)あと、やりなおさずに「このまま」到着にする。
+   * 停止位置の点は0点(result の e>5 の段)。ドア開・停車・発車はふだんどおり続く。
+   * 自動運転は使わない(UIのボタンから呼ぶ) */
+  acceptOverrun() {
+    const st = this.stops[this.stopIdx];
+    if (!st || this.stoppedAt == null || this.v > 0.05 || this.doorOpen) return false;
+    this.stoppedAt = null;
+    this._arrive(this.pos - st.stopAt);
+    return true;
   }
 
   /* 停車スキップ: 4秒後にドアを閉める。
@@ -589,6 +621,8 @@ export class TrainSim {
       t: this.t,
       slipping: this.slipping,
       finished: this.finished,
+      /* 手前で止まったときの のこり秒(0=待っていない)。コーチが「あと◯びょうで ドアが あくよ」に使う */
+      settle: this._settleAt != null ? Math.max(0, SHORT_GRACE - (this.t - this._settleAt)) : 0,
     };
   }
 }
