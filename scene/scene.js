@@ -14,6 +14,7 @@ import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/addons/OutputPass.js';
 import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
+import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople } from './stations.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { TrainKit } from './trains.js';
@@ -1216,197 +1217,27 @@ export class RailScene {
 
   /* ---------- 駅 ---------- */
   _buildStations() {
-    const F = this.frames;
-    const matRoof = new THREE.MeshStandardMaterial({ color: 0x525c66, metalness: 0.25, roughness: 0.65, side: DS });
-    matRoof.envMapIntensity = 1.25;
-    const matTactile = new THREE.MeshStandardMaterial({ map: texTactile(), roughness: 0.9, side: DS });
-    matTactile.map.repeat.set(1, 1);
-    const colGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.35, 8);
-    const colList = [];
-    this.line.stations.forEach((st, si) => {
-      const i0 = Math.max(0, Math.floor((st.s - 155) / this.step));
-      const i1 = Math.min(F.length - 1, Math.ceil((st.s + 15) / this.step));
-      const under = this._inTunnel(st.s);
-      /* ホーム（自線の左側=島式風・上り線側にも） */
-      [[3.05, 1], [-6.85, -1]].forEach(([off]) => {
-        const plat = new THREE.Mesh(ribbon(F, i0, i1, off, 2.4, 1.02, 4), this.M.plat);
-        plat.receiveShadow = true;
-        plat.castShadow = true;
-        this.world.add(plat);
-        const edgeOff = off + (off > 0 ? -1.0 : 1.0);
-        this.world.add(new THREE.Mesh(ribbon(F, i0, i1, edgeOff, 0.4, 1.03, 0.64), matTactile));
-        /* ホーム側壁(線路側) */
-        const sideOff = off + (off > 0 ? -1.2 : 1.2);
-        const pside = new THREE.Mesh(vribbon(F, i0, i1, sideOff, -0.15, 1.02, 3), this.M.platSide);
-        pside.castShadow = true;
-        this.world.add(pside);
-        if (!under && !this._inTerminal(st.s)) {
-          const roof = new THREE.Mesh(ribbon(F, i0 + 3, i1 - 1, off, 3.2, 4.4, 20), matRoof);
-          roof.castShadow = true;
-          this.world.add(roof);
-          /* 屋根柱 */
-          for (let s = st.s - 140; s < st.s + 8; s += 14) {
-            const f = frameAt(F, this.step, s);
-            const p = f.p.clone().addScaledVector(f.left, off);
-            p.y += 1.02 + 3.35 / 2;
-            colList.push(p);
-          }
-        }
-      });
-      /* 駅名標(漢字+ひらがな。実物の駅名標もかな併記) */
-      const prev = this.line.stations[si - 1], next = this.line.stations[si + 1];
-      const tex = boardTexture([
-        [st.name, 38, 36],
-        [STATION_KANA[st.name] || '', 70, 17, 'normal'],
-        [st.code, 92, 13, 'normal'],
-        [`${prev ? '◀ ' + prev.name : ''}    ${next ? next.name + ' ▶' : ''}`, 114, 14, 'normal'],
-      ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 128 });
-      const board = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.85),
-        new THREE.MeshBasicMaterial({ map: tex }));
-      const f = frameAt(F, this.step, st.s - 55);
-      board.position.copy(f.p).addScaledVector(f.left, 3.0);
-      board.position.y += 2.5;
-      board.lookAt(board.position.clone().addScaledVector(f.t, -10));
-      this.world.add(board);
-      /* 停止位置目標（8両） */
-      const stopTex = boardTexture([['8', 60, 72]], { bg: '#111', fg: '#fff', border: '#fff', w: 96, h: 96 });
-      const stop = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42),
-        new THREE.MeshBasicMaterial({ map: stopTex }));
-      /* 運転台の窓から見やすいよう、停止位置の少し先・目の高さ寄りに置く */
-      const fs = frameAt(F, this.step, st.s + 4.5);
-      stop.position.copy(fs.p).addScaledVector(fs.left, 2.6);
-      stop.position.y += 2.15;
-      stop.lookAt(stop.position.clone().addScaledVector(fs.t, -10));
-      this.world.add(stop);
-    });
-    /* 屋根柱(全駅まとめてインスタンス描画) */
-    const matCol = new THREE.MeshStandardMaterial({ color: 0x9aa0a5, metalness: 0.5, roughness: 0.5 });
-    const cols = new THREE.InstancedMesh(colGeo, matCol, colList.length);
-    cols.castShadow = true;
-    const m4 = new THREE.Matrix4();
-    colList.forEach((p, i) => { m4.makeTranslation(p.x, p.y, p.z); cols.setMatrixAt(i, m4); });
-    this.world.add(cols);
+    /* ホーム(へり・笠石・点字ブロック・柵)・屋根・柱・光だまり・駅名標・時計: scene/stations.js */
+    buildStations(this);
+    this._buildTunnelLights();
+  }
 
-    /* ホーム屋根下の照明(夜モードで点灯) */
-    const lampSpots = [];
-    this.line.stations.forEach((st) => {
-      if (this._inTunnel(st.s) || this._inTerminal(st.s)) return;
-      [3.05, -6.85].forEach((off) => {
-        for (let s = st.s - 140; s < st.s + 6; s += 12) {
-          const f = frameAt(F, this.step, s);
-          lampSpots.push({ f, off });
-        }
-      });
-    });
-    const slGeo = new THREE.BoxGeometry(0.14, 0.08, 1.7);
-    const slMat = new THREE.MeshBasicMaterial({ color: 0xfff3d2 });
-    this.stationLamps = new THREE.InstancedMesh(slGeo, slMat, lampSpots.length);
-    const q4 = new THREE.Quaternion(), one4 = new THREE.Vector3(1, 1, 1), m4b = new THREE.Matrix4();
-    lampSpots.forEach((a, i) => {
-      q4.setFromUnitVectors(new THREE.Vector3(0, 0, 1), a.f.t);
-      m4b.compose(a.f.p.clone().addScaledVector(a.f.left, a.off).setY(a.f.p.y + 4.15), q4, one4);
-      this.stationLamps.setMatrixAt(i, m4b);
-    });
-    this.stationLamps.visible = false;
-    this.world.add(this.stationLamps);
+  /* トンネルの壁の照明(12mごと)と、壁・床の光だまり */
+  _buildTunnelLights() {
+    buildTunnelLights(this);
   }
 
   /* ---------- 信号機 ---------- */
   _buildSignals() {
-    const F = this.frames;
-    if (this._sigGroup) {
-      this.world.remove(this._sigGroup);
-      this._sigGroup.traverse((o) => { if (o.material && o.material.isSpriteMaterial) o.material.dispose(); });
-    }
-    this._sigGroup = new THREE.Group();
-    this.world.add(this._sigGroup);
-    this.signalMeshes = [];
-    if (!this._sigRes) {
-      const hood = new THREE.CylinderGeometry(0.17, 0.17, 0.22, 14, 1, true, -Math.PI * 0.62, Math.PI * 1.24);
-      hood.rotateX(Math.PI / 2);
-      hood.translate(0, 0, 0.22);
-      this._sigRes = {
-        bodyGeo: new THREE.BoxGeometry(0.46, 1.2, 0.24),
-        plateGeo: new THREE.CircleGeometry(0.36, 20),
-        poleGeo: new THREE.CylinderGeometry(0.07, 0.09, 4.4, 6),
-        lampGeo: new THREE.CircleGeometry(0.13, 14),
-        hoodGeo: hood,
-        matBody: new THREE.MeshStandardMaterial({ color: 0x1f2428, roughness: 0.7 }),
-        matPlate: new THREE.MeshStandardMaterial({ color: 0x111316, roughness: 0.8, side: DS }),
-        matPole: new THREE.MeshStandardMaterial({ color: 0x6d757c, metalness: 0.5, roughness: 0.5 }),
-        glowT: texGlow(),
-        off: new THREE.MeshBasicMaterial({ color: 0x14171a }),
-        on: { G: new THREE.MeshBasicMaterial({ color: new THREE.Color(0x22e06a).multiplyScalar(2.2) }),
-          Y: new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffc12b).multiplyScalar(2.2) }),
-          R: new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff4838).multiplyScalar(2.2) }) },
-      };
-      [this._sigRes.matBody, this._sigRes.matPlate, this._sigRes.matPole, this._sigRes.off,
-        ...Object.values(this._sigRes.on)].forEach((m) => this._keep.add(m));
-    }
-    const R = this._sigRes;
-    this.sim.signals.forEach((sig) => {
-      const f = frameAt(F, this.step, sig.s);
-      const g = new THREE.Group();
-      const pole = new THREE.Mesh(R.poleGeo, R.matPole);
-      pole.position.y = 2.2;
-      pole.castShadow = true;
-      g.add(pole);
-      const body = new THREE.Mesh(R.bodyGeo, R.matBody);
-      body.position.y = 4.6;
-      body.castShadow = true;
-      g.add(body);
-      /* 背板(現示を見やすくする黒い丸板) */
-      [0.36, -0.36].forEach((dy) => {
-        const pl = new THREE.Mesh(R.plateGeo, R.matPlate);
-        pl.position.set(0, 4.6 + dy * 0.5, 0.125);
-        pl.scale.set(1, 1.5, 1);
-        g.add(pl);
-      });
-      const lamps = [];
-      [['G', 0.36, 0x22e06a], ['Y', 0, 0xffc12b], ['R', -0.36, 0xff4838]].forEach(([k, dy, col]) => {
-        const lamp = new THREE.Mesh(R.lampGeo, R.off);
-        lamp.position.set(0, 4.6 + dy, 0.13);
-        g.add(lamp);
-        const hd = new THREE.Mesh(R.hoodGeo, R.matBody);
-        hd.position.set(0, 4.6 + dy, 0.0);
-        g.add(hd);
-        const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: R.glowT, color: col, transparent: true, opacity: 0.55,
-          blending: THREE.AdditiveBlending, depthWrite: false,
-        }));
-        glow.scale.set(0.7, 0.7, 1);
-        glow.position.set(0, 4.6 + dy, 0.24);
-        glow.visible = false;
-        g.add(glow);
-        lamps.push({ k, lamp, col, glow });
-      });
-      g.position.copy(f.p).addScaledVector(f.left, 2.6);
-      g.lookAt(g.position.clone().addScaledVector(f.t, -10));
-      this._sigGroup.add(g);
-      this.signalMeshes.push({ sig, lamps, asp: -1 });
-    });
+    /* 4灯式の信号機・番号札・ATS地上子をまとめて描く(scene/signage.js)。
+     * this.signalMeshes は空のままにして、render 内の古い現示ループを空回りさせる */
+    buildSignals(this);
   }
 
   /* ---------- 制限標識 ---------- */
   _buildBoards() {
-    const F = this.frames;
-    this.line.limits.forEach((z) => {
-      const tex = boardTexture([[String(z.v), 62, 66]], { bg: '#e6bd1d', fg: '#111', border: '#111', w: 112, h: 112 });
-      const b = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.7), new THREE.MeshBasicMaterial({ map: tex }));
-      const f = frameAt(F, this.step, Math.max(5, z.from - 15));
-      b.position.copy(f.p).addScaledVector(f.left, 2.3);
-      b.position.y += 1.6;
-      b.lookAt(b.position.clone().addScaledVector(f.t, -10));
-      this.world.add(b);
-      /* 解除標 */
-      const tex2 = boardTexture([['解', 60, 56]], { bg: '#f2f2ee', fg: '#111', border: '#111', w: 96, h: 96 });
-      const b2 = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), new THREE.MeshBasicMaterial({ map: tex2 }));
-      const f2 = frameAt(F, this.step, Math.min(this.line.meta.length - 5, z.to + 10));
-      b2.position.copy(f2.p).addScaledVector(f2.left, 2.3);
-      b2.position.y += 1.5;
-      b2.lookAt(b2.position.clone().addScaledVector(f2.t, -10));
-      this.world.add(b2);
-    });
+    /* 制限・解除・停止位置の予告(300/200/100/50m)・キロ程。すべて柱に立てる */
+    buildBoards(this);
   }
 
   /* ---------- 街並み ---------- */
@@ -1768,27 +1599,7 @@ export class RailScene {
 
   /* ---------- 停止位置の光の目印(こどもサポート) ---------- */
   _buildStopBeam() {
-    const cv = document.createElement('canvas');
-    cv.width = 32; cv.height = 128;
-    const c = cv.getContext('2d');
-    const g = c.createLinearGradient(0, 0, 0, 128);
-    g.addColorStop(0, 'rgba(120,220,255,0)');
-    g.addColorStop(0.75, 'rgba(120,220,255,0.55)');
-    g.addColorStop(1, 'rgba(170,240,255,0.95)');
-    c.fillStyle = g; c.fillRect(0, 0, 32, 128);
-    const tex = new THREE.CanvasTexture(cv);
-    this._beamMat = new THREE.MeshBasicMaterial({
-      map: tex, transparent: true, opacity: 0.5,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: DS,
-    });
-    const geo = new THREE.PlaneGeometry(1.05, 9);
-    const p1 = new THREE.Mesh(geo, this._beamMat);
-    const p2 = new THREE.Mesh(geo, this._beamMat);
-    p2.rotation.y = Math.PI / 2;
-    this.stopBeam = new THREE.Group();
-    this.stopBeam.add(p1, p2);
-    this.stopBeam.visible = false;
-    this.world.add(this.stopBeam);
+    buildStopBeam(this);
   }
 
   /* ---------- 駅ごとの実在風ランドマーク ---------- */
@@ -1819,144 +1630,8 @@ export class RailScene {
   }
 
   _buildTerminal() {
-    const T = this._terminalInfo();
-    if (!T) return;
-    const F = this.frames;
-    const i0 = Math.floor(T.a / this.step), i1 = Math.ceil(T.b / this.step);
-    const W_L = 8.9, W_R = -12.6;                   // 左右の壁(線路中心からの距離)
-    const H = 7.4;                                  // 天井の高さ
-    const ceilMat = new THREE.MeshStandardMaterial({ color: 0x4a5056, roughness: 0.9, side: DS });
-    const wallMat = new THREE.MeshStandardMaterial({ map: this.T.concWallC, color: 0x8e9298, roughness: 0.95, side: DS });
-    /* 天井スラブ(厚み: 下面+上面) */
-    const ceil = new THREE.Mesh(ribbon(F, i0, i1, (W_L + W_R) / 2, W_L - W_R + 0.6, H, 6), ceilMat);
-    ceil.castShadow = true; ceil.receiveShadow = true;
-    this.world.add(ceil);
-    /* 左右の壁 */
-    [W_L, W_R].forEach((off) => {
-      const w = new THREE.Mesh(vribbon(F, i0, i1, off, -0.3, H, 6), wallMat);
-      w.castShadow = true;
-      this.world.add(w);
-    });
-    /* 追加の線路(左: 6.1 / 右: -10.1)と、そこで発車を待つ電車 */
-    [6.1, -10.1].forEach((off) => {
-      this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off, 3.8, 0, 2.5), this.M.ballast));
-      [-RAIL_HALF, RAIL_HALF].forEach((o) => {
-        this.world.add(new THREE.Mesh(ribbon(F, i0, i1, off + o, 0.068, 0.19, 25), this.M.railHead));
-        this.world.add(new THREE.Mesh(vribbon(F, i0, i1, off + o + 0.034, 0.05, 0.178, 8), this.M.railWeb));
-      });
-    });
-    const dest = T.up ? '新百合ヶ丘' : '新百合ヶ丘';
-    [[6.1, 'rapid', 10], [-10.1, 'exp', 8]].forEach(([off, kind, n]) => {
-      const tr = this.makeTrainModel(n, { kind, dest });
-      this.setTrainLights(tr, { head: true, tail: true });
-      /* 出口のほうを向いて止まっている */
-      const head = T.up ? T.s0 - 150 : T.s0 - 4;
-      placeTrain(this, tr, head, T.up ? -1 : 1, off);
-      this.world.add(tr.group);
-    });
-    /* 右側のホーム(-10.1線と-3.8線のあいだ)の続き: 既存の -6.85 ホームを使う。左は既存 3.05 */
-    /* 柱(ホームの中心線上に10m間隔・角柱) */
-    const colGeo = new THREE.BoxGeometry(0.55, H, 0.55);
-    colGeo.translate(0, H / 2, 0);
-    const colMat = new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.7, metalness: 0.1 });
-    const cols = [];
-    for (let s = T.a + 8; s < T.b - 4; s += 10) [3.05, -6.85].forEach((off) => cols.push([s, off]));
-    const cim = new THREE.InstancedMesh(colGeo, colMat, cols.length);
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
-    cols.forEach(([ss, off], i) => {
-      const f = frameAt(F, this.step, ss);
-      q.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.t);
-      m4.compose(f.p.clone().addScaledVector(f.left, off).setY(f.p.y + 1.0), q, one);
-      cim.setMatrixAt(i, m4);
-    });
-    cim.castShadow = true;
-    this.world.add(cim);
-    /* 天井の照明(線路と平行の光の帯。夜でなくてもホームは明るい) */
-    const lightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff2d8).multiplyScalar(1.6), side: DS });
-    [4.6, 1.4, -2.0, -5.4, -8.3].forEach((off) => {
-      this.world.add(new THREE.Mesh(ribbon(F, i0 + 1, i1 - 1, off, 0.32, H - 0.05, 4), lightMat));
-    });
-    /* 出口(駅ビルの外壁): 開口部の上に厚い梁と、上にそびえる駅ビル */
-    const exitS = T.up ? T.a : T.b;
-    const backS = T.up ? T.b : T.a;
-    const fx = frameAt(F, this.step, exitS);
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(W_L - W_R + 6, 2.6, 2.2),
-      new THREE.MeshStandardMaterial({ map: this.T.concC, color: 0xb6b3ab, roughness: 0.9 }));
-    beam.position.copy(fx.p).addScaledVector(fx.left, (W_L + W_R) / 2);
-    beam.position.y += H + 1.0;
-    beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), fx.t);
-    beam.castShadow = true;
-    this.world.add(beam);
-    /* 駅ビル(ホームの真上に建つ大きな建物) */
-    const mid = frameAt(F, this.step, (T.a + T.b) / 2);
-    const bt = texBuilding('#8c949b', { seed: 7, winRatio: 0.9 });
-    bt.repeat.set(9, 2.6);
-    const btn = texBuilding('#8c949b', { seed: 7, winRatio: 0.9, night: true });
-    btn.repeat.set(9, 2.6);
-    const bldMat = new THREE.MeshStandardMaterial({ map: bt, roughness: 0.8 });
-    this._bldMats.push({ m: bldMat, day: bt, night: btn });
-    const bld = new THREE.Mesh(new THREE.BoxGeometry(46, 38, T.b - T.a + 30), bldMat);
-    bld.position.copy(mid.p).addScaledVector(mid.left, (W_L + W_R) / 2);
-    bld.position.y += H + 0.4 + 19;
-    bld.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), mid.t);
-    bld.castShadow = true;
-    this.world.add(bld);
-    /* 奥の壁(コンコース側)と大きな駅名の看板 */
-    const fb = frameAt(F, this.step, backS);
-    const back = new THREE.Mesh(new THREE.BoxGeometry(W_L - W_R + 1, H + 0.4, 0.8), wallMat);
-    back.position.copy(fb.p).addScaledVector(fb.left, (W_L + W_R) / 2);
-    back.position.y += (H + 0.4) / 2 - 0.3;
-    back.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), fb.t);
-    this.world.add(back);
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 1.6), new THREE.MeshBasicMaterial({
-      map: boardTexture([['新宿', 60, 70], ['しんじゅく  SHINJUKU', 112, 24, 'normal']], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 140 }),
-      side: DS,
-    }));
-    sign.position.copy(back.position).addScaledVector(fb.t, T.up ? -0.5 : 0.5);
-    sign.position.y = fb.p.y + 5.2;
-    sign.lookAt(sign.position.clone().addScaledVector(fb.t, T.up ? -10 : 10));
-    this.world.add(sign);
-    /* 天井から下がる「のりば」案内(ホームごと) */
-    [[3.05, '1・2'], [-6.85, '3・4']].forEach(([off, no]) => {
-      for (const ds of [-30, -95]) {
-        const ss = T.up ? T.s0 + ds * -1 - 150 : T.s0 + ds;
-        const f = frameAt(F, this.step, ss);
-        const board = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.62), new THREE.MeshBasicMaterial({
-          map: boardTexture([[`${no} 番線  のりば`, 40, 34]], { bg: '#20262c', fg: '#f0f4f6', w: 256, h: 64 }), side: DS,
-        }));
-        board.position.copy(f.p).addScaledVector(f.left, off);
-        board.position.y += 4.3;
-        board.lookAt(board.position.clone().addScaledVector(f.t, T.up ? 10 : -10));
-        this.world.add(board);
-      }
-    });
-    /* 車止め(各線の終端): 赤白の枠+赤色灯 */
-    const fbuf = frameAt(F, this.step, T.buffer);
-    const stripe = canvasTex(64, 16, (c) => {
-      c.fillStyle = '#f2f2ee'; c.fillRect(0, 0, 64, 16);
-      c.fillStyle = '#c8281e';
-      for (let x = 0; x < 64; x += 16) c.fillRect(x, 0, 8, 16);
-    });
-    const bMat = new THREE.MeshStandardMaterial({ map: stripe, roughness: 0.6 });
-    const redMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff3020).multiplyScalar(2) });
-    [0, -3.8, 6.1, -10.1].forEach((off) => {
-      const g = new THREE.Group();
-      const beamB = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.35, 0.3), bMat);
-      beamB.position.y = 1.05;
-      g.add(beamB);
-      [-0.75, 0.75].forEach((x) => {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.2, 0.18), this.M.railWeb);
-        post.position.set(x, 0.6, -0.4);
-        post.rotation.x = 0.5;
-        g.add(post);
-      });
-      const lamp = new THREE.Mesh(new THREE.CircleGeometry(0.12, 12), redMat);
-      lamp.position.set(0, 1.45, 0.16);
-      g.add(lamp);
-      g.position.copy(fbuf.p).addScaledVector(fbuf.left, off);
-      g.lookAt(g.position.clone().addScaledVector(fbuf.t, T.up ? -10 : 10));
-      this.world.add(g);
-    });
+    /* 地面に建つ駅ビル・発車標(LED)・タイルの柱・格子の天井・島式ホーム */
+    buildTerminal(this);
   }
 
   /* 代々木八幡: 朱の鳥居と社叢 */
@@ -2155,48 +1830,7 @@ export class RailScene {
 
   /* ---------- ホームの備品(ベンチ・自販機) ---------- */
   _buildPlatformFurniture() {
-    const F = this.frames;
-    const seats = [], backs = [], vends = [], fronts = [];
-    const vendCols = [0xc23b2e, 0x2e5fc2, 0xe8e6e0];
-    this.line.stations.forEach((st, si) => {
-      if (this._inTunnel(st.s)) return;
-      [[3.8, 1], [-7.55, -1]].forEach(([off, dir]) => {
-        [-45, -95].forEach((ds) => {
-          const f = frameAt(F, this.step, st.s + ds);
-          seats.push({ f, off });
-          backs.push({ f, off: off + dir * 0.2 });
-        });
-        const fv = frameAt(F, this.step, st.s - 68);
-        vends.push({ f: fv, off, col: vendCols[(si + (dir > 0 ? 0 : 1)) % vendCols.length] });
-        fronts.push({ f: fv, off: off - dir * 0.36 });
-      });
-    });
-    const X = new THREE.Vector3(1, 0, 0);
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
-    const put = (im, arr, y) => {
-      arr.forEach((a, i) => {
-        q.setFromUnitVectors(X, a.f.t);
-        m4.compose(a.f.p.clone().addScaledVector(a.f.left, a.off).setY(a.f.p.y + y), q, one);
-        im.setMatrixAt(i, m4);
-      });
-      this.world.add(im);
-    };
-    const seatIm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.08, 0.42),
-      new THREE.MeshStandardMaterial({ color: 0x2e5245, roughness: 0.7 }), seats.length);
-    put(seatIm, seats, 1.44);
-    const backIm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.4, 0.06),
-      new THREE.MeshStandardMaterial({ color: 0x376050, roughness: 0.7 }), backs.length);
-    put(backIm, backs, 1.72);
-    const vendIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.85, 1.7, 0.68),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15 }), vends.length);
-    const vc = new THREE.Color();
-    vends.forEach((v, i) => { vc.setHex(v.col); vendIm.setColorAt(i, vc); });
-    if (vendIm.instanceColor) vendIm.instanceColor.needsUpdate = true;
-    vendIm.castShadow = true;
-    put(vendIm, vends, 1.87);
-    this._vendFrontMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 });
-    const frontIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.1, 0.05), this._vendFrontMat, fronts.length);
-    put(frontIm, fronts, 1.95);
+    buildFurniture(this);
   }
 
   /* ---------- 踏切(遮断機・警報灯つき) ---------- */
@@ -2336,78 +1970,8 @@ export class RailScene {
 
   /* ---------- ホームで待つ人たち(静止。インスタンス描画) ---------- */
   _buildCrowds() {
-    if (!this._crowdRes) {
-      const torso = new THREE.CylinderGeometry(0.17, 0.2, 0.62, 7); torso.translate(0, 1.0, 0);
-      const legs = new THREE.BoxGeometry(0.3, 0.7, 0.2); legs.translate(0, 0.35, 0);
-      const head = new THREE.SphereGeometry(0.12, 8, 6); head.translate(0, 1.45, 0);
-      const hair = new THREE.SphereGeometry(0.125, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55); hair.translate(0, 1.47, -0.01);
-      const colorize = (g, hex) => {
-        const c = new THREE.Color(hex); const n = g.attributes.position.count; const a = new Float32Array(n * 3);
-        for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
-        g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g;
-      };
-      this._crowdRes = {
-        cloth: torso,
-        rest: mergeNonIndexed([colorize(legs, 0x2a2f36), colorize(head, 0xd8b49a), colorize(hair, 0x1d1915)]),
-        matCloth: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
-        matRest: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85 }),
-      };
-      this._keep.add(this._crowdRes.matCloth); this._keep.add(this._crowdRes.matRest);
-    }
-    const R = this._crowdRes;
-    const F = this.frames;
-    let seed = 2024;
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    const cloth = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0xd8d4c8, 0x2b2f36, 0x714a71, 0xc9a24a, 0x5d7f9a];
-    const items = [];
-    this.line.stations.forEach((st) => {
-      [[3.05, 1], [-6.85, -1]].forEach(([off, side]) => {
-        const n = 10 + Math.floor(rnd() * 14);
-        for (let i = 0; i < n; i++) {
-          const ss = st.s - 150 + rnd() * 158;
-          /* 停車位置まわりの乗り降りする人(アニメ)とは重ならないように */
-          if (Math.abs(ss - st.s) < 50 && side > 0 && rnd() < 0.7) continue;
-          /* 運転台の窓のすぐ横(停止位置の前後)には立たせない(視界をふさがない) */
-          if (side > 0 && ss > st.s - 16 && ss < st.s + 14) continue;
-          const lat = off + side * (-0.15 + rnd() * 1.05);
-          const f = frameAt(F, this.step, Math.max(2, ss));
-          const p = f.p.clone().addScaledVector(f.left, lat);
-          p.y += 1.02;
-          /* 多くは線路の方を向き、少しばらつかせる */
-          const yaw = Math.atan2(-side * f.left.x, -side * f.left.z) + (rnd() - 0.5) * 1.6;
-          items.push({ p, yaw, sc: 0.86 + rnd() * 0.22, col: cloth[Math.floor(rnd() * cloth.length)] });
-        }
-      });
-    });
-    const imC = new THREE.InstancedMesh(R.cloth, R.matCloth, items.length);
-    const imR = new THREE.InstancedMesh(R.rest, R.matRest, items.length);
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), sc = new THREE.Vector3(), c = new THREE.Color();
-    items.forEach((it, i) => {
-      e.set(0, it.yaw, 0); q.setFromEuler(e); sc.setScalar(it.sc);
-      m4.compose(it.p, q, sc);
-      imC.setMatrixAt(i, m4); imR.setMatrixAt(i, m4);
-      c.setHex(it.col); imC.setColorAt(i, c);
-    });
-    imC.castShadow = true;
-    this.world.add(imC, imR);
-    /* 屋根から下がる駅名の案内板(ホームごとに2枚) */
-    const F2 = this.frames;
-    this.line.stations.forEach((st) => {
-      if (this._inTerminal(st.s)) return;
-      const tex = boardTexture([[st.name, 44, 46], [STATION_KANA[st.name] || '', 96, 22, 'normal']],
-        { bg: '#20272d', fg: '#eef3f6', w: 384, h: 128 });
-      const mat = new THREE.MeshBasicMaterial({ map: tex, side: DS });
-      [[3.05], [-6.85]].forEach(([off]) => {
-        [-28, -112].forEach((ds) => {
-          const f = frameAt(F2, this.step, st.s + ds);
-          const b = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.63), mat);
-          b.position.copy(f.p).addScaledVector(f.left, off);
-          b.position.y += this._inTunnel(st.s) ? 3.7 : 3.55;
-          b.lookAt(b.position.clone().addScaledVector(f.t, -10));
-          this.world.add(b);
-        });
-      });
-    });
+    /* 待つ人(腕・脚・くつ・髪)と、屋根から下がる駅名。最後に看板と柱をまとめて世界へ出す */
+    buildCrowds(this);
   }
 
   /* ---------- 丘陵(多摩丘陵らしい郊外の起伏と雑木林) ---------- */
@@ -2501,132 +2065,23 @@ export class RailScene {
 
   /* ---------- 駅の人々(待つ・乗る・降りる。脚と腕が歩きで振れる) ---------- */
   _buildPeople() {
-    const shirt = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0x2e6e62, 0x714a71, 0x4f6636];
-    const pants = [0x2b3138, 0x3a3f46, 0x4a4038, 0x333a42, 0x26303a];
-    const hairs = [0x201a16, 0x3a2c20, 0x4a3a2a, 0x14161a];
-    const skinMat = new THREE.MeshStandardMaterial({ color: 0xd8b49a, roughness: 0.8 });
-    this.people = [];
-    for (let i = 0; i < 12; i++) {
-      const g = new THREE.Group();
-      const bodyMat = new THREE.MeshStandardMaterial({ color: shirt[i % shirt.length], roughness: 0.9 });
-      const pantMat = new THREE.MeshStandardMaterial({ color: pants[i % pants.length], roughness: 0.9 });
-      const hairMat = new THREE.MeshStandardMaterial({ color: hairs[i % hairs.length], roughness: 0.85 });
-      /* 胴(上着) */
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.175, 0.55, 8), bodyMat);
-      body.position.y = 0.96;
-      body.castShadow = true;
-      g.add(body);
-      /* 脚2本(股関節で振る) */
-      const legGeo = new THREE.CylinderGeometry(0.055, 0.062, 0.62, 6);
-      legGeo.translate(0, -0.31, 0);
-      const legL = new THREE.Mesh(legGeo, pantMat);
-      legL.position.set(-0.075, 0.68, 0);
-      legL.castShadow = true;
-      const legR = legL.clone();
-      legR.position.x = 0.075;
-      g.add(legL, legR);
-      /* 腕2本(肩で振る) */
-      const armGeo = new THREE.CylinderGeometry(0.038, 0.042, 0.5, 6);
-      armGeo.translate(0, -0.25, 0);
-      const armL = new THREE.Mesh(armGeo, bodyMat);
-      armL.position.set(-0.21, 1.2, 0);
-      const armR = armL.clone();
-      armR.position.x = 0.21;
-      g.add(armL, armR);
-      /* 頭+髪 */
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.135, 9, 8), skinMat);
-      head.position.y = 1.42;
-      head.castShadow = true;
-      g.add(head);
-      const hair = new THREE.Mesh(new THREE.SphereGeometry(0.14, 9, 8), hairMat);
-      hair.scale.set(1, 0.72, 1);
-      hair.position.set(0, 1.49, -0.025);
-      g.add(hair);
-      g.scale.setScalar(0.86 + (i % 5) * 0.05);
-      g.visible = false;
-      this.world.add(g);
-      this.people.push({ g, legL, legR, armL, armR, ph: i * 1.7 });
-    }
-    this._tmpPrev = new THREE.Vector3();
+    buildPeople(this);
   }
 
   /* 1人分の配置+歩行アニメ。dirWorldは歩く向き(nullなら立ち) */
   _placeFig(fig, pos, dirWorld, dt, speed) {
-    fig.g.position.copy(pos);
-    if (dirWorld && speed > 0.05) {
-      fig.g.rotation.y = Math.atan2(dirWorld.x, dirWorld.z);
-      fig.ph += dt * (4.5 + speed * 2.2);
-      const sw = Math.sin(fig.ph);
-      fig.legL.rotation.x = sw * 0.5;
-      fig.legR.rotation.x = -sw * 0.5;
-      fig.armL.rotation.x = -sw * 0.38;
-      fig.armR.rotation.x = sw * 0.38;
-      fig.g.position.y += Math.abs(Math.cos(fig.ph)) * 0.025;
-    } else {
-      /* 立ち: 手足を下ろして小さくゆれる */
-      fig.legL.rotation.x *= 0.8;
-      fig.legR.rotation.x *= 0.8;
-      fig.armL.rotation.x *= 0.8;
-      fig.armR.rotation.x *= 0.8;
-      fig.g.position.y += Math.sin(this.clockT * 1.6 + fig.ph) * 0.008;
-    }
-    fig.g.visible = true;
+    placeFig(this, fig, pos, dirWorld, dt, speed);
   }
 
   _updatePeople(dt) {
-    if (!this.people) return;
-    const sim = this.sim;
-    /* ドア開放中は「いま停まっている駅」(到着でstopIdxはもう次を指している) */
-    const cur = sim.doorOpen ? sim.stops[sim.stopIdx - 1] : null;
-    const next = cur || sim.stops[sim.stopIdx];
-    const d = next ? next.stopAt - sim.pos : 1e9;
-    if (!next || d > 430 || d < -40) {
-      this.people.forEach((p) => { p.g.visible = false; });
-      return;
-    }
-    const F = this.frames;
-    const f01 = sim.doorOpen ? Math.min(1, Math.max(0, 1 - (this._departOf() - sim.t) / 20)) : 0;
-    const P = new THREE.Vector3();
-    /* 自ホーム(進行左側)の6人: 0-1=降りる人(すこし先), 2-5=乗る人(後方寄り) */
-    for (let i = 0; i < 6; i++) {
-      const fig = this.people[i];
-      const s = i < 2 ? next.stopAt + 14 + i * 9 : next.stopAt + 2 - (i - 2) * 13;
-      const fr = frameAt(F, this.step, Math.max(2, s));
-      let lat, walking = 0, dir = null;
-      if (!sim.doorOpen) {
-        lat = 3.5 + (i % 3) * 0.35;
-        if (i < 2) { fig.g.visible = false; continue; }
-      } else if (i < 2) {
-        const pk = Math.min(1, Math.max(0, f01 * 1.7 - i * 0.25));
-        lat = 1.95 + pk * 2.3;
-        if (pk > 0 && pk < 1) { walking = 1; dir = fr.left.clone(); }
-      } else {
-        const pk = Math.min(1, Math.max(0, f01 * 1.6 - (i - 2) * 0.18));
-        lat = 3.6 - pk * 1.65;
-        if (pk >= 1) { fig.g.visible = false; continue; }
-        if (pk > 0) { walking = 1; dir = fr.left.clone().negate(); }
-      }
-      P.copy(fr.p).addScaledVector(fr.left, lat);
-      P.y += 1.02;
-      this._placeFig(fig, P, dir, dt, walking);
-    }
-    /* 向かいホームの6人: 接近中は立って待ち、停車中は歩く流れ */
-    for (let i = 6; i < 12; i++) {
-      const fig = this.people[i];
-      const k = i - 6;
-      let s, walking = 0, dir = null;
-      if (sim.doorOpen) {
-        s = next.stopAt + 12 - ((this.clockT * 8 + k * 29) % 172);
-        walking = 1;
-      } else {
-        s = next.stopAt - 12 - k * 21;
-      }
-      const fr = frameAt(F, this.step, Math.max(2, s));
-      if (walking) dir = fr.t.clone().negate();
-      P.copy(fr.p).addScaledVector(fr.left, -6.4 - (i % 3) * 0.3);
-      P.y += 1.02;
-      this._placeFig(fig, P, dir, dt, walking);
-    }
+    this._updateSignals();
+    /* 駅の人々・時計・昼夜の見た目(look が変わったときだけ) */
+    updatePeople(this, dt);
+  }
+
+  /* 信号の現示(近い信号の灯だけ、変わったときに書きかえる) */
+  _updateSignals() {
+    updateSignals(this);
   }
 
   _departOf() {
