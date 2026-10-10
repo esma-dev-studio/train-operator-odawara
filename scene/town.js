@@ -103,6 +103,40 @@ function stampBand(rs, s0, s1, o0, o1, v) {
 }
 export function occFree(rs, x, z) { return !rs._occ || !rs._occ.has(okey(x, z)); }
 
+/* ---------- 建物・家の外形どうしの正確な重なり判定(向き付き長方形・分離軸) ----------
+ * 占有グリッドは3mマスなので、内側だけを調べる判定では1〜2mのめりこみを見落とす。
+ * 家の列は側道の始まり・終わりで横にずれるので、となりの列の家と重なることもある。
+ * b: {cx, cz, axx, axz(ローカルx), azx, azz(ローカルz), hx, hz} */
+const OBB_CELL = 40;
+function obbAdd(T, b) {
+  const k = Math.floor(b.cx / OBB_CELL) + ',' + Math.floor(b.cz / OBB_CELL);
+  let a = T.obb.get(k);
+  if (!a) T.obb.set(k, (a = []));
+  a.push(b);
+}
+function obbOverlap(a, b, tol) {
+  const dx = b.cx - a.cx, dz = b.cz - a.cz;
+  const axes = [a.axx, a.axz, a.azx, a.azz, b.axx, b.axz, b.azx, b.azz];
+  for (let i = 0; i < 8; i += 2) {
+    const nx = axes[i], nz = axes[i + 1];
+    const ra = Math.abs(a.axx * nx + a.axz * nz) * a.hx + Math.abs(a.azx * nx + a.azz * nz) * a.hz;
+    const rb = Math.abs(b.axx * nx + b.axz * nz) * b.hx + Math.abs(b.azx * nx + b.azz * nz) * b.hz;
+    if (Math.abs(dx * nx + dz * nz) >= ra + rb - tol) return false;
+  }
+  return true;
+}
+function obbHit(T, b, tol) {
+  const ix = Math.floor(b.cx / OBB_CELL), iz = Math.floor(b.cz / OBB_CELL);
+  for (let u = -1; u <= 1; u++) {
+    for (let v = -1; v <= 1; v++) {
+      const a = T.obb.get((ix + u) + ',' + (iz + v));
+      if (!a) continue;
+      for (let i = 0; i < a.length; i++) if (obbOverlap(a[i], b, tol)) return true;
+    }
+  }
+  return false;
+}
+
 /* ---------- 形状をまとめる(position/normal/uv/color) ---------- */
 /* parts: [{ g: BufferGeometry, col?: [r,g,b] (リニア。>=2 は幹などの「固定色」フラグ) }] */
 export function mergeParts(parts, withColor = true) {
@@ -362,9 +396,12 @@ function texRoof() {
 /* 街灯のにじみ */
 function texGlowP1() {
   const cv = canvasOnce('glow', 64, 64, (c) => {
-    const g = c.createRadialGradient(32, 32, 1, 32, 32, 31);
+    /* 芯は小さく明るく(灯具の大きさ)、まわりはうすいにじみ。近くの街灯が白い円盤にならないように */
+    const g = c.createRadialGradient(32, 32, 0, 32, 32, 31);
     g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.25, 'rgba(255,255,255,.45)');
+    g.addColorStop(0.08, 'rgba(255,255,255,.85)');
+    g.addColorStop(0.22, 'rgba(255,255,255,.24)');
+    g.addColorStop(0.5, 'rgba(255,255,255,.06)');
     g.addColorStop(1, 'rgba(255,255,255,0)');
     c.fillStyle = g; c.fillRect(0, 0, 64, 64);
   });
@@ -409,7 +446,7 @@ export function buildTown(rs) {
   const L = rs.line.meta.length;
   const T = {
     frame: 0, rev: null, lodX: 1e9, lodZ: 1e9, fb: { tod: null, w: null, rev: '', night: false, eve: false, rain: false, snow: false, wet: false, indoor: false },
-    treeCells: [], wireCells: [], glows: [], groups: {},
+    treeCells: [], wireCells: [], glows: [], groups: {}, obb: new Map(),
   };
   rs._town = T;
   rs._occ = new Map();
@@ -478,6 +515,7 @@ export function buildTown(rs) {
   buildStreets(rs, T);
   buildBuildings(rs, T);
   buildHouses(rs, T);
+  T.obb = null;   // 配置が終わったら外形の表は不要
   buildSkyline(rs, T);
 }
 
@@ -801,6 +839,7 @@ function buildBuildings(rs, T) {
     }
     cx = cx2; cz = cz2;
     fpStamp(occ, cx, cz, axx, axz, azx, azz, hx, hz, SOFT);
+    obbAdd(T, { cx, cz, axx, axz, azx, azz, hx, hz });
     const D = FACADE[type];
     const base0 = fr.y - 0.5 - 0.6;
     const floors = Math.max(2, Math.round((h - 0.6 - (shop ? 4.2 : 0)) / D.fh));
@@ -971,6 +1010,10 @@ function buildHouses(rs, T) {
         const axx = Math.cos(yaw), axz = -Math.sin(yaw), azx = Math.sin(yaw), azz = Math.cos(yaw);
         const w = fw - 1.2;
         if (fpHit(occ, cx, cz, axx, axz, azx, azz, d / 2, w / 2, 1.8)) continue;
+        /* ビル・ほかの家と外形が重ならないか(正確な判定) */
+        const ob = { cx, cz, axx, axz, azx, azz, hx: d / 2, hz: w / 2 };
+        if (obbHit(T, ob, 0.05)) continue;
+        obbAdd(T, ob);
         stamps.push([cx, cz, axx, axz, azx, azz, d / 2, w / 2]);
         const three = rng() < 0.12;
         const isGable = !three && rng() < 0.6 / 0.88;
@@ -1313,7 +1356,8 @@ export function buildHillsP1(rs) {
   const rng = makeRng(777);
   if (!rs._p1HillMat) {
     const t = texForest();
-    t.repeat.set(10, 3);
+    /* 樹冠1つが2〜6mになる細かさ(粗いと迷彩柄に見える) */
+    t.repeat.set(18, 4);
     rs._p1HillMat = new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1 });
     rs._keep.add(rs._p1HillMat); rs._keep.add(t);
   }
