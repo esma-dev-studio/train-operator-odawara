@@ -1321,4 +1321,6 @@ function stationLook(rs) {
   W.signMats.forEach((m) => m.color.setScalar(lit));
   if (rs._atlas) rs._atlas.mat.emissiveIntensity = night || eve ? 0.5 : 0.12;   // 停止位置「8」などの標識
   if (W.termBld) W.termBld.emissiveIntensity = night ? 1.0 : eve ? 0.35 : 0;
+  /* 信号の灯: 昼はあざやかな色(明るすぎると白っぽくなる)、夜は明るくしてにじませる */
+  if (rs._sigRes && rs._sigRes.glowMat) rs._sigRes.glowMat.color.setScalar(night ? 1.3 : eve ? 0.95 : 0.5);
 }

@@ -295,7 +295,7 @@ function boardAtlas(rs) {
 /* 線路わきの標識の置き場(全線で1つ) */
 export function lineBaker(rs) {
   const A = boardAtlas(rs);
-  return bakerFor(rs, 'line', A.mat, { white: A.white, build: { cast: true } });
+  return bakerFor(rs, 'line', A.mat, { white: A.white, build: {} });
 }
 
 /* 四角い標識の絵(背景・枠・文字) */
@@ -405,7 +405,7 @@ export function buildBoards(rs, plat, inPlat) {
 
 /* ---------- 信号機(4灯式)・番号札・ATS地上子 ---------- */
 const LAMP_DY = [0.54, 0.18, -0.18, -0.54];      // 上から 黄・緑・赤・黄
-const LAMP_COL = [0xffc12b, 0x22e06a, 0xff4838, 0xffc12b];
+const LAMP_COL = [0xffb21f, 0x1fe070, 0xff2618, 0xffb21f];
 const HEAD_Y = 4.95;
 const ASPECT_LAMPS = [[2], [3], [0, 1], [1]];   // 現示(0=R,1=Y,2=YG,3=G) → 点く灯(0始まり)
 
@@ -487,12 +487,10 @@ function signalRes(rs) {
   /* 基礎・柱・はしご */
   P(new THREE.BoxGeometry(0.6, 0.3, 0.6).translate(0, 0.15, 0), 0x9a9893);
   P(new THREE.CylinderGeometry(0.075, 0.09, 4.0, 8, 1, true).translate(0, 0.3 + 2.0, 0), 0x6d757c);
-  [-0.17, 0.17].forEach((x) => P(new THREE.BoxGeometry(0.03, 3.7, 0.03).translate(x, 0.45 + 1.85, -0.2), 0x5d656b));
-  for (let k = 0; k < 6; k++) P(new THREE.BoxGeometry(0.34, 0.025, 0.025).translate(0, 0.8 + k * 0.6, -0.2), 0x5d656b);
-  [-0.17, 0.17].forEach((x) => P(new THREE.BoxGeometry(0.03, 0.03, 0.14).translate(x, 3.9, -0.13), 0x5d656b));
+  [-0.17, 0.17].forEach((x) => P(new THREE.BoxGeometry(0.03, 3.7, 0.03).translate(x, 0.45 + 1.85, -0.12), 0x5d656b));
+  for (let k = 0; k < 5; k++) P(new THREE.BoxGeometry(0.34, 0.025, 0.025).translate(0, 0.8 + k * 0.72, -0.12), 0x5d656b);
   /* 灯器(本体・背板・フード・消えているレンズ) */
   P(new THREE.BoxGeometry(0.46, 1.55, 0.24).translate(0, HEAD_Y, 0), 0x1f2428);
-  P(new THREE.BoxGeometry(0.12, 0.3, 0.12).translate(0, HEAD_Y - 0.9, 0), 0x2a2f33);
   const sh = new THREE.Shape();
   const bw = 0.78, bh = 1.9, br = 0.3;
   sh.moveTo(-bw / 2 + br, -bh / 2);
@@ -503,9 +501,9 @@ function signalRes(rs) {
   const plate = new THREE.ShapeGeometry(sh, 3).translate(0, HEAD_Y, 0.125);
   P(plate, 0x0f1113);
   P(plate.clone().translate(0, 0, -0.006), 0x0f1113, { flip: true });
-  const LENS = [0x3a2e12, 0x10291b, 0x3a1412, 0x3a2e12];   // 消えているレンズ(暗い色ガラス)
+  const LENS = [0x2c2410, 0x0d2216, 0x2e100e, 0x2c2410];   // 消えているレンズ(暗い色ガラス)
   LAMP_DY.forEach((dy, k) => {
-    const hood = new THREE.CylinderGeometry(0.17, 0.17, 0.22, 7, 1, true, -Math.PI * 0.62, Math.PI * 1.24);
+    const hood = new THREE.CylinderGeometry(0.17, 0.17, 0.22, 5, 1, true, -Math.PI * 0.62, Math.PI * 1.24);
     hood.rotateX(Math.PI / 2);
     hood.translate(0, HEAD_Y + dy, 0.24);
     P(hood, 0x1a1e22);
@@ -517,7 +515,8 @@ function signalRes(rs) {
   const face = new THREE.PlaneGeometry(0.32, 0.42).translate(0, 3.7, 0.1215);
   parts.push({ geo: face, color: 0xffffff, pk: true, uvRect: [0, 0, 1, 1] });
   const geo = mergeParts(parts);
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.25 });
+  /* 灯器はつや消しの黒(空の映りこみで点いた灯が白っぽく見えないように) */
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.1, envMapIntensity: 0.35 });
   mat.onBeforeCompile = (s) => {
     s.vertexShader = s.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 stPlate;\nattribute float stPK;\nuniform vec2 uStPlateSz;')
@@ -558,7 +557,8 @@ function signalRes(rs) {
     glowMat: fixAdditiveFog(new THREE.MeshBasicMaterial({ map: glowT, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), 'stglow'),
     beaconGeo: beacon,
     beaconMat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.1 }),
-    on: LAMP_COL.map((h) => new THREE.Color(h).multiplyScalar(2.2)),
+    /* HDR(1より明るい)にして夜のにじみ(ブルーム)にかかるように。強すぎると色が白っぽくなるので控えめ */
+    on: LAMP_COL.map((h) => new THREE.Color(h).multiplyScalar(1.7)),
   };
   R.glowMat.userData.noWeather = true;
   [R.mat, R.glowMat, R.beaconMat].forEach((m) => rs._keep.add(m));
