@@ -297,7 +297,7 @@ function materials(rs) {
   M.ao = keep(new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false }));
   M.wire = keep(new THREE.LineBasicMaterial({ color: 0x23272b }));
   M.glow = keep(new THREE.PointsMaterial({
-    map: texGlowP1(), size: 2.6, sizeAttenuation: true, transparent: true, depthWrite: false,
+    map: texGlowP1(), size: 3, sizeAttenuation: true, transparent: true, depthWrite: false,
     blending: THREE.AdditiveBlending, color: new THREE.Color(0xffe2b0).multiplyScalar(2.5),
   }));
   M.stone = keep(new THREE.MeshStandardMaterial({ color: 0xa9a59c, roughness: 0.95 }));
@@ -936,7 +936,7 @@ function buildBuildings(rs, T) {
 
 /* ---------- 戸建て(世田谷・多摩の住宅地) ---------- */
 const WALLS = [0xece8df, 0xddd6c8, 0xcfc6b4, 0xbdb6aa, 0x8e8a83, 0xe4dccd, 0xc8b9a1];
-const ROOFS = [0x3a3d41, 0x46423e, 0x2e3236, 0x574a3f, 0x44505c, 0x62564a];
+const ROOFS = [0x3a3d41, 0x46423e, 0x2e3236, 0x574a3f, 0x474e56, 0x62564a];
 function buildHouses(rs, T) {
   const F = rs.frames, step = rs.step, L = rs.line.meta.length;
   const rng = makeRng(9753);
@@ -954,7 +954,7 @@ function buildHouses(rs, T) {
         const maxD = kind === 2 ? 110 : kind === 3 ? 90 : kind === 1 ? 70 : 0;
         const road = T.roadAt(side, s);
         const start = Math.max(T.fence(side, s) + 6, road ? road.clear + 0.4 : 0);
-        const front = start + row * 12.5;
+        const front = start + row * 12.5 + ((row * 7 + Math.floor(s / 97)) % 3) * 0.5;   // 列を少しずらして格子に見せない
         if (!maxD || front + 8 > maxD || T.skipS(s) || T.inRiver(s, 60) || T.landmarkSkip(side, s)) { s += 15; continue; }
         const fw = 8 + rng() * 2.5;              // 間口
         const d = 7 + rng() * 2.5, g = 1.2 + rng() * 1.4;
@@ -978,11 +978,14 @@ function buildHouses(rs, T) {
         const eave = three ? 8.6 : 5.6 + rng() * 0.6;
         const base0 = fr.y - 0.5 - 0.6;
         const sh = lat < 45;
-        const it = { x: cx, y: base0, z: cz, yaw, sx: d, sz: w, sy: isGable ? (eave + 0.6) / EAVE : eave + 0.6 + 0.5, s: sMid, sh };
+        /* 切妻の3割は妻(三角の面)を線路に向ける(妻入り)。敷地の形はそのまま */
+        const turn = isGable && rng() < 0.3;
+        const hy = turn ? yaw + Math.PI / 2 : yaw, hsx = turn ? w : d, hsz = turn ? d : w;
+        const it = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: isGable ? (eave + 0.6) / EAVE : eave + 0.6 + 0.5, s: sMid, sh };
         paint(it, pick(WALLS, rng), 0.04, rng);
         (isGable ? gable : flat).push(it);
         if (isGable) {
-          const rf = { x: cx, y: base0, z: cz, yaw, sx: d, sz: w, sy: it.sy, s: sMid, sh };
+          const rf = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: it.sy, s: sMid, sh };
           paint(rf, pick(ROOFS, rng), 0.08, rng);
           roofs.push(rf);
         }
@@ -998,7 +1001,7 @@ function buildHouses(rs, T) {
         /* テレビアンテナ(近くの家の35%) */
         if (lat < 70 && rng() < 0.35) {
           const topY = base0 + it.sy;
-          const oz = (rng() - 0.5) * w * 0.5;
+          const oz = turn ? 0 : (rng() - 0.5) * w * 0.5;
           const mx = cx + azx * oz, mz = cz + azz * oz;
           const dark = { r: 0.05, g: 0.05, b: 0.055 };
           boxes.push({ x: mx, y: topY - 0.1, z: mz, yaw, sx: 0.04, sy: 1.6, sz: 0.04, s: sMid, sh: false, ...dark });
@@ -1204,7 +1207,8 @@ export function makeTreeGeosP1() {
   const tc = srgbLin(0x584736).map((v) => v + 2);
   const trunk = () => { const t = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6); t.translate(0, 1.45, 0); return { g: t, col: tc }; };
   const trunkC = () => { const t = new THREE.CylinderGeometry(0.1, 0.16, 2.0, 5); t.translate(0, 1.0, 0); return { g: t, col: tc }; };
-  const broad = (spec, detail) => spec.map(([r, x, y, z, sy]) => ({ g: shade(blob(r, x, y, z, sy || 1.15, detail), 2.2, 5.5) }));
+  /* 近景用: 大きい2つの葉のかたまりだけ細かく、小さい2つは粗く(三角形を節約) */
+  const broad = (spec, detail) => spec.map(([r, x, y, z, sy], i) => ({ g: shade(blob(r, x, y, z, sy || 1.15, i < 2 ? detail : 0), 2.2, 5.5) }));
   const A = [[1.55, 0, 3.7, 0], [1.1, 0.95, 3.1, 0.35], [1.0, -0.85, 3.25, -0.3], [0.9, 0.1, 4.6, -0.5]];
   const B = [[1.25, 0, 3.3, 0, 1.3], [1.15, 0.2, 4.4, 0.2, 1.2], [0.85, -0.7, 3.0, 0.5], [0.8, 0.75, 3.6, -0.55]];
   const cones = (seg) => [[1.5, 2.2, 2.6], [1.15, 1.9, 3.9], [0.75, 1.6, 5.0]].map(([r, h, y]) => {
