@@ -1,6 +1,6 @@
 /* =========================================================
  * ui/stamps.js — えきスタンプ(駅ごとのオリジナル図柄)
- * 「8」の停止位置に ±35cm で止まる(◎みごと)と、その駅のスタンプがもらえる。
+ * 「8」の停止位置に ±1m で止まると すみ色、±35cm で駅の色、±10cm で金色のスタンプがもらえる。
  * 図柄はすべてキャンバスで描くオリジナル(地域の名物をモチーフにした単純な線画)。
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
@@ -174,8 +174,11 @@ function motif(c, kind) {
   }
 }
 
-/* スタンプ1つを描く。got=false なら「まだ」の灰色シルエット */
-export function drawStamp(cv, name, { got = true, size = 160, seed = 0 } = {}) {
+/* スタンプ1つを描く。
+ * tier: 0=まだ(点線の丸だけ) 1=くろ(±1m・すみ色) 2=いろ(±35cm・駅の色) 3=きん(±10cm・金色+内側の輪)
+ * (前の呼び方 got:true/false も使える: true→2, false→0) */
+export function drawStamp(cv, name, { tier = null, got = true, size = 160, seed = 0 } = {}) {
+  if (tier == null) tier = got ? 2 : 0;
   const dpr = Math.min(2, (typeof devicePixelRatio !== 'undefined' && devicePixelRatio) || 1);
   cv.width = size * dpr; cv.height = size * dpr;
   cv.style.width = size + 'px'; cv.style.height = size + 'px';
@@ -183,17 +186,35 @@ export function drawStamp(cv, name, { got = true, size = 160, seed = 0 } = {}) {
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, size, size);
   const [col, kind] = DEFS[name] || ['#555', 'circle'];
-  const ink = got ? col : 'rgba(150,165,175,0.32)';
   const R = size / 2;
   c.save();
   c.translate(R, R);
-  if (got) c.rotate(((seed % 7) - 3) * 0.025);
+  /* まだ: 点線の丸だけ(しずかな目標) */
+  if (tier <= 0) {
+    c.globalAlpha = 0.28;
+    c.strokeStyle = '#c4ced4';
+    c.setLineDash([size * 0.035, size * 0.03]);
+    c.lineWidth = size * 0.02;
+    c.beginPath(); c.arc(0, 0, R * 0.9, 0, Math.PI * 2); c.stroke();
+    c.restore();
+    return;
+  }
+  c.rotate(((seed % 7) - 3) * 0.025);
+  const gold = (a, b) => {
+    const g = c.createLinearGradient(-a, -a, b, b);
+    g.addColorStop(0, '#7a5a10'); g.addColorStop(0.5, '#e9c75a'); g.addColorStop(1, '#8a6a14');
+    return g;
+  };
+  let ink = col;
+  if (tier === 1) { ink = '#2e2e2e'; c.globalAlpha = 0.85; }
+  if (tier >= 3) ink = gold(R, R);
   c.strokeStyle = ink; c.fillStyle = ink;
-  /* 外枠(二重丸) */
+  /* 外枠(二重丸。きんは さらに内側にもう1本) */
   c.lineWidth = size * 0.035;
   c.beginPath(); c.arc(0, 0, R * 0.92, 0, Math.PI * 2); c.stroke();
   c.lineWidth = size * 0.012;
   c.beginPath(); c.arc(0, 0, R * 0.82, 0, Math.PI * 2); c.stroke();
+  if (tier >= 3) { c.beginPath(); c.arc(0, 0, R * 0.765, 0, Math.PI * 2); c.stroke(); }
   /* 上: 駅名(漢字) 下: かな */
   c.textAlign = 'center'; c.textBaseline = 'middle';
   /* 文字は内側の輪に収まるよう、測って縮める */
@@ -202,33 +223,31 @@ export function drawStamp(cv, name, { got = true, size = 160, seed = 0 } = {}) {
     const w = c.measureText(text).width;
     if (w > maxW) c.font = `${weight} ${px * (maxW / w)}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
   };
-  fit(got ? name : '？', 900, size * 0.185, R * 1.36);
-  c.fillText(got ? name : '？', 0, R * 0.40);
-  const kana = got ? (STATION_KANA[name] || '') : '';
+  fit(name, 900, size * 0.185, R * 1.36);
+  c.fillText(name, 0, R * 0.40);
+  const kana = STATION_KANA[name] || '';
   fit(kana, 700, size * 0.075, R * 1.0);
   c.fillText(kana, 0, R * 0.665);
   c.font = `700 ${size * 0.06}px "Zen Kaku Gothic New", sans-serif`;
   c.fillText('えき スタンプ', 0, -R * 0.66);
   /* モチーフ */
-  if (got) {
-    c.save();
-    c.translate(0, -R * 0.2);
-    c.scale(R * 0.36, R * 0.36);
-    c.lineWidth = 0.075;
-    c.lineJoin = 'round'; c.lineCap = 'round';
-    motif(c, kind);
-    c.restore();
-  }
+  c.save();
+  c.translate(0, -R * 0.2);
+  c.scale(R * 0.36, R * 0.36);
+  c.lineWidth = 0.075;
+  c.lineJoin = 'round'; c.lineCap = 'round';
+  if (tier >= 3) { const g2 = gold(1, 1); c.strokeStyle = g2; c.fillStyle = g2; }
+  motif(c, kind);
   c.restore();
-  /* インクのかすれ(ハンコらしさ) */
-  if (got) {
-    let x = 12345 + seed * 77;
-    const rnd = () => (x = (x * 16807) % 2147483647) / 2147483647;
-    c.globalCompositeOperation = 'destination-out';
-    for (let i = 0; i < size * 1.6; i++) {
-      c.fillStyle = `rgba(0,0,0,${0.25 + rnd() * 0.5})`;
-      c.fillRect(rnd() * size, rnd() * size, 1 + rnd() * 2.2, 1 + rnd() * 1.5);
-    }
-    c.globalCompositeOperation = 'source-over';
+  c.restore();
+  /* インクのかすれ(ハンコらしさ。すみ色は すこし多めに かすれる) */
+  let x = 12345 + seed * 77;
+  const rnd = () => (x = (x * 16807) % 2147483647) / 2147483647;
+  c.globalCompositeOperation = 'destination-out';
+  const n = size * (tier === 1 ? 2.6 : tier >= 3 ? 1.0 : 1.6);
+  for (let i = 0; i < n; i++) {
+    c.fillStyle = `rgba(0,0,0,${0.25 + rnd() * 0.5})`;
+    c.fillRect(rnd() * size, rnd() * size, 1 + rnd() * 2.2, 1 + rnd() * 1.5);
   }
+  c.globalCompositeOperation = 'source-over';
 }

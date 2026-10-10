@@ -1,27 +1,29 @@
 /* =========================================================
  * ui/badges.js — くんしょう(実績)。運転のいろいろな「できた！」を記録する
+ * icon は ui/icons.js のピクトグラム名(漢字1文字のマークは小2に読めないのでやめた)。
+ * ランクのくんしょうだけは letter('S'/'A')を そのまま出す。
  * ========================================================= */
 export const BADGES = [
-  { id: 'first', icon: '初', name: 'はじめての うんてん', desc: 'ゴールまで はしった' },
-  { id: 'perfect', icon: '◎', name: 'ぴったり！', desc: '「8」に ぴったり とめた' },
-  { id: 'perfect10', icon: '名', name: 'ぴったり めいじん', desc: 'ぴったりを 10かい' },
-  { id: 'perfect30', icon: '達', name: 'ぴったり たつじん', desc: 'ぴったりを 30かい' },
-  { id: 'safe', icon: '安', name: 'あんぜん うんてん', desc: 'じどうブレーキ 0かいで ゴール(3えき いじょう)' },
-  { id: 'ontime', icon: '時', name: 'じかん ぴったり', desc: 'おくれ なしで ゴール(3えき いじょう)' },
-  { id: 'fullDown', icon: '下', name: 'くだり ぜんぶ', desc: '新宿 → 新百合ヶ丘 を ぜんぶ はしった' },
-  { id: 'fullUp', icon: '上', name: 'のぼり ぜんぶ', desc: '新百合ヶ丘 → 新宿 を ぜんぶ はしった' },
-  { id: 'exp', icon: '急', name: 'きゅうこうの うんてんし', desc: '急行で ゴール' },
-  { id: 'rapid', icon: '快', name: 'かいそくきゅうこうの うんてんし', desc: '快速急行で ゴール' },
-  { id: 'evening', icon: '夕', name: 'ゆうやけの うんてんし', desc: 'ゆうがたに ゴール' },
-  { id: 'night', icon: '夜', name: 'よるの うんてんし', desc: 'よるに ゴール' },
-  { id: 'rain', icon: '雨', name: 'あめでも へっちゃら', desc: 'あめの日に ゴール' },
-  { id: 'snow', icon: '雪', name: 'ゆきの日の うんてんし', desc: 'ゆきの日に ゴール' },
-  { id: 'rankA', icon: 'A', name: 'めいじん うんてんし', desc: 'ランクA いじょう' },
-  { id: 'rankS', icon: 'S', name: 'でんせつの うんてんし', desc: 'ランクS' },
-  { id: 'stamp10', icon: '印', name: 'スタンプ あつめ', desc: 'えきスタンプを 10しゅるい' },
-  { id: 'stampAll', icon: '全', name: 'スタンプ コンプリート', desc: '23えき ぜんぶの スタンプ' },
-  { id: 'horn', icon: '笛', name: 'けいてき', desc: 'けいてきを ならした' },
-  { id: 'camera', icon: '視', name: 'カメラマン', desc: 'してんを ぜんぶ ためした' },
+  { id: 'first', icon: 'flag', name: 'はじめての うんてん', desc: 'ゴールまで はしった' },
+  { id: 'perfect', icon: 'target', name: 'ぴったり！', desc: '「8」に ぴったり とめた' },
+  { id: 'perfect10', icon: 'medal', name: 'ぴったり めいじん', desc: 'ぴったりを 10かい' },
+  { id: 'perfect30', icon: 'trophy', name: 'ぴったり たつじん', desc: 'ぴったりを 30かい' },
+  { id: 'safe', icon: 'shield', name: 'あんぜん うんてん', desc: 'じどうブレーキ 0かいで ゴール(3えき いじょう)' },
+  { id: 'ontime', icon: 'clock', name: 'じかん ぴったり', desc: 'おくれ なしで ゴール(3えき いじょう)' },
+  { id: 'fullDown', icon: 'route-down', name: 'くだり ぜんぶ', desc: '<ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby> を ぜんぶ はしった' },
+  { id: 'fullUp', icon: 'route-up', name: 'のぼり ぜんぶ', desc: '<ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby> → <ruby>新宿<rt>しんじゅく</rt></ruby> を ぜんぶ はしった' },
+  { id: 'exp', icon: 'train', name: 'きゅうこうの うんてんし', desc: '<ruby>急行<rt>きゅうこう</rt></ruby>で ゴール' },
+  { id: 'rapid', icon: 'fast', name: 'かいそくきゅうこうの うんてんし', desc: '<ruby>快速急行<rt>かいそくきゅうこう</rt></ruby>で ゴール' },
+  { id: 'evening', icon: 'sunset', name: 'ゆうやけの うんてんし', desc: 'ゆうがたに ゴール' },
+  { id: 'night', icon: 'moon', name: 'よるの うんてんし', desc: 'よるに ゴール' },
+  { id: 'rain', icon: 'rain', name: 'あめでも へっちゃら', desc: 'あめの日に ゴール' },
+  { id: 'snow', icon: 'snow', name: 'ゆきの日の うんてんし', desc: 'ゆきの日に ゴール' },
+  { id: 'rankA', letter: 'A', name: 'めいじん うんてんし', desc: 'ランクA いじょう' },
+  { id: 'rankS', letter: 'S', name: 'でんせつの うんてんし', desc: 'ランクS' },
+  { id: 'stamp10', icon: 'stamp', name: 'スタンプ あつめ', desc: 'えきスタンプを 10しゅるい' },
+  { id: 'stampAll', icon: 'book', name: 'スタンプ コンプリート', desc: '23えき ぜんぶの スタンプ' },
+  { id: 'horn', icon: 'horn', name: 'けいてき', desc: 'けいてきを ならした' },
+  { id: 'camera', icon: 'camera', name: 'カメラマン', desc: 'してんを ぜんぶ ためした' },
 ];
 
 export const badgeById = (id) => BADGES.find((b) => b.id === id);
