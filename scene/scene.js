@@ -1150,6 +1150,37 @@ export class RailScene {
     }
   }
 
+  /* 影は動くものがあるときだけ描きなおす(止まった駅・一時停止・メニューでは前の影のまま)。
+   * 動くもの: 自列車(速度・ドア開閉と人の動き)・近くのほかの列車・踏切・影の箱の移動・明示の作りなおし(_shadowDirty) */
+  _updateShadow(dt) {
+    const r = this.renderer, sun = this.sun;
+    if (!r.shadowMap.enabled || !sun || !sun.castShadow) { this._shadowDirty = false; return; }
+    const sim = this.sim;
+    const tg = sun.target.position;
+    if (!this._shTgt) this._shTgt = new THREE.Vector3(1e9, 0, 0);
+    /* act: 速く動くもの(毎フレーム) / slow: ゆっくり動くもの(ホームを歩く人・踏切の棒。3フレームに1回で足りる) */
+    let act = false, slow = false;
+    /* 影の箱が動いた(2cm以上。止まっていても位置が計算の誤差でわずかにゆれるので、小さい差は数えない) */
+    if (tg.distanceToSquared(this._shTgt) > 0.0004) { this._shTgt.copy(tg); act = true; }
+    if (!act && dt > 0 && sim) {
+      if (sim.v > 0.5) act = true;
+      else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(this._camS, 250)) act = true;
+      else if (sim.doorOpen) slow = true;
+      else {
+        const cs = this.crossSpots;
+        if (cs) for (let i = 0; i < cs.length; i++) if (Math.abs(cs[i] - sim.pos) < 450) { slow = true; break; }
+      }
+    }
+    const force = this._shadowDirty;
+    /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
+    if (act || force) this._shadowHold = 4;
+    else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
+    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!this._shadowLite || (this._frame & 1) === 0 || !act)));
+    r.shadowMap.needsUpdate = want;
+    if (this._shadowHold > 0) this._shadowHold--;
+    this._shadowDirty = false;
+  }
+
   /* fps低下時に段階的に画質を落とす: 解像度 → 影(小さく・1フレームおき) → ブルーム。
    * 影は shadowMap.enabled を切りかえない(全シェーダの作り直しで数秒止まるため) */
   stepDownQuality() {
@@ -2530,37 +2561,6 @@ export class RailScene {
     }
     sun.target.position.copy(tgt);
     sun.position.copy(tgt).addScaledVector(dir, 430);
-  }
-
-  /* 影は動くものがあるときだけ描きなおす(止まった駅・一時停止・メニューでは前の影のまま)。
-   * 動くもの: 自列車(速度・ドア開閉と人の動き)・近くのほかの列車・踏切・影の箱の移動・明示の作りなおし(_shadowDirty) */
-  _updateShadow(dt) {
-    const r = this.renderer, sun = this.sun;
-    if (!r.shadowMap.enabled || !sun || !sun.castShadow) { this._shadowDirty = false; return; }
-    const sim = this.sim;
-    const tg = sun.target.position;
-    if (!this._shTgt) this._shTgt = new THREE.Vector3(1e9, 0, 0);
-    /* act: 速く動くもの(毎フレーム) / slow: ゆっくり動くもの(ホームを歩く人・踏切の棒。3フレームに1回で足りる) */
-    let act = false, slow = false;
-    /* 影の箱が動いた(2cm以上。止まっていても位置が計算の誤差でわずかにゆれるので、小さい差は数えない) */
-    if (tg.distanceToSquared(this._shTgt) > 0.0004) { this._shTgt.copy(tg); act = true; }
-    if (!act && dt > 0 && sim) {
-      if (sim.v > 0.5) act = true;
-      else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(this._camS, 250)) act = true;
-      else if (sim.doorOpen) slow = true;
-      else {
-        const cs = this.crossSpots;
-        if (cs) for (let i = 0; i < cs.length; i++) if (Math.abs(cs[i] - sim.pos) < 450) { slow = true; break; }
-      }
-    }
-    const force = this._shadowDirty;
-    /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
-    if (act || force) this._shadowHold = 4;
-    else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
-    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!this._shadowLite || (this._frame & 1) === 0 || !act)));
-    r.shadowMap.needsUpdate = want;
-    if (this._shadowHold > 0) this._shadowHold--;
-    this._shadowDirty = false;
   }
 
   /* 毎フレーム描画 */
