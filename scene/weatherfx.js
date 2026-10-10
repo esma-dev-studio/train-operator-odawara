@@ -32,7 +32,8 @@ export class WeatherFx {
     this.rainV = new Float32Array(this.nRain * 6);
     const rg = new THREE.BufferGeometry();
     rg.setAttribute('position', new THREE.BufferAttribute(this.rainV, 3).setUsage(THREE.DynamicDrawUsage));
-    this.rainMat = new THREE.LineBasicMaterial({ color: 0xaab4bf, transparent: true, opacity: 0.38, depthWrite: false });
+    /* すじは細い線なので、高解像度の画面でも見えるよう濃いめ・長め */
+    this.rainMat = new THREE.LineBasicMaterial({ color: 0xaab4bf, transparent: true, opacity: 0.55, depthWrite: false });
     this.rain = new THREE.LineSegments(rg, this.rainMat);
     this.rain.frustumCulled = false;
     this.rain.visible = false;
@@ -94,7 +95,7 @@ export class WeatherFx {
       this.rain.visible = show;
       if (!show) return;
       const fall = 9.5, P = this.rainP, V = this.rainV;
-      const streak = 0.045;
+      const streak = 0.075;
       for (let i = 0; i < this.nRain; i++) {
         let x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2];
         y -= fall * dt; z -= v * dt;

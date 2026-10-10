@@ -3,13 +3,15 @@
  * 初回にゲーム一式(約10MB)を保存し、以後は保存分をすぐ返しつつ裏で更新する。
  * 公開のたびに VERSION を上げると古い保存分は消える。
  * ========================================================= */
-const VERSION = 'trainop-v2-002';
+const VERSION = 'trainop-v3-001';
 const CORE = [
   './', './index.html', './styles.css', './main.js', './manifest.webmanifest',
   './sim/engine.js', './sim/kana.js', './sim/line.js', './sim/autopilot.js',
   './scene/scene.js', './scene/cockpit.js', './scene/traffic.js', './scene/trains.js', './scene/weatherfx.js',
+  './scene/look.js', './scene/town.js', './scene/facade.js', './scene/trackbed.js',
+  './scene/stations.js', './scene/signage.js', './scene/lightpool.js',
   './cab/cab.js', './audio/audio.js', './audio/announce.js', './audio/vvvf-worklet.js',
-  './ui/stamps.js', './ui/rainglass.js', './ui/badges.js',
+  './ui/stamps.js', './ui/rainglass.js', './ui/badges.js', './ui/icons.js',
   './vendor/three.module.min.js', './vendor/RGBELoader.js',
   './vendor/addons/EffectComposer.js', './vendor/addons/RenderPass.js', './vendor/addons/UnrealBloomPass.js',
   './vendor/addons/OutputPass.js', './vendor/addons/ShaderPass.js', './vendor/addons/Pass.js', './vendor/addons/MaskPass.js',
@@ -18,7 +20,7 @@ const CORE = [
   './assets/favicon.svg', './assets/icon-180.png', './assets/icon-192.png', './assets/icon-512.png',
   './assets/tex/gravel_c.jpg', './assets/tex/gravel_n.jpg', './assets/tex/grass_c.jpg', './assets/tex/grass_n.jpg',
   './assets/tex/concrete_c.jpg', './assets/tex/concrete_n.jpg',
-  './assets/sky/sky_clear.hdr', './assets/sky/sky_overcast.hdr', './assets/sky/sky_night.hdr',
+  './assets/sky/sky_clear.hdr', './assets/sky/sky_overcast.hdr',
 ];
 
 self.addEventListener('install', (ev) => {

@@ -318,9 +318,16 @@ function parseDest(text, kind) {
   const k = KINDS[kind] || KINDS.local;
   return { k, label: k.label, dest: s };
 }
-function drawLed(c, X, Y, W, H, cols, rows, text, kind) {
+/* できあがったドット表示の板をおぼえておく(同じ行先なら描き直さない)。
+ * 以前は1枚ごとに約4500個の円を1つずつ塗り、読み戻しもしていたので起動やすれ違いで止まっていた */
+const LED_CACHE = new Map();
+let LED_FONTS_OK = false;
+function ledPanel(W, H, cols, rows, text, kind) {
+  const key = `${text}|${kind}|${cols}x${rows}`;
+  const hit = LED_CACHE.get(key);
+  if (hit && hit.width === W && hit.height === H) return hit;
   const { k, label, dest } = parseDest(text, kind);
-  const sc = newCanvas(cols, rows), s = sc.getContext('2d');
+  const sc = newCanvas(cols, rows), s = sc.getContext('2d', { willReadFrequently: true });
   s.fillStyle = '#000'; s.fillRect(0, 0, cols, rows);
   s.textAlign = 'center'; s.textBaseline = 'middle';
   let x0 = 0;
@@ -335,19 +342,35 @@ function drawLed(c, X, Y, W, H, cols, rows, text, kind) {
   s.fillStyle = '#ffa526'; s.font = `700 ${fh}px ${FONT}`;
   s.fillText(dest, (x0 + cols) / 2, rows / 2 + 1, cols - x0 - 2);
   const d = s.getImageData(0, 0, cols, rows).data;
-  c.fillStyle = '#040404'; c.fillRect(X, Y, W, H);
+  const cv = newCanvas(W, H), c = cv.getContext('2d');
+  c.fillStyle = '#040404'; c.fillRect(0, 0, W, H);
   const px = W / cols, py = H / rows, r = Math.min(px, py) * 0.43;
+  /* 点灯ドットは色ごとに1本のパスにまとめ、消灯ドットも1本にまとめて、塗りは数回だけ */
+  const lit = new Map(), off = new Path2D();
+  const q = (v) => Math.min(255, Math.round(v / 24) * 24);   // 色の段数を減らしてまとめやすく
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
       const o = (j * cols + i) * 4;
       const m = Math.max(d[o], d[o + 1], d[o + 2]);
+      const x = (i + 0.5) * px, y = (j + 0.5) * py;
+      let p = off;
       if (m > 90) {
         const f = 255 / m;   // 点灯ドットは最大輝度にそろえる
-        c.fillStyle = `rgb(${Math.min(255, d[o] * f) | 0},${Math.min(255, d[o + 1] * f) | 0},${Math.min(255, d[o + 2] * f) | 0})`;
-      } else c.fillStyle = '#17120c';
-      c.beginPath(); c.arc(X + (i + 0.5) * px, Y + (j + 0.5) * py, r, 0, 6.2832); c.fill();
+        const col = `rgb(${q(d[o] * f)},${q(d[o + 1] * f)},${q(d[o + 2] * f)})`;
+        p = lit.get(col);
+        if (!p) { p = new Path2D(); lit.set(col, p); }
+      }
+      p.moveTo(x + r, y);
+      p.arc(x, y, r, 0, 6.2832);
     }
   }
+  c.fillStyle = '#17120c'; c.fill(off);
+  lit.forEach((p, col) => { c.fillStyle = col; c.fill(p); });
+  LED_CACHE.set(key, cv);
+  return cv;
+}
+function drawLed(c, X, Y, W, H, cols, rows, text, kind) {
+  c.drawImage(ledPanel(W, H, cols, rows, text, kind), X, Y);
 }
 
 /* =========================================================
@@ -395,7 +418,8 @@ export class TrainKit {
     const L = this.L, Q = this.Q;
     const paint = (mode, scale) => {
       const cv = newCanvas(Math.round(L.W * scale), Math.round(L.H * scale));
-      const c = cv.getContext('2d');
+      /* 高さは法線へ変換するときに読み戻すので、読み戻し向けのキャンバスにする */
+      const c = cv.getContext('2d', mode === 'hgt' ? { willReadFrequently: true } : undefined);
       c.setTransform(scale, 0, 0, scale, 0, 0);
       this._paintAtlas(c, mode);
       return cv;
@@ -1278,7 +1302,11 @@ export class TrainKit {
     this._decals.add(rec);
     /* Webフォントが後から届いたら描き直す(最初は代わりのフォントで描かれるため) */
     if (typeof document !== 'undefined' && document.fonts && document.fonts.status !== 'loaded') {
-      document.fonts.ready.then(() => { if (this._decals.has(rec)) this._drawDecal(rec, true); });
+      document.fonts.ready.then(() => {
+        /* 代わりのフォントで描いた板は捨てる(最初の1回だけ) */
+        if (!LED_FONTS_OK) { LED_FONTS_OK = true; LED_CACHE.clear(); }
+        if (this._decals.has(rec)) this._drawDecal(rec, true);
+      });
     }
     return rec;
   }

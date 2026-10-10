@@ -7,6 +7,7 @@
 /* importmapは使わない(古いiPadのSafariが非対応のため、相対パスで読み込む) */
 import * as THREE from '../vendor/three.module.min.js';
 import { RGBELoader } from '../vendor/RGBELoader.js';
+import { LOOK, pickLook, prepareClearHdr, horizonRadiance, fogFromHorizon, makeMacroTex, makeWeatherUniforms, installWeather, patchSkyGain, makeNightSky } from './look.js';
 import { EffectComposer } from '../vendor/addons/EffectComposer.js';
 import { RenderPass } from '../vendor/addons/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
@@ -30,6 +31,8 @@ const QUALITY = {
   mid:  { dpr: 1.35, shadow: 1024, shadowsOn: true, aniso: 4, bloom: true, trainDetail: 'mid' },
   low:  { dpr: 1.0,  shadow: 0,    shadowsOn: false, aniso: 2, bloom: false, trainDetail: 'low' },
 };
+/* 自動軽量化でたどりついた段階の保存先 {q, dpr, shadowLevel, bloom} */
+const PERF_KEY = 'trainop_perf';
 
 /* 路線データから5mごとのフレーム（位置・進行方向・左方向）を作る */
 function buildFrames(line) {
@@ -209,8 +212,18 @@ function makeTreeGeos() {
 
 /* ---- テクスチャ ---- */
 const texLoader = new THREE.TextureLoader();
+/* 同じ画像は1回だけ読み込み、GPUへの転送も1回で済むように元(source)を共有する */
+const _photo = new Map();
 function photoTex(url, opt = {}) {
-  const t = texLoader.load(url);
+  let e = _photo.get(url);
+  if (!e) {
+    e = { base: null, wait: [] };
+    e.base = texLoader.load(url, () => { e.wait.forEach((t) => { t.needsUpdate = true; }); e.wait = null; });
+    _photo.set(url, e);
+  }
+  const t = new THREE.Texture();
+  t.source = e.base.source;
+  if (e.wait) e.wait.push(t); else t.needsUpdate = true;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(opt.rx || 1, opt.ry || 1);
   t.anisotropy = opt.aniso || 8;
@@ -423,17 +436,33 @@ export class RailScene {
     this.timeOfDay = opts.timeOfDay || (opts.night ? 'night' : 'day');
     this.weather = opts.weather || (sim && sim.weather) || 'clear';
     const Q = QUALITY[this.quality];
+    /* 自動軽量化の段階(opts.autoQ のときは前回たどりついた段階から始める: localStorage 'trainop_perf') */
+    this.autoQ = !!opts.autoQ;
+    this._perf = { dpr: Q.dpr, shadowLevel: 0, bloom: Q.bloom };
+    if (this.autoQ) {
+      try {
+        const p = JSON.parse(localStorage.getItem(PERF_KEY) || 'null');
+        if (p && p.q === this.quality) {
+          if (p.dpr > 0) this._perf.dpr = Math.min(Q.dpr, p.dpr);
+          this._perf.shadowLevel = p.shadowLevel ? 1 : 0;
+          if (p.bloom === false) this._perf.bloom = false;
+        }
+      } catch (e) { /* 読めなければ既定のまま */ }
+    }
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, Q.dpr));
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this._perf.dpr));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = LOOK.day.exposure;
     if (Q.shadowsOn) {
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     }
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.3, 2600);
+    /* 霧は1つだけ作り、あとは色と距離を書きかえるだけ(作り直すと全材質の再判定でカクつく) */
+    this.scene.fog = new THREE.Fog(LOOK.day.fogFallback, LOOK.day.fog[1], LOOK.day.fog[2]);
+    /* 遠景クリップは霧の終わりに合わせる(_applyLightLevel)。霧の向こうを描かないぶん描画が減る */
+    this.camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.3, LOOK.day.fog[2] + 60);
     this.scene.add(this.camera);   // 運転台(cockpit)をカメラの子として描くため
     this.cockpit = new Cockpit(this.camera);
     this.camMode = 'cab';
@@ -441,6 +470,23 @@ export class RailScene {
     this.clockT = 0;
     this.fps = 60;
     this._fpsAcc = 0; this._fpsN = 0;
+    this._frame = 0;
+
+    /* ---- 見え方の状態(ほかの部品はこれを見て昼夜・天気・屋内に合わせる) ----
+     * rev は時間帯・天気が変わるたびに増える。k は目の慣れ(屋外1、トンネルの奥0.1) */
+    this.look = { rev: 0, tod: this.timeOfDay, night: false, eve: false, rain: false, snow: false, wet: false, indoor: false, k: 1 };
+    /* ぬれ・雪の共通シェーダ部品の値(全材質で共有。書きかえるだけでコンパイルは起きない) */
+    this.U = makeWeatherUniforms();
+    this.U.uWxMacro.value = makeMacroTex();
+    this._camS = sim ? sim.pos : 0;
+    this._k = 1; this._kFog = 1; this._kEnv = 1; this._kInit = false;
+    this._envMats = new Set();
+    this._fogDirect = new THREE.Color(LOOK.day.fogFallback);
+    this._fogPost = new THREE.Color(LOOK.day.fogFallback);
+    this._fogIn = new THREE.Color(LOOK.indoor.fog[0]);
+    this._bgCol = new THREE.Color();
+    this._tv = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    this._resetCamFeel();
 
     /* ---- 実写系テクスチャ(CC0: ambientCG) ---- */
     const A = Q.aniso;
@@ -470,48 +516,63 @@ export class RailScene {
       plat: new THREE.MeshStandardMaterial({ map: this.T.concPlatC, color: 0xc2bfb6, roughness: 0.95, side: DS }),
       platSide: new THREE.MeshStandardMaterial({ map: this.T.concWallC, color: 0xb9b7b0, roughness: 0.95, side: DS }),
       tunnel: new THREE.MeshStandardMaterial({ map: this.T.concWallC, color: 0x85898d, roughness: 0.95, side: DS, envMapIntensity: 0.5 }),
-      sleeper: new THREE.MeshStandardMaterial({ color: 0x7a766e, roughness: 0.95 }),
+      sleeper: new THREE.MeshStandardMaterial({ color: 0x6b6862, roughness: 0.95 }),
     };
     this.M.water.envMapIntensity = 0.6;
     this.M.railHead.envMapIntensity = 1.35;
-    this._keep = new Set([...Object.values(this.M), ...Object.values(this.T)]);
+    /* 芝の地面には大きなムラと雪の凹凸を足す。レール頭面は車輪で磨かれるので雪をのせない */
+    this.M.ground.userData.wxMacro = true;
+    this.M.bank.userData.wxMacro = true;
+    this.M.railHead.userData.noWeather = true;
+    this._keep = new Set([...Object.values(this.M), ...Object.values(this.T), this.U.uWxMacro.value]);
 
-    /* ---- 光源 ---- */
-    this.hemi = new THREE.HemisphereLight(0xbfd0e0, 0x6a6f64, 0.35);
+    /* ---- 光源(強さ・色は LOOK の表から _applyAtmosphere/_applyLightLevel で決める) ---- */
+    this.hemi = new THREE.HemisphereLight(LOOK.day.hemi[1], LOOK.day.hemi[2], LOOK.day.hemi[0]);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff0da, 2.8);
+    this.sun = new THREE.DirectionalLight(LOOK.day.sun[1], LOOK.day.sun[0]);
     this.sun.castShadow = Q.shadowsOn;
     if (Q.shadowsOn) {
-      this.sun.shadow.mapSize.set(Q.shadow, Q.shadow);
+      const ms = this._perf.shadowLevel ? 512 : Q.shadow;
+      this.sun.shadow.mapSize.set(ms, ms);
       const sc = this.sun.shadow.camera;
-      sc.left = -170; sc.right = 170; sc.top = 190; sc.bottom = -120; sc.near = 20; sc.far = 950;
-      sc.updateProjectionMatrix();
-      this.sun.shadow.bias = -0.00015;
-      this.sun.shadow.normalBias = 0.35;
+      sc.near = 20; sc.far = 950;
+      this.sun.shadow.bias = -0.0003;
+      this.sun.shadow.normalBias = 0.08;
+      if (this._perf.shadowLevel) { this.renderer.shadowMap.autoUpdate = false; this._shadowLite = true; }
     }
+    this._shadowBox('cab');
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
-    this._sunDir = new THREE.Vector3(0.85, 0.55, -0.1).normalize();
+    /* 晴れのHDRの太陽の向き(読みこんだら一番明るい点から測りなおす) */
+    this._sunDir = new THREE.Vector3(0.555, 0.742, 0.377).normalize();
+    this._curSunDir = this._sunDir;
 
-    /* 前照灯(トンネル内・夜に軌道を照らす。日中の屋外では太陽に埋もれる) */
-    this.headlight = new THREE.SpotLight(0xfff6e6, 700, 160, 0.34, 0.5, 1.7);
+    /* 前照灯: 夜・トンネルで軌道を照らす(昼は0)。ライトの数が変わると全シェーダが作り直しに
+     * なるので、visible は切りかえず強さだけ変える */
+    this.headlight = new THREE.SpotLight(0xfff2dc, 0, 240, 0.24, 0.75, 2.0);
     this.headlight.castShadow = false;
     this.scene.add(this.headlight);
     this.scene.add(this.headlight.target);
 
-    /* ---- 空と環境光: HDRI(晴/曇/夜) + 夕方は大気散乱の空(Sky)から作る ---- */
+    /* ---- 空と環境光: HDRI(晴/曇) + 夕方は大気散乱の空(Sky) + 夜は手続きの夜空 ---- */
     this.env = {};
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     this._pmrem.compileEquirectangularShader();
     const rl = new RGBELoader();
-    [['clear', './assets/sky/sky_clear.hdr'], ['rain', './assets/sky/sky_overcast.hdr'], ['night', './assets/sky/sky_night.hdr']].forEach(([k, url]) => {
+    [['clear', './assets/sky/sky_clear.hdr'], ['rain', './assets/sky/sky_overcast.hdr']].forEach(([k, url]) => {
       rl.load(url, (t) => {
         t.mapping = THREE.EquirectangularReflectionMapping;
-        this.env[k] = { bg: t, ibl: this._pmrem.fromEquirectangular(t).texture };
+        if (k === 'clear') {
+          /* 太陽の円盤を抑えてから環境光を作る(影がはっきり出る) */
+          const dir = prepareClearHdr(t);
+          if (dir) this._sunDir.copy(dir);
+        }
+        this.env[k] = { bg: t, ibl: this._pmrem.fromEquirectangular(t).texture, hor: horizonRadiance(t) };
         this._applyWeather();
       });
     });
     this._buildEveningSky();
+    this._buildNightSky();
 
     /* ---- 雨・雪の粒(カメラ近傍だけ) ---- */
     this.weatherFx = new WeatherFx(this.scene, this.camera);
@@ -541,6 +602,8 @@ export class RailScene {
     if (line === this.line && this.world.children.length) {
       this._buildSignals();
       if (this.traffic) this.traffic.reset(sim);
+      this._installWeatherChunk();
+      this._resetCamFeel();
       return;
     }
     this._disposeWorld();
@@ -577,6 +640,9 @@ export class RailScene {
     this._splitInstances();
     this._splitRibbons();
     this.traffic = new Traffic(this, sim);
+    this._installWeatherChunk();
+    this._resetCamFeel();
+    this._kInit = false;
     this._applyWeather();
   }
 
@@ -662,6 +728,8 @@ export class RailScene {
     this.world.clear();
     this.signalMeshes = [];
     this._sigGroup = null;
+    this._envMats = new Set();
+    this._tunZones = null;
   }
 
   /* 踏切候補の選定 */
@@ -690,7 +758,8 @@ export class RailScene {
   _initPost() {
     const Q = QUALITY[this.quality];
     this.composer = null;
-    if (!Q.bloom) return;
+    this.bloom = null;
+    if (!Q.bloom || this._perf.bloom === false) return;
     try {
       const gl = this.renderer.getContext();
       const isGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
@@ -703,29 +772,121 @@ export class RailScene {
       if (this._w) this.composer.setSize(this._w, this._h);
     } catch (e) {
       this.composer = null;
+      this.bloom = null;
     }
+    this._needPrewarm = true;
   }
 
-  /* fps低下時に外から段階的に画質を落とす(ブルーム→dpr→影) */
-  stepDownQuality() {
+  /* ブルーム経由で描くか(夜・夕方・雨雪・トンネルやターミナルの中) */
+  _usePost() {
+    return !!this.composer && (this._k < 0.95 || this.timeOfDay !== 'day' || this.weather !== 'clear');
+  }
+
+  /* 使うシェーダを走り出す前に全部コンパイルしておく(走行中のカクつき防止)。
+   * 直接描く場合とブルーム用の描画先に描く場合でシェーダが別なので、使うほうを両方。
+   * 背景(HDRの箱)はシーンの外にあるので、1画素だけ描いて作らせる */
+  prewarm() {
+    this._needPrewarm = false;
     const r = this.renderer;
-    if (this.composer) { this.composer = null; return 'bloom'; }
+    if (!r || !this.scene) return;
+    const direct = !this.composer || (this.timeOfDay === 'day' && this.weather === 'clear');
+    const bg = this.scene.background && this.scene.background.isTexture ? this.scene.background : null;
+    const rt0 = r.getRenderTarget();
+    try {
+      if (!this._bgScene) this._bgScene = new THREE.Scene();
+      const bs = this._bgScene;
+      bs.background = bg;
+      bs.backgroundIntensity = this.scene.backgroundIntensity;
+      const vp = r.getViewport(new THREE.Vector4()), sc = r.getScissor(new THREE.Vector4()), st = r.getScissorTest();
+      const tiny = (target) => {
+        if (!bg) return;
+        r.setRenderTarget(target);
+        r.setViewport(0, 0, 1, 1); r.setScissor(0, 0, 1, 1); r.setScissorTest(true);
+        r.render(bs, this.camera);
+        r.setViewport(vp); r.setScissor(sc); r.setScissorTest(st);
+      };
+      if (direct) {
+        r.setRenderTarget(null);
+        r.compile(this.scene, this.camera);
+        tiny(null);
+      }
+      if (this.composer) {
+        r.setRenderTarget(this.composer.renderTarget1);
+        r.compile(this.scene, this.camera);
+        tiny(this.composer.renderTarget1);
+      }
+      bs.background = null;
+    } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
+    r.setRenderTarget(rt0);
+  }
+
+  /* fps低下時に段階的に画質を落とす: 解像度 → 影(小さく・1フレームおき) → ブルーム。
+   * 影は shadowMap.enabled を切りかえない(全シェーダの作り直しで数秒止まるため) */
+  stepDownQuality() {
+    const r = this.renderer, P = this._perf;
     const cur = r.getPixelRatio();
-    if (cur > 1.28) { r.setPixelRatio(Math.max(1.2, cur - 0.35)); this._reapplySize(); return 'dpr'; }
-    if (cur > 1.02) { r.setPixelRatio(1); this._reapplySize(); return 'dpr'; }
-    if (r.shadowMap.enabled) {
-      r.shadowMap.enabled = false;
-      this.sun.castShadow = false;
-      this.scene.traverse((o) => { if (o.material) [].concat(o.material).forEach((m) => { m.needsUpdate = true; }); });
+    const next = [1.35, 1.15, 1.0].find((d) => d < cur - 0.01);
+    if (next) {
+      r.setPixelRatio(next);
+      P.dpr = next;
+      this._reapplySize();
+      this._savePerf();
+      return 'dpr';
+    }
+    if (r.shadowMap.enabled && !this._shadowLite) {
+      const sh = this.sun.shadow;
+      sh.mapSize.set(512, 512);
+      if (sh.map) { sh.map.dispose(); sh.map = null; }
+      r.shadowMap.autoUpdate = false;
+      r.shadowMap.needsUpdate = true;
+      this._shadowLite = true;
+      P.shadowLevel = 1;
+      this._savePerf();
       return 'shadow';
     }
+    if (this.composer && this._usePost()) {
+      const c = this.composer;
+      c.renderTarget1.dispose();
+      c.renderTarget2.dispose();
+      c.passes.forEach((p) => { if (p.dispose) p.dispose(); });
+      this.composer = null;
+      this.bloom = null;
+      P.bloom = false;
+      this._savePerf();
+      return 'bloom';
+    }
     return null;
+  }
+
+  _savePerf() {
+    const P = this._perf;
+    try { localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, dpr: P.dpr, shadowLevel: P.shadowLevel, bloom: P.bloom !== false })); } catch (e) { /* 保存できなくても動く */ }
+  }
+
+  /* 自動軽量化の見張り(毎フレーム呼ぶ)。1回のカクつきでは落とさない:
+   * 4秒ごとに平均fpsを見て、40未満が2回続き、直近2.5秒にカクつき(0.09秒以上)が無いときだけ1段下げる */
+  autoQualityTick(dt, { busy = false } = {}) {
+    const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0 });
+    const now = performance.now();
+    if (dt >= 0.09) A.hitch = now;
+    A.t += dt; A.n++;
+    if (A.t < 4) return null;
+    const fps = A.n / A.t;
+    A.t = 0; A.n = 0;
+    const bad = fps < 40 && now - A.hitch > 2500 && !busy;
+    A.bad = bad ? A.bad + 1 : 0;
+    if (A.bad < 2) return null;
+    A.bad = 0;
+    return this.stepDownQuality();
   }
 
   _reapplySize() {
     if (this._w) {
       this.renderer.setSize(this._w, this._h, false);
-      if (this.composer) this.composer.setSize(this._w, this._h);
+      if (this.composer) {
+        this.composer.setPixelRatio(this.renderer.getPixelRatio());
+        this.composer.setSize(this._w, this._h);
+      }
     }
   }
 
@@ -738,11 +899,13 @@ export class RailScene {
   _buildEveningSky() {
     const sky = new Sky();
     sky.scale.setScalar(2300);
+    /* そのままでは明るすぎて白く飛ぶので、空の明るさを0.55倍に(vendorは書きかえない) */
+    patchSkyGain(sky.material, 0.55);
     const u = sky.material.uniforms;
-    u.turbidity.value = 7.5;
-    u.rayleigh.value = 2.6;
-    u.mieCoefficient.value = 0.006;
-    u.mieDirectionalG.value = 0.86;
+    u.turbidity.value = 9;
+    u.rayleigh.value = 3.2;
+    u.mieCoefficient.value = 0.0035;
+    u.mieDirectionalG.value = 0.78;
     /* 夕日は西南西(くだりの進行方向の先)。高度3° */
     const phi = THREE.MathUtils.degToRad(90 - 3.2);
     const theta = THREE.MathUtils.degToRad(-112);
@@ -757,74 +920,100 @@ export class RailScene {
     tmp.remove(sky);
     sky.material.depthWrite = false;
     sky.frustumCulled = false;
+    sky.renderOrder = 999;   // 不透明物の最後に描く(隠れた画素は深度で捨てられる)
     sky.visible = false;
     this.eveSky = sky;
     this.scene.add(sky);
   }
 
+  /* 夜空: 紺のグラデーション・地平線の街明かり・星・月(HDR画像は使わない)。環境光もここから作る */
+  _buildNightSky() {
+    const { mesh, U } = makeNightSky(this.eveSky.geometry);
+    mesh.scale.setScalar(2300);
+    this._nightU = U;
+    this._moonDir = U.uMoon.value.clone();
+    this._glowCity = new THREE.Color(0x4a3426);
+    this._glowSub = new THREE.Color(0x2a2422);
+    this._glowWet = new THREE.Color(0x3a3a40);
+    this._glowK = 0;
+    const tmp = new THREE.Scene();
+    tmp.add(mesh);
+    try {
+      this.env.night = { ibl: this._pmrem.fromScene(tmp, 0.02).texture };
+    } catch (e) { /* 失敗したら単色の夜 */ }
+    tmp.remove(mesh);
+    mesh.visible = false;
+    this.nightSky = mesh;
+    this.scene.add(mesh);
+  }
+
+  /* 天気・時間帯が変わったとき(と、空の読みこみが終わったとき)の入口 */
   _applyWeather() {
     if (!this.M) return;
+    this._applyAtmosphere();
+    this._applyLightLevel(this._k);
+  }
+
+  /* 時間帯・天気で決まるもの(空・環境光・霧の色・光の色・ぬれ/雪)。毎フレームは呼ばない */
+  _applyAtmosphere() {
     const rain = this.weather === 'rain';
     const snow = this.weather === 'snow';
     const wet = rain || snow;
     const tod = this.timeOfDay;
     const night = tod === 'night';
     const eve = tod === 'evening';
+    const L = pickLook(tod, this.weather);
+    this._lk = L;
+    const lk = this.look;
+    lk.rev++;
+    lk.tod = tod; lk.night = night; lk.eve = eve; lk.rain = rain; lk.snow = snow; lk.wet = wet;
     /* --- 空(背景)と環境光 --- */
-    let key = night ? 'night' : wet ? 'rain' : eve ? 'evening' : 'clear';
-    let env = this.env[key];
-    if (key === 'evening' && !env) env = this.env.clear;
-    if (this.eveSky) this.eveSky.visible = key === 'evening' && !!this.env.evening;
-    if (key === 'evening' && this.env.evening) {
+    const env = night ? this.env.night : wet ? this.env.rain : eve ? this.env.evening : this.env.clear;
+    const eveSky = eve && !wet && !!this.env.evening;
+    if (this.eveSky) this.eveSky.visible = eveSky;
+    if (this.nightSky) this.nightSky.visible = night && !!this.env.night;
+    if ((night || eveSky) && env) {
       this.scene.background = null;
-      this.scene.environment = this.env.evening.ibl;
+      this.scene.environment = env.ibl;
     } else if (env && env.bg) {
       this.scene.background = env.bg;
       this.scene.environment = env.ibl;
-      this.scene.backgroundIntensity = night ? (wet ? 0.55 : 0.8) : eve ? 0.42 : snow ? 1.05 : rain ? 0.85 : 1.0;
+      this.scene.backgroundIntensity = L.bg;
     } else {
-      this.scene.background = new THREE.Color(night ? 0x0a0f16 : rain ? 0x8d959c : snow ? 0xc9cfd5 : eve ? 0x9a7a6a : 0xa8c4dd);
+      this.scene.background = this._bgCol.setHex(night ? 0x0a0f16 : rain ? 0x8d959c : snow ? 0xc9cfd5 : eve ? 0x9a7a6a : 0xa8c4dd);
       this.scene.environment = null;
     }
-    /* --- 霧 --- */
-    const fogCol = night ? (wet ? 0x0a0e13 : 0x0c1119)
-      : eve ? (wet ? 0x5a5250 : 0xd9a27a)
-      : snow ? 0xdde3e8 : rain ? 0x99a1a8 : 0xcfd9e2;
-    const fogNear = night ? (wet ? 110 : 180) : snow ? 60 : rain ? 140 : eve ? 250 : 300;
-    const fogFar = night ? (wet ? 560 : 1050) : snow ? 520 : rain ? 780 : eve ? 1700 : 1500;
-    this.scene.fog = new THREE.Fog(fogCol, fogNear, fogFar);
-    /* --- 露出・太陽 --- */
-    this.renderer.toneMappingExposure = night ? (wet ? 0.8 : 0.9) : eve ? (wet ? 0.75 : 0.95) : snow ? 0.95 : rain ? 0.92 : 1.08;
-    this.sun.intensity = night ? 0.32 : eve ? (wet ? 0.25 : 2.1) : wet ? 0.45 : 2.8;
-    this.sun.color.setHex(night ? 0xa8bcd8 : eve ? 0xffa766 : wet ? 0xdfe4ea : 0xfff0da);
-    this._curSunDir = eve && !wet && this._eveSunDir ? this._eveSunDir.clone().setY(Math.max(0.09, this._eveSunDir.y)).normalize() : this._sunDir;
-    this.sun.castShadow = QUALITY[this.quality].shadowsOn && !wet && !night;
-    this.hemi.intensity = night ? 0.14 : eve ? 0.55 : snow ? 0.7 : rain ? 0.55 : 0.45;
-    this.hemi.color.setHex(eve ? 0xd8a888 : 0xbfd0e0);
-    const lightsOn = night || eve || this._inTunnelNow;
-    if (this.headlight) this.headlight.intensity = night ? (wet ? 950 : 850) : eve ? 900 : wet ? 750 : 700;
-    /* --- 濡れ・雪の表現 --- */
-    this.M.railHead.roughness = wet ? 0.12 : 0.3;
-    this.M.ballast.color.setHex(snow ? 0xd9dde2 : rain ? 0x6e6b66 : 0xaaa59b);
-    this.M.sub.color.setHex(snow ? 0xc8ccd2 : 0x6f6b62);
-    this.M.apron.color.setHex(snow ? 0xd2d6da : rain ? 0x8a8883 : 0xaaa8a2);
-    this.M.apron.roughness = rain ? 0.5 : 0.95;
-    this.M.plat.color.setHex(snow ? 0xd8dbde : rain ? 0x93908a : 0xc2bfb6);
-    this.M.plat.roughness = rain ? 0.45 : 0.95;
-    /* 雪: 地面は芝テクスチャを外して一面の雪原に(頂点色のムラだけ残す) */
-    const gMap = snow ? null : this.T.grassC;
-    if (this.M.ground.map !== gMap) { this.M.ground.map = gMap; this.M.ground.needsUpdate = true; }
-    this.M.ground.color.setHex(snow ? 0xeef2f6 : eve ? 0xf0dcc4 : 0xffffff);
-    const bMap = snow ? null : this.T.grassBankC;
-    if (this.M.bank.map !== bMap) { this.M.bank.map = bMap; this.M.bank.needsUpdate = true; }
-    this.M.bank.color.setHex(snow ? 0xe6eaee : 0xffffff);
-    if (this._hillMat) {
-      const hm = snow ? null : this._hillTex;
-      if (this._hillMat.map !== hm) { this._hillMat.map = hm; this._hillMat.needsUpdate = true; }
-      this._hillMat.color.setHex(snow ? 0xe8ecf0 : eve ? 0xb09a82 : 0xb9c4a0);
+    if (this._nightU) {
+      this._nightU.uStars.value = wet ? 0 : 1;
+      if (wet) this._nightU.uGlow.value.copy(this._glowWet);
     }
+    /* --- 霧の色: 遠くの物が空の地平線と同じ色に溶けるように。
+     * 直接描く(昼・晴れ)ときはトーンマップ後のsRGB、ブルーム経由ではリニアで霧が混ざる --- */
+    const hor = env && env.hor;
+    if (L.fog[0] != null) {
+      this._fogDirect.setHex(L.fog[0]);
+      this._fogPost.setHex(L.fog[0]);
+    } else if (hor) {
+      fogFromHorizon(hor, L.bg, L.exposure, true, this._fogDirect);
+      fogFromHorizon(hor, L.bg, L.exposure, false, this._fogPost);
+    } else {
+      this._fogDirect.setHex(L.fogFallback);
+      this._fogPost.setHex(L.fogFallback);
+    }
+    /* --- 太陽(夜は月)・空の光 --- */
+    this.sun.color.setHex(L.sun[1]);
+    this._curSunDir = night ? (this._moonDir || this._sunDir)
+      : eveSky && this._eveSunDir ? this._eveSunDir.clone().setY(Math.max(0.09, this._eveSunDir.y)).normalize() : this._sunDir;
+    this.sun.castShadow = QUALITY[this.quality].shadowsOn && L.shadow;
+    this.hemi.color.setHex(L.hemi[1]);
+    this.hemi.groundColor.setHex(L.hemi[2]);
+    /* --- ぬれ・雪(全材質共通の部品の値) --- */
+    this.U.uWet.value = L.wet;
+    this.U.uSnow.value = L.snow;
+    this.M.railHead.roughness = wet ? 0.12 : 0.3;
     this.M.water.roughness = night ? 0.22 : wet ? 0.38 : 0.3;
     this.M.water.color.setHex(night ? 0x141c26 : wet ? 0x49525a : eve ? 0x6a5a58 : 0x455e6d);
+    const lightsOn = night || eve || this._inTunnelNow;
     /* 夜・夕方: ビル・住宅を窓明かりテクスチャへ切替(夕方は控えめに灯る) */
     if (this._bldMats) {
       this._bldMats.forEach(({ m, day, night: nt }) => {
@@ -840,11 +1029,72 @@ export class RailScene {
     if (this._vendFrontMat) this._vendFrontMat.emissive.setHex(night || eve ? 0xcfe0ee : 0x000000);
     if (this.weatherFx) this.weatherFx.set(this.weather, tod);
     if (this.trainKit) this.trainKit.setNight(night || eve || wet || !!this._inTunnelNow);
-    /* ブルームの強さ(昼は控えめ) */
-    if (this.bloom) {
-      this.bloom.strength = night ? 0.85 : eve ? 0.55 : 0.22;
-      this.bloom.threshold = night ? 0.72 : 0.86;
+    /* 状態が変わったので、次に描く前に使うシェーダをまとめて準備する */
+    this._needPrewarm = true;
+  }
+
+  /* 目の慣れ k(屋外1・トンネルの奥0.1)で決まるもの。毎フレーム呼ぶので値の書きかえだけ */
+  _applyLightLevel(k) {
+    const L = this._lk;
+    if (!L) return;
+    const I = LOOK.indoor, kf = this._kFog;
+    const day = this.timeOfDay === 'day';
+    this.sun.intensity = L.sun[0] * k;
+    this.hemi.intensity = L.hemi[0] * k;
+    this.renderer.toneMappingExposure = L.exposure * (1 + 0.6 * (1 - k));
+    /* 霧(トンネルの中は暗く近く) */
+    const fog = this.scene.fog;
+    fog.color.copy(this._usePost() ? this._fogPost : this._fogDirect);
+    if (kf < 1) fog.color.lerp(this._fogIn, 1 - kf);
+    fog.near = I.fog[1] + (L.fog[1] - I.fog[1]) * kf;
+    fog.far = I.fog[2] + (L.fog[2] - I.fog[2]) * kf;
+    /* 遠景クリップ = 霧の終わり+60m(夜は対向列車の灯りが消えないよう1300m以上) */
+    const far = Math.round(Math.max(fog.far + 60, this.timeOfDay === 'night' ? 1300 : 0));
+    if (far !== this.camera.far) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+      const sk = 0.95 * far / 0.866;   // 空の箱の角が遠景クリップの内側に入る大きさ
+      if (this.eveSky) this.eveSky.scale.setScalar(sk);
+      if (this.nightSky) this.nightSky.scale.setScalar(sk);
     }
+    /* 前照灯(昼の屋外は0、トンネルでは点ける) */
+    if (this.headlight) this.headlight.intensity = L.head + (I.head - L.head) * (1 - k);
+    /* ブルーム: 明るさの境目(しきい値)は表どおり。屋内(昼)は k に合わせてじわっと効かせる */
+    if (this.bloom) {
+      const inside = day && k < 0.95;
+      const b = inside ? I.bloom : (L.bloom || I.bloom);
+      this.bloom.threshold = b[0];
+      this.bloom.strength = b[1] * (inside ? Math.min(1, (1 - k) / 0.3) : 1);
+      this.bloom.radius = b[2];
+    }
+    /* 空の映りこみ(トンネルの中では空が見えない)。k が変わっている間だけ書きかえる */
+    if (Math.abs(k - this._kEnv) > 0.01 || (k === 1 && this._kEnv !== 1)) {
+      this._kEnv = k;
+      this._envMats.forEach((m) => { m.envMapIntensity = m.userData.env0 * k; });
+    }
+  }
+
+  /* ぬれ・雪の共通部品を、ワールドと車両の標準材質に付ける(運転台=カメラの子は除く)。
+   * あわせて k で明るさを変える材質(空の映りこみ)を集める */
+  _installWeatherChunk() {
+    if (this._hillMat) this._hillMat.userData.wxMacro = true;
+    const add = (m) => this._wxAdd(m);
+    const walk = (o) => {
+      if (o === this.camera) return;
+      if (o.material) [].concat(o.material).forEach(add);
+      o.children.forEach(walk);
+    };
+    walk(this.scene);
+    if (this.trainKit) Object.values(this.trainKit.M).forEach(add);
+    this._kEnv = -1;
+    this._needPrewarm = true;
+  }
+
+  _wxAdd(m) {
+    if (!m || !m.isMeshStandardMaterial) return;
+    if (!m.userData.noWeather) installWeather(m, this.U);
+    if (m.userData.env0 === undefined) m.userData.env0 = m.envMapIntensity;
+    this._envMats.add(m);
   }
 
   /* ---------- 軌道 ---------- */
@@ -1631,6 +1881,9 @@ export class RailScene {
     if (!this.trainKit) {
       this.trainKit = new TrainKit({ quality: QUALITY[this.quality].trainDetail });
       this.trainKit.setNight(this.timeOfDay !== 'day' || this.weather !== 'clear');
+      /* 車両の材質(全編成で共有)にも、ぬれ・雪の部品を付ける */
+      Object.values(this.trainKit.M).forEach((m) => this._wxAdd(m));
+      this._needPrewarm = true;
     }
     return this.trainKit;
   }
@@ -2537,6 +2790,17 @@ export class RailScene {
     const ext = mode !== 'cab';
     this.cockpit.setVisible(!ext);
     if (this.traffic) this.traffic.showOwn(ext);
+    this._shadowBox(mode);
+  }
+
+  /* 影を落とす範囲(太陽から見た箱)。運転台は前方だけ細かく、そらからは広く */
+  _shadowBox(mode) {
+    const sc = this.sun && this.sun.shadow.camera;
+    if (!sc) return;
+    if (mode === 'cab') { sc.left = -110; sc.right = 110; sc.top = 160; sc.bottom = -50; }
+    else if (mode === 'drone') { sc.left = -170; sc.right = 170; sc.top = 190; sc.bottom = -120; }
+    else { sc.left = -120; sc.right = 120; sc.top = 120; sc.bottom = -120; }
+    sc.updateProjectionMatrix();
   }
 
   /* 音の環境(audio.update に渡す) */
@@ -2552,6 +2816,35 @@ export class RailScene {
       snow: this.weather === 'snow',
       external: this.camMode !== 'cab',
     };
+  }
+
+  /* 運転台の体感(ブレーキで前のめり・カーブで内側へ傾く・25mごとのレールの継ぎ目でコトン) */
+  _resetCamFeel() {
+    this._fv = null; this._accSm = 0; this._roll = 0;
+    this._by = 0; this._bv = 0; this._jIdx = null;
+  }
+
+  _camFeel(dt, s, f) {
+    if (!(dt > 0)) return;
+    const sim = this.sim, v = sim.v / 3.6;
+    if (this._fv == null) this._fv = v;
+    const a = (v - this._fv) / dt;
+    this._fv = v;
+    if (Math.abs(a) <= 4) this._accSm += (a - this._accSm) * (1 - Math.exp(-dt / 0.35));   // ワープ等の飛びは捨てる
+    /* カーブ: 25m先との向きの差(左カーブで負)。カントで車体は内側へ傾くので符号を反転して左へロール */
+    const fA = frameAt(this.frames, this.step, Math.min(this.line.meta.length - 2, s + 25));
+    const kap = (f.t.x * fA.t.z - f.t.z * fA.t.x) / 25;
+    const rollT = -Math.max(-0.035, Math.min(0.035, kap * 12)) * Math.min(1, sim.v / 40);
+    this._roll += (rollT - this._roll) * (1 - Math.exp(-dt / 0.8));
+    /* 継ぎ目: ばね(固さ900・減衰28)にたたく力を入れる */
+    const j = Math.floor((s - 1.2) / 25);
+    if (this._jIdx != null && j !== this._jIdx && Math.abs(j - this._jIdx) < 3) this._bv += -0.5 * Math.min(1, sim.v / 70);
+    this._jIdx = j;
+    const n = Math.min(8, Math.ceil(dt * 240)), h = dt / n;
+    for (let i = 0; i < n; i++) {
+      this._bv += (-900 * this._by - 28 * this._bv) * h;
+      this._by += this._bv * h;
+    }
   }
 
   _placeCamera(s, f, dt) {
@@ -2574,11 +2867,17 @@ export class RailScene {
       const look = fAhead.p.clone().addScaledVector(fAhead.left, 0.55);
       look.y += 2.4;
       cam.lookAt(look);
+      /* 体感: ブレーキで視線が沈み、カーブでは内側へ傾き、継ぎ目で小さくはねる(FOVは変えない) */
+      cam.rotateX(this._accSm * 0.01 + this._by * 0.25);
+      cam.rotateZ(this._roll);
+      cam.position.y += this._by * 0.012;
       cam.fov = 58;
+      this._camS = s;
     } else if (mode === 'chase' || mode === 'drone') {
       const back = mode === 'drone' ? 95 : 34, side = mode === 'drone' ? 30 : 4.5;
-      /* ターミナルの屋根の下では天井より低く */
-      const up = mode === 'drone' ? 52 : this._inTerminal(s - back, 8) ? 5.2 : 8.5;
+      /* ターミナルの屋根の下・トンネルの中では天井より低く */
+      const low = this._inTerminal(s - back, 8) || this._inTunnel(s - back) || this._inTunnel(s - back + 30);
+      const up = mode === 'drone' ? 52 : low ? 5.2 : 8.5;
       const fb = at(s - back), fl = at(s + (mode === 'drone' ? 30 : 48));
       const want = fb.p.clone().addScaledVector(fb.left, side);
       want.y += up;
@@ -2589,6 +2888,7 @@ export class RailScene {
       look.y += mode === 'drone' ? 0 : 2.2;
       cam.lookAt(look);
       cam.fov = mode === 'drone' ? 50 : 55;
+      this._camS = s - back;
     } else if (mode === 'side') {
       /* 防音壁(高さ1.9m)ごしでも車体が見えるよう、少し高い位置から */
       const fc = at(s - 22);
@@ -2600,6 +2900,7 @@ export class RailScene {
       look.y += 2.0;
       cam.lookAt(look);
       cam.fov = 55;
+      this._camS = s - 22;
     } else if (mode === 'front') {
       /* 線路わきの「撮影地」: 先頭が通りすぎたら次の地点へ */
       /* 近すぎず遠すぎず(カーブの内側の壁で隠れないよう 150m 前後) */
@@ -2613,8 +2914,74 @@ export class RailScene {
       look.y += 2.2;
       cam.lookAt(look);
       cam.fov = Math.max(18, Math.min(50, 50 - Math.max(0, (this._frontCamS - s) - 60) * 0.12));
+      this._camS = this._frontCamS;
     }
     cam.updateProjectionMatrix();
+  }
+
+  /* 目の慣れ: カメラがトンネル・ターミナルにいると暗く(k<1)、出入り口は約1秒でなじむ */
+  _updateLightLevel(dt) {
+    const s = this._camS;
+    let kT = 1, kfT = 1, indoor = false;
+    if (this.camMode !== 'drone' && this.line) {
+      const tn = this.line.sections.tunnel.find((t) => s > t.from && s < t.to);
+      if (tn) {
+        const d = Math.min(s - tn.from, tn.to - s);
+        kT = Math.max(0.10, Math.min(1, 0.10 + 0.9 * (1 - d / 150)));
+        /* 地下駅のホーム(照明あり)は少し明るい */
+        if (this.line.stations.some((st) => st.s > tn.from && st.s < tn.to && s > st.s - 175 && s < st.s + 30)) kT = Math.max(kT, 0.30);
+        kfT = kT;
+        indoor = true;
+      } else if (this._inTerminal(s)) {
+        kT = 0.30;
+        indoor = true;
+      }
+    }
+    const jump = !this._kInit || Math.abs(s - this._kLastS) > 60;
+    this._kInit = true;
+    this._kLastS = s;
+    if (jump) { this._k = kT; this._kFog = kfT; }
+    else if (dt > 0) {
+      const a = 1 - Math.exp(-dt * 1.2);
+      this._k += (kT - this._k) * a;
+      this._kFog += (kfT - this._kFog) * a;
+      if (Math.abs(kT - this._k) < 0.002) this._k = kT;
+      if (Math.abs(kfT - this._kFog) < 0.002) this._kFog = kfT;
+    }
+    this.look.k = this._k;
+    this.look.indoor = indoor;
+    this._applyLightLevel(this._k);
+    /* 夜空の地平線の街明かり: 郊外(区分2以上)では弱める */
+    if (this._nightU && this.nightSky.visible && !this.look.wet) {
+      const urb = this.line.sections.urban;
+      const kind = (urb.find((u) => s >= u.from && s < u.to) || { kind: 2 }).kind;
+      const g = kind >= 2 ? 1 : 0;
+      if (dt > 0) this._glowK += (g - this._glowK) * (1 - Math.exp(-dt * 0.5));
+      this._nightU.uGlow.value.copy(this._glowCity).lerp(this._glowSub, this._glowK);
+    }
+  }
+
+  /* 太陽と影の箱を列車に追従させる。箱の位置は影の1画素ぶんずつ動かす(影のふちがちらつかない) */
+  _placeSun(s, f) {
+    const sun = this.sun, dir = this._curSunDir || this._sunDir;
+    const [tgt, lx, ly] = this._tv;
+    const mode = this.camMode;
+    if (mode === 'front' && this._frontCamS != null) {
+      tgt.copy(f.p).lerp(frameAt(this.frames, this.step, Math.min(this.line.meta.length - 2, this._frontCamS)).p, 0.5);
+    } else {
+      const ahead = mode === 'cab' ? 60 : mode === 'drone' ? 110 : mode === 'chase' ? 30 : -20;
+      tgt.copy(f.p).addScaledVector(f.t, ahead);
+    }
+    if (sun.castShadow) {
+      lx.crossVectors(UP, dir).normalize();
+      ly.crossVectors(dir, lx);
+      const sc = sun.shadow.camera, ms = sun.shadow.mapSize;
+      const tx = (sc.right - sc.left) / ms.x, ty = (sc.top - sc.bottom) / ms.y;
+      const a = tgt.dot(lx), b = tgt.dot(ly);
+      tgt.addScaledVector(lx, Math.round(a / tx) * tx - a).addScaledVector(ly, Math.round(b / ty) * ty - b);
+    }
+    sun.target.position.copy(tgt);
+    sun.position.copy(tgt).addScaledVector(dir, 430);
   }
 
   /* 毎フレーム描画 */
@@ -2624,20 +2991,23 @@ export class RailScene {
     const L = this.line.meta.length;
     const s = Math.max(0, Math.min(L - 2, sim.pos));
     const f = frameAt(this.frames, this.step, s);
+    this._camFeel(dt, s, f);
     this._placeCamera(s, f, dt);
     const eye = this.camera.position;
+    /* 明るさ(トンネル・ターミナルの目の慣れ)・霧・遠景クリップ */
+    this._updateLightLevel(dt);
 
     /* 太陽と影ボックスを自列車に追従させる */
-    this.sun.target.position.copy(f.p).addScaledVector(f.t, 110);
-    this.sun.position.copy(this.sun.target.position).addScaledVector(this._curSunDir || this._sunDir, 430);
+    this._placeSun(s, f);
     if (this.eveSky) this.eveSky.position.copy(eye);
+    if (this.nightSky) this.nightSky.position.copy(eye);
 
-    /* 前照灯の追従(自列車の先頭から) */
-    const head = f.p.clone().addScaledVector(f.left, 0.0);
-    head.y += 1.95;
-    this.headlight.position.copy(head).addScaledVector(f.t, 1.0);
-    this.headlight.target.position.copy(head).addScaledVector(f.t, 70);
-    this.headlight.target.position.y -= 2.4;
+    /* 前照灯の追従(自列車の先頭・レール上1.1m。90m先のレール面をねらう) */
+    const head = this._tv[3].copy(f.p);
+    head.y += 1.1;
+    this.headlight.position.copy(head).addScaledVector(f.t, 0.5);
+    this.headlight.target.position.copy(head).addScaledVector(f.t, 90);
+    this.headlight.target.position.y -= 1.1;
 
     this._updateSleepers(s);
 
@@ -2677,18 +3047,26 @@ export class RailScene {
     this._updateCrossings(dt);
     this._updatePeople(dt);
 
-    /* 屋内(トンネル・ターミナル)判定: 運転台の明るさ・雨雪の有無 */
+    /* 屋内(トンネル・ターミナル)判定: 運転台の明るさ・雨雪の有無・車両の灯り
+     * (空や光は k で連続的に変えるので、ここでは _applyWeather を呼ばない=カクつかない) */
     const indoor = this._inTunnel(s) || this._inTerminal(s, -6);
     const indoorEye = this._inTunnel(s + 3) || this._inTerminal(s + 3, -6);
-    if (indoor !== this._inTunnelNow) { this._inTunnelNow = indoor; this._applyWeather(); }
     const tod = this.timeOfDay;
-    const wet = this.weather !== 'clear';
+    if (indoor !== this._inTunnelNow) {
+      this._inTunnelNow = indoor;
+      if (this.trainKit) this.trainKit.setNight(tod !== 'day' || this.weather !== 'clear' || indoor);
+    }
     let light = tod === 'night' ? 0.16 : tod === 'evening' ? 0.55 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1;
     if (indoorEye) light = Math.min(light, 0.3);
     this.cockpit.update(dt, { light, night: tod === 'night', wiper: this.weather === 'rain' && !indoorEye && this.camMode === 'cab' });
     if (this.weatherFx) this.weatherFx.update(dt, sim.v / 3.6, indoorEye && this.camMode === 'cab');
 
-    if (this.composer && (tod !== 'day' || wet || indoor)) this.composer.render();
+    /* 時間帯・天気が変わった直後は、描く前に使うシェーダをまとめて準備 */
+    if (this._needPrewarm) this.prewarm();
+    /* 軽量化の段階: 影は1フレームおきに更新 */
+    if (this._shadowLite) this.renderer.shadowMap.needsUpdate = (this._frame & 1) === 0;
+    this._frame++;
+    if (this._usePost()) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
 
     /* fps計測(自動軽量化・デバッグ用) */
