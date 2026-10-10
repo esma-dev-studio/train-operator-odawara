@@ -1012,8 +1012,8 @@ const App = {
       const d = pred - h.next.dist;     // +: いきすぎ / -: てまえ
       const k = Math.sign(d) * Math.min(1, Math.sqrt(Math.abs(d) / 40));
       if (el.pred._d !== 'block') { el.pred._d = 'block'; el.pred.style.display = 'block'; }
-      const top = `${(50 - k * 50).toFixed(1)}%`;
-      if (el.pred._top !== top) { el.pred._top = top; el.pred.style.top = top; }
+      const ty = `translateY(${(50 - k * 50).toFixed(1)}%)`;
+      if (el.pred._ty !== ty) { el.pred._ty = ty; el.pred.style.transform = ty; }
       const ok = Math.abs(d) <= 1.0;
       cls = ok ? 'ok' : d > 0 ? 'over' : '';
       setCls(el.pred, 'bg-pred ' + cls);
@@ -1398,6 +1398,15 @@ const App = {
         for (let t = 0; t < sec && !sim.ended; t += 0.05) { if (sim.doorOpen) sim.skipDwell(); ap(); sim.tick(0.05); }
         if (this.scene) this.scene._camPos = null;
         return { pos: Math.round(sim.pos), v: Math.round(sim.v), next: sim.stops[sim.stopIdx] && sim.stops[sim.stopIdx].name };
+      },
+      /* 自動運転で 次の駅に止まるまで進める(描画を待たない。停止判定カードが出る) */
+      arrive: () => {
+        const sim = this.sim, ap = makeAutopilot(sim);
+        for (let i = 0; i < 40000 && !sim.doorOpen && !sim.ended; i++) { ap(); sim.tick(0.05); }
+        if (this.scene) this.scene._camPos = null;
+        clearTimeout(this._scT);   // 撮影用: 判定カードを消さずに残す(ソフト描画は撮影までが遅い)
+        const st = sim.score.stops[sim.score.stops.length - 1];
+        return st ? { name: st.name, err: st.err } : null;
       },
       /* 次の停車駅の手前 m メートルまで自動運転で進める */
       approach: (m) => {

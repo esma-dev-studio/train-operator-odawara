@@ -97,10 +97,14 @@ for (const sc of pick) {
     if (sc.notch != null) await page.evaluate((n) => __test.app.sim.setNotch(n), sc.notch);
     if (sc.cam) await page.evaluate((m) => __test.cam(m), sc.cam);
     if (sc.arrive) {
-      /* 自動運転で「8」に止めて、停止位置の判定カードを出す(ソフト描画は遅いので少し倍速) */
-      await page.evaluate(() => { __test.fast(3); __test.auto(true); });
-      await page.waitForFunction(() => __test.app.sim.doorOpen, null, { timeout: 180000 }).catch(() => errors.push(`${sc.name}: 停車しなかった`));
-      await page.evaluate(() => { __test.fast(1); __test.auto(false); });
+      /* 自動運転で「8」に止めて、停止位置の判定カードを出す。
+       * ソフト描画では1コマが遅く、実時間の自動運転では なかなか止まらないので、描画を待たずに進める */
+      const r = await page.evaluate(() => (__test.arrive ? __test.arrive() : null));
+      if (!r) {
+        await page.evaluate(() => { __test.fast(3); __test.auto(true); });
+        await page.waitForFunction(() => __test.app.sim.doorOpen, null, { timeout: 180000 }).catch(() => errors.push(`${sc.name}: 停車しなかった`));
+        await page.evaluate(() => { __test.fast(1); __test.auto(false); });
+      }
     }
     if (sc.finish) {
       await page.evaluate(() => __test.advance(900));
@@ -109,12 +113,19 @@ for (const sc of pick) {
   }
   await page.waitForTimeout(sc.wait || 2500);
   await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
-  /* 描画負荷(直前のフレーム) */
-  const info = await page.evaluate(() => {
+  /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える */
+  const info = await page.evaluate(() => new Promise((resolve) => {
     const r = __test.app.scene && __test.app.scene.renderer;
-    if (!r) return null;
-    return { calls: r.info.render.calls, triangles: r.info.render.triangles, programs: r.info.programs ? r.info.programs.length : null };
-  }).catch(() => null);
+    if (!r) { resolve(null); return; }
+    requestAnimationFrame(() => {
+      r.info.autoReset = false; r.info.reset();
+      requestAnimationFrame(() => {
+        const o = { calls: r.info.render.calls, triangles: r.info.render.triangles, programs: r.info.programs ? r.info.programs.length : null };
+        r.info.autoReset = true;
+        resolve(o);
+      });
+    });
+  })).catch(() => null);
   if (info) perf[sc.name] = info;
   writeFileSync(join(out, 'calls.json'), JSON.stringify(perf, null, 1));
   console.log(`${sc.name}  ${((Date.now() - t0) / 1000).toFixed(1)}s${info ? `  calls=${info.calls} tris=${info.triangles} prog=${info.programs}` : ''}`);

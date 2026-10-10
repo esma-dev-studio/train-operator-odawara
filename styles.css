@@ -363,9 +363,11 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
 .bg-zone { position: absolute; left: -4px; right: -4px; top: 46%; height: 8%; border-top: 1px dashed rgba(52,208,124,0.7); border-bottom: 1px dashed rgba(52,208,124,0.7); }
 .bg-target { position: absolute; left: -10px; right: -10px; top: 50%; height: 2px; margin-top: -1px; background: #eef4f8; }
 .bg-target span { position: absolute; right: -26px; top: -11px; width: 22px; height: 24px; background: #111; color: #fff; border: 1.5px solid #fff; font: 900 0.85rem/21px var(--num); }
-.bg-pred { position: absolute; left: -8px; right: -8px; height: 10px; margin-top: -5px; top: 50%; border-radius: 5px; background: var(--hi); box-shadow: 0 0 10px rgba(127,216,255,0.8); transition: top 0.15s linear; }
-.bg-pred.ok { background: var(--green); box-shadow: 0 0 12px rgba(52,208,124,0.9); }
-.bg-pred.over { background: var(--red); box-shadow: 0 0 12px rgba(255,83,71,0.9); }
+/* 予想の帯: めもり全体の高さの箱を transform で上下させる(top を動かさない) */
+.bg-pred { position: absolute; left: -8px; right: -8px; top: 0; height: 100%; transform: translateY(50%); transition: transform 0.15s linear; pointer-events: none; }
+.bg-pred::before { content: ''; position: absolute; left: 0; right: 0; top: -5px; height: 10px; border-radius: 5px; background: var(--hi); box-shadow: 0 0 10px rgba(127,216,255,0.8); }
+.bg-pred.ok::before { background: var(--green); box-shadow: 0 0 12px rgba(52,208,124,0.9); }
+.bg-pred.over::before { background: var(--red); box-shadow: 0 0 12px rgba(255,83,71,0.9); }
 .bg-lbl { position: absolute; left: 50%; transform: translateX(-50%); font-size: var(--fs-micro); font-weight: 700; color: #8fa2ae; white-space: nowrap; writing-mode: horizontal-tb; }
 .bg-lbl-over { top: -17px; color: #ff9a8f; }
 .bg-lbl-short { bottom: -17px; color: var(--hi); }
@@ -797,7 +799,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   .tb-cap { display: none; }
   #brake-guide { width: 96px; padding: 5px; top: 60%; }
   body:not(.cam-cab) #brake-guide { top: 60%; }
-  .bg-cap br { display: none; }
+  .bg-cap { font-size: var(--fs-micro); line-height: 1.25; }
   .bg-scale { height: 50px; margin: 17px auto 17px; }
   .bg-txt { font-size: var(--fs-micro); min-height: 0; }
   #stamp-pop canvas { width: 96px !important; height: 96px !important; }
@@ -951,7 +953,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 }
 .res-next b { color: var(--hi); font-family: var(--num), "Zen Kaku Gothic New", sans-serif; }
 .rn-cap { display: block; font-size: var(--fs-micro); color: var(--acc-2); letter-spacing: 0.25em; }
-.res-btns { margin-top: 16px; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; }
+.res-btns { margin-top: 16px; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 10px; align-items: stretch; }
 .res-btns .btn { min-height: 52px; padding: 8px 14px; flex-direction: row; flex-wrap: wrap; }
 .res-btns .btn small { width: 100%; font-size: var(--fs-cap); font-weight: 700; opacity: 0.85; }
 #btn-res-next { flex-direction: row; }
