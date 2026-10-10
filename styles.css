@@ -307,12 +307,20 @@ ruby rt { font-size: 0.5em; opacity: 0.85; letter-spacing: 0; font-weight: 500; 
   #brake-guide { right: 100px; }
 }
 
-/* フロントガラスの映り込み・雨滴(運転台視点のときだけ) */
+/* フロントガラスの映り込み・雨滴(運転台視点のときだけ)
+ * 上の縁は少し青緑がかった遮光帯、下は計器盤のうすい映り込み。夜は計器の明かりがうっすら映る */
 #glass-sheen {
   position: absolute; inset: 0; pointer-events: none; display: none;
   background:
+    linear-gradient(180deg, rgba(40, 95, 100, 0.20) 0, rgba(40, 95, 100, 0.07) 7%, rgba(40, 95, 100, 0) 13%),
+    linear-gradient(0deg, rgba(185, 195, 205, 0.06) 0, rgba(185, 195, 205, 0) 16%),
     radial-gradient(120% 90% at 82% -12%, rgba(255,255,255,0.07), rgba(255,255,255,0) 55%),
     linear-gradient(115deg, rgba(255,255,255,0) 42%, rgba(255,255,255,0.035) 47%, rgba(255,255,255,0) 53%);
+}
+body.cab-dark #glass-sheen {
+  background:
+    linear-gradient(180deg, rgba(20, 50, 56, 0.25) 0, rgba(20, 50, 56, 0) 12%),
+    linear-gradient(0deg, rgba(80, 170, 230, 0.07) 0, rgba(80, 170, 230, 0) 14%);
 }
 body.mode-drive.cam-cab #glass-sheen { display: block; }
 #rain-glass { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
@@ -346,134 +354,324 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 }
 
 /* ---------------- 運転台パネル ---------------- */
+/* 3Dの天板(scene/cockpit.js)からつづく「コンソール」。計器はくぼんだ穴(.cab-block)に収める。
+ * DOMは cab/cab.js がコンストラクタで組みかえる(速度計 / モニタ / 制限 / 表示灯 / マスコン)。
+ * 夜・トンネル: cab.setLight が --cab-lum と body.cab-dark を決め、#cab::after で全体を暗くする。
+ * 自分で光る部品(z-index:2)だけは暗くならない。 */
 #cab {
+  --console-hi: #2c3237; --console: #1d2226; --console-lo: #131619; --well: #08090b;
+  --cab-num: var(--num, "DIN Alternate", "DIN Condensed", Bahnschrift, "Roboto Condensed", "Zen Kaku Gothic New", sans-serif);
   position: absolute; left: 0; right: 0; bottom: 0; height: var(--cab-h);
-  background: linear-gradient(180deg, #171d22, #10151a);
-  border-top: 2px solid #2b343b;
-  grid-template-columns: 200px 1fr 128px 132px 96px 74px;
-  gap: 10px; padding: 10px 12px calc(10px + var(--safe-b));
+  isolation: isolate;
+  background-color: var(--console);
+  background-image: var(--cab-noise, linear-gradient(transparent, transparent)),
+    linear-gradient(180deg, var(--console-hi) 0, var(--console) 14px, var(--console-lo) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 14px 18px -12px rgba(0, 0, 0, 0.6);
+  grid-template-columns: 240px minmax(0, 1fr) 136px 150px 150px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 10px; padding: 8px 12px calc(8px + var(--safe-b));
+}
+/* 3Dの天板に重なる手前のふち */
+#cab::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -10px; height: 10px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.45) 55%, #30373c 56%, #23292d);
+}
+/* 減光(夜・トンネル) */
+#cab::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; top: -10px; z-index: 1; pointer-events: none;
+  background: rgb(2, 4, 7);
+  opacity: calc((1 - var(--cab-lum, 1)) * 0.62);
 }
 .cab-block {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  padding: 8px; position: relative; overflow: hidden;
+  background: var(--well); border: 0; border-radius: 9px;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.85), inset 0 0 0 1px #000, 0 1px 0 rgba(255, 255, 255, 0.07);
+  padding: 8px; position: relative; overflow: hidden; min-width: 0; min-height: 0;
 }
-.cab-speedo { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
-#speedo { width: 132px; height: 132px; }
-.bc-wrap { display: flex; align-items: center; gap: 6px; width: 88%; font-size: 0.6rem; color: var(--ink-2); }
-.bc-bar { flex: 1; height: 6px; background: #242c33; border-radius: 4px; overflow: hidden; }
-.bc-bar i { display: block; height: 100%; width: 0; background: var(--amber); }
 
-.cab-tims { display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 8px 16px; }
-.tims-row1 { display: flex; justify-content: space-between; color: var(--ink-2); font-size: 0.72rem; letter-spacing: 0.15em; }
-#tims-clock { font-variant-numeric: tabular-nums; color: var(--ink); }
-#tims-next { font-size: 1.7rem; font-weight: 900; letter-spacing: 0.1em; line-height: 1.2; }
-.tims-kana { display: block; font-size: 0.6rem; color: var(--ink-2); letter-spacing: 0.08em; margin-top: 1px; }
-.tims-row2 { display: flex; justify-content: space-between; align-items: baseline; }
-#tims-dist { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--acc-2); }
-#tims-sch { color: var(--ink-2); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-#tims-delay { font-size: 0.8rem; color: var(--green); font-variant-numeric: tabular-nums; }
+/* --- 速度計 + ブレーキの強さ(8つのLED) --- */
+.cab-speedo { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px; }
+#speedo { width: 150px; height: 150px; flex: none; border-radius: 50%; position: relative; z-index: 2; }
+.bc-wrap { display: flex; flex-direction: column; align-items: center; gap: 5px; flex: none; }
+.bc-cap { font-size: 0.72rem; font-weight: 700; color: #8d99a2; letter-spacing: 0.04em; line-height: 1; }
+.bc-leds { display: flex; flex-direction: column-reverse; gap: 3px; padding: 4px; border-radius: 5px; background: #030405; box-shadow: inset 0 1px 3px #000, 0 1px 0 rgba(255, 255, 255, 0.06); }
+.bc-leds i { display: block; width: 22px; height: 10px; border-radius: 2px; background: #1b1610; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04); }
+.bc-leds i.on { background: linear-gradient(180deg, #ffd27a, #ffb32e 55%, #d98a00); box-shadow: 0 0 6px rgba(255, 179, 46, 0.55); position: relative; z-index: 2; }
+.bc-leds i.on:nth-child(7) { background: linear-gradient(180deg, #ffb48a, #ff7b3d 55%, #c4501a); box-shadow: 0 0 6px rgba(255, 123, 61, 0.6); }
+.bc-leds i.on:nth-child(8) { background: linear-gradient(180deg, #ffb0a8, #ff5347 55%, #a1160c); box-shadow: 0 0 7px rgba(255, 83, 71, 0.7); }
+
+/* --- 運転モニタ(縁つきの液晶。見出し・つぎの駅・そのさきの駅) --- */
+.cab-tims { padding: 6px; background: linear-gradient(180deg, #23292d, #15191c); }
+.tims-screen {
+  position: relative; z-index: 2; height: 100%; border-radius: 5px; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #071b2a, #04101a);
+  box-shadow: 0 0 0 1px #000, inset 0 0 18px rgba(0, 0, 0, 0.55);
+}
+.tims-screen::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 38%);
+}
+.tims-head {
+  display: flex; gap: 10px; align-items: center; flex: none; height: 24px; padding: 0 10px;
+  background: linear-gradient(180deg, #15344d, #0c2133); border-bottom: 1px solid #03080c;
+  font-size: 0.8rem; font-weight: 700; white-space: nowrap; overflow: hidden; line-height: 1;
+}
+.tims-svc { background: var(--svc, #8fa0aa); color: #08131a; padding: 2px 8px; border-radius: 3px; font-weight: 900; flex: none; }
+.tims-head ruby { ruby-position: over; }
+.tims-head rt { font-size: 0.5rem; line-height: 1; font-weight: 700; }
+.tims-svc rt { color: #08131a; }
+.tims-dest { color: #e6f2f8; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#tims-clock { margin-left: auto; color: #d6ecf6; font-family: var(--cab-num); font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
+#tims-clock .tc-c { font-style: normal; animation: tcBlink 1s steps(1, end) infinite; }
+@keyframes tcBlink { 50% { opacity: 0.25; } }
+.tims-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; padding: 6px 12px 8px; }
+.tims-main { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; overflow: hidden; }
+.tims-cap { color: #7fb4cf; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.15em; line-height: 1; }
+#tims-next { font-size: 1.9rem; font-weight: 900; letter-spacing: 0.08em; line-height: 1.05; white-space: nowrap; overflow: hidden; color: #f2f9fc; }
+#tims-next rt { font-size: 0.78rem; font-weight: 700; color: #8fd0ee; letter-spacing: 0.06em; }
+.tims-row2 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; white-space: nowrap; }
+#tims-dist { font-family: var(--cab-num); font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; color: #56c2e8; text-shadow: 0 0 6px rgba(86, 194, 232, 0.45); }
+#tims-sch { color: #a9c3d2; font-size: 0.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tims-row3 { white-space: nowrap; overflow: hidden; }
+#tims-delay { font-size: 0.8rem; font-weight: 700; color: var(--green); }
 #tims-delay.late { color: var(--red); }
+.tims-prog { height: 6px; flex: none; background: #0d2a3c; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+.tims-prog i { display: block; height: 100%; background: linear-gradient(90deg, #2f9dc4, #56c2e8); transform-origin: left center; transform: scaleX(0); }
+.tims-list { list-style: none; display: flex; flex-direction: column; justify-content: center; min-width: 0; overflow: hidden; }
+.tims-list li { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(120, 190, 230, 0.15); font-size: 0.86rem; font-weight: 700; color: #c6dbe6; white-space: nowrap; }
+.tims-list li:last-child { border-bottom: 0; }
+.tims-list li rt { font-size: 0.6rem; color: #7fa9bf; }
+.tims-list li.next { color: #ffd54a; }
+.tims-list li.next rt { color: #c9a940; }
+.tl-n { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tl-t { font-family: var(--cab-num); font-variant-numeric: tabular-nums; flex: none; font-size: 0.8rem; }
 
-.cab-limit { text-align: center; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
-.lim-cap { color: var(--ink-2); font-size: 0.64rem; letter-spacing: 0.25em; }
+/* --- 制限スピード(線路わきの黄色い標識と同じ見た目) --- */
+.cab-limit { text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px 6px; }
+.lim-cap { color: #9fb0ba; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; line-height: 1.15; white-space: nowrap; }
+.lim-cap rt { font-size: 0.56rem; color: #7d8d97; }
 #lim-now {
-  font-size: 2.1rem; font-weight: 900;
-  border: 3px solid var(--red); border-radius: 50%;
-  width: 66px; height: 66px; line-height: 60px; margin: 2px auto;
-  background: #fff; color: #16202a;
+  width: 72px; height: 72px; margin: 4px auto; flex: none;
+  border-radius: 4px; background: #e6bd1d; color: #111;
+  border: 4px solid #111; outline: 2px solid #e6bd1d; outline-offset: 0;
+  font-family: var(--cab-num); font-size: 2.3rem; font-weight: 900; line-height: 64px; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; box-shadow: 0 3px 0 2px rgba(0, 0, 0, 0.55);
+  position: relative; z-index: 2;
 }
-#lim-next { color: var(--amber); font-weight: 700; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
-#grade-ind { color: var(--ink-2); font-size: 0.72rem; }
+#lim-now.l3 { font-size: 1.95rem; letter-spacing: -0.05em; }
+#lim-next { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; color: #ffcf6a; font-size: 0.72rem; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.ln-l1, .ln-l2 { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.ln-board { display: inline-block; min-width: 26px; height: 20px; padding: 0 2px; border-radius: 2px; background: #e6bd1d; color: #111; border: 2px solid #111; outline: 1px solid #e6bd1d; font-family: var(--cab-num); font-size: 0.8rem; font-weight: 900; line-height: 16px; font-variant-numeric: tabular-nums; }
+.ln-d { font-family: var(--cab-num); font-size: 0.9rem; font-weight: 900; font-variant-numeric: tabular-nums; color: #ffe08a; }
+.ln-sig { display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #ffd0c8, #ff5347 45%, #a1160c); box-shadow: 0 0 6px rgba(255, 83, 71, 0.8); }
+.ln-sig.ln-sig-y { background: radial-gradient(circle at 40% 35%, #fff3c4, #ffc443 45%, #d98a00); box-shadow: 0 0 6px rgba(255, 180, 40, 0.8); }
+.ln-bar { display: block; height: 3px; margin: 1px 8px 0; border-radius: 2px; background: #2b2210; overflow: hidden; }
+.ln-bar s { display: block; height: 100%; background: #ffb32e; transform-origin: left center; text-decoration: none; }
+#grade-ind { color: #9fb0ba; font-size: 0.72rem; font-weight: 700; white-space: nowrap; line-height: 1.2; }
+#grade-ind small { font-family: var(--cab-num); font-size: 0.72rem; font-weight: 500; color: #7d8d97; margin-left: 4px; }
+.gr-ico { display: inline-block; width: 14px; height: 9px; margin-right: 4px; vertical-align: -1px; }
+.gr-0 { background: linear-gradient(180deg, transparent 4px, #9fb0ba 4px, #9fb0ba 6px, transparent 6px); }
+.gr-up { background: linear-gradient(to top left, transparent calc(50% - 1px), #e0a050 calc(50% - 1px), #e0a050 calc(50% + 1px), transparent calc(50% + 1px)); }
+.gr-dn { background: linear-gradient(to top right, transparent calc(50% - 1px), #56c2e8 calc(50% - 1px), #56c2e8 calc(50% + 1px), transparent calc(50% + 1px)); }
 
-.cab-lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-content: center; }
+/* --- 表示灯(色つきのレンズ。消えていても何色かわかる) --- */
+.cab-lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-content: center; padding: 9px; }
 .lamp {
-  border: 1px solid var(--line); border-radius: 6px;
-  font-size: 0.62rem; text-align: center; padding: 7px 2px; line-height: 1.35;
-  color: #55616a; background: #12171b; font-weight: 700;
+  position: relative; border: 0; border-radius: 7px; padding: 8px 2px; text-align: center;
+  font-size: 0.78rem; font-weight: 700; line-height: 1.25; white-space: nowrap;
+  color: var(--lens-ink, #55616a);
+  background: radial-gradient(ellipse at 50% 28%, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0) 60%), var(--lens-off, #12171b);
+  box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, inset 0 -3px 6px rgba(0, 0, 0, 0.6);
 }
-.lamp.on.lamp-amber { background: #3d2f10; color: var(--amber); border-color: var(--amber); }
-.lamp.on.lamp-red { background: #41150f; color: var(--red); border-color: var(--red); animation: blink 0.6s steps(2) infinite; }
-.lamp.on.lamp-green { background: #0f3322; color: var(--green); border-color: var(--green); }
+.lamp-amber { --lens-off: #2b2210; --lens-ink: #7f6632; }
+.lamp-red { --lens-off: #2a1311; --lens-ink: #84403a; }
+.lamp-green { --lens-off: #0f2419; --lens-ink: #33704f; }
+.lamp.on { z-index: 2; }
+.lamp.on.lamp-amber { background: radial-gradient(ellipse at 50% 35%, #fff3c4 0, #ffc443 38%, #d98a00); color: #3a2500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 180, 40, 0.55); }
+.lamp.on.lamp-red { background: radial-gradient(ellipse at 50% 35%, #ffd0c8 0, #ff5347 38%, #a1160c); color: #3a0500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 83, 71, 0.6); animation: blink 0.6s steps(2) infinite; }
+.lamp.on.lamp-green { background: radial-gradient(ellipse at 50% 35%, #d9ffe9 0, #34d07c 38%, #0d7a43); color: #04301a; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(52, 208, 124, 0.5); }
 @keyframes blink { 50% { opacity: 0.45; } }
 
-.cab-notch { padding: 5px; }
-#notch-list { display: flex; flex-direction: column; height: 100%; }
+/* --- マスコン: 13段の目盛り(#notch-list) + レバー(#lever)。目盛りの行とレバーの止まる位置はそろっている --- */
+.cab-mascon { display: grid; grid-template-columns: minmax(0, 1fr) 54px; grid-template-rows: minmax(0, 1fr); gap: 6px; padding: 6px; }
+#notch-list {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr); grid-template-rows: repeat(13, minmax(0, 1fr));
+  column-gap: 2px; height: 100%; min-height: 0;
+}
 .nt {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  font-size: 0.6rem; font-weight: 700; color: #4c5860; border-radius: 3px;
+  grid-column: 2; min-height: 0; line-height: 1; position: relative;
+  display: flex; align-items: center; justify-content: center; white-space: nowrap;
+  font-size: clamp(0.62rem, 1.55vh, 0.8rem); font-weight: 700; font-variant-numeric: tabular-nums;
+  border-top: 1px solid rgba(0, 0, 0, 0.55);
 }
-.nt.on.nt-p { background: var(--acc); color: #04222e; }
-.nt.on.nt-n { background: #3a444c; color: #fff; }
-.nt.on.nt-b { background: var(--amber); color: #35270a; }
-.nt.on.nt-eb { background: var(--red); color: #fff; }
-
-/* ワンハンドルレバー: 金属調トラック(目盛りつき) + 実際に動く持ち手 */
-#lever {
-  background:
-    repeating-linear-gradient(180deg,
-      rgba(255, 255, 255, 0.07) 0, rgba(255, 255, 255, 0.07) 1px,
-      transparent 1px, transparent calc(100% / 12)),
-    linear-gradient(180deg,
-      rgba(47, 157, 196, 0.34) 0%, rgba(47, 157, 196, 0.14) 29.2%,
-      rgba(96, 106, 114, 0.34) 29.2%, rgba(96, 106, 114, 0.34) 37.5%,
-      rgba(217, 144, 63, 0.16) 37.5%, rgba(217, 144, 63, 0.32) 95.8%,
-      rgba(214, 69, 69, 0.55) 95.8%, rgba(214, 69, 69, 0.65) 100%),
-    linear-gradient(90deg, #1a2126, #262e35 22%, #2b343b 50%, #262e35 78%, #1a2126),
-    linear-gradient(180deg, #232b31, #171d22);
-  border: 1px solid #3c464e; border-radius: 11px;
-  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.65), inset 0 -2px 6px rgba(0, 0, 0, 0.5);
-  position: relative; touch-action: none; cursor: grab;
-}
-.lv-lab {
-  position: absolute; left: 0; right: 0; text-align: center;
-  font-size: 0.52rem; font-weight: 700; pointer-events: none;
-  letter-spacing: 0.04em; color: #9fb1bc;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-.lv-p { top: 5px; color: #8fd4f0; }
-.lv-n { top: calc(33.3% - 6px); color: #c2ccd4; }
-.lv-b { top: calc(66% - 6px); color: #eec18a; }
-.lv-eb { bottom: 3px; color: #f2a0a0; }
-.lever-grip {
-  position: absolute; left: -14px; right: -14px; height: 40px; top: 0;
-  background: linear-gradient(180deg, #78838d 0%, #4a545d 26%, #2c343b 62%, #414b54 100%);
-  border-radius: 12px; border: 1px solid #808b95;
-  box-shadow:
-    0 6px 14px rgba(0, 0, 0, 0.65),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -4px 7px rgba(0, 0, 0, 0.5);
+/* 刻み線: レバーのみぞを指す */
+.nt::after { content: ''; position: absolute; right: -8px; top: 50%; width: 8px; height: 1px; background: currentColor; opacity: 0.6; }
+.nt-p { color: #4f8095; background: rgba(47, 157, 196, 0.10); --zc: #2f9dc4; }
+.nt-n { color: #b8c4cc; --zc: #8a969e; }
+.nt-b { color: #8a7350; background: rgba(217, 144, 63, 0.10); --zc: #d9903f; }
+.nt-eb { color: #c77; background: rgba(214, 69, 69, 0.25); --zc: #d64545; letter-spacing: -0.02em; }
+.nt.on { font-weight: 900; z-index: 2; box-shadow: inset 3px 0 0 #fff; border-radius: 2px; }
+.nt.on.nt-p { background: #2f9dc4; color: #04222e; }
+.nt.on.nt-n { background: #4a555d; color: #fff; }
+.nt.on.nt-b { background: #d9903f; color: #2a1800; }
+.nt.on.nt-eb { background: #d64545; color: #fff; }
+.nt-cap {
+  grid-column: 1; pointer-events: none; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
-  font-size: 0.95rem; font-weight: 900; color: #eef4f8;
+  writing-mode: vertical-rl; text-orientation: upright;
+  font-size: clamp(0.5rem, 1.4vh, 0.66rem); font-weight: 700; letter-spacing: 0.08em; line-height: 1;
+}
+.nt-cap-p { color: #4f8095; }
+.nt-cap-b { color: #8a7350; }
+.nt-cap-eb { margin: 2px 3px; border-radius: 2px; background: #a33a34; }
+
+#lever { position: relative; background: none; border: 0; box-shadow: none; touch-action: none; cursor: grab; min-height: 0; }
+.lever-slot {
+  position: absolute; left: 50%; top: 4px; bottom: 4px; width: 12px; margin-left: -6px; border-radius: 6px; pointer-events: none;
+  background: #040506; box-shadow: inset 0 2px 4px #000, 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+/* T字の持ち手(上下は transform だけで動かす。ノッチは段ごとにカチッと止まるので動きのアニメはつけない) */
+.lever-grip {
+  position: absolute; left: -4px; right: -4px; top: 0; height: 30px; z-index: 2;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #5b646b 0, #2a3035 18%, #121518 60%, #22272b);
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 5px rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--cab-num); font-size: 0.9rem; font-weight: 900; color: #eef4f8; line-height: 1;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
-  transition: top 0.09s ease-out;
+  will-change: transform;
   pointer-events: none;
 }
-.lever-grip::before {
-  content: ''; position: absolute; left: 10px; right: 10px; top: 5px;
-  height: 2px; border-radius: 1px;
-  background: rgba(255, 255, 255, 0.28);
-  box-shadow: 0 27px 0 rgba(0, 0, 0, 0.35);
+.lever-grip::before, .lever-grip::after {
+  content: ''; position: absolute; top: 3px; bottom: 3px; width: 8px;
+  background: linear-gradient(90deg, #8d979e, #e8edf0, #7a848b);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
-.lever-grip.lg-p {
-  color: #bfeaff;
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -4px 7px rgba(0, 0, 0, 0.5), 0 0 14px rgba(58, 169, 208, 0.6);
-  border-color: #6fc7e8;
+.lever-grip::before { left: 2px; border-radius: 5px 2px 2px 5px; }
+.lever-grip::after { right: 2px; border-radius: 2px 5px 5px 2px; }
+.lg-t { position: relative; top: -2px; }
+.lg-led { position: absolute; left: 13px; right: 13px; bottom: 4px; height: 3px; border-radius: 2px; background: #6f7a82; }
+.lever-grip.lg-p { color: #bfeaff; }
+.lever-grip.lg-p .lg-led { background: #3aa9d0; box-shadow: 0 0 6px #3aa9d0; }
+.lever-grip.lg-b { color: #ffdca6; }
+.lever-grip.lg-b .lg-led { background: #e0a050; box-shadow: 0 0 6px #e0a050; }
+.lever-grip.lg-eb { color: #ffc2c2; }
+.lever-grip.lg-eb .lg-led { background: #ff5347; box-shadow: 0 0 7px #ff5347; }
+.lever-grip.tb-flash { outline: 3px solid rgba(127, 216, 255, 0.9); outline-offset: 2px; }
+
+/* --- 暗いとき(夜・トンネル): パネルは沈み、計器だけ光る --- */
+body.cab-dark .tims-screen { box-shadow: 0 0 0 1px #000, inset 0 0 18px rgba(0, 0, 0, 0.55), 0 0 22px rgba(70, 160, 230, 0.16); }
+body.cab-dark .nt.on { box-shadow: inset 3px 0 0 #fff, 0 0 8px var(--zc); }
+body.cab-dark .lamp { color: color-mix(in srgb, var(--lens-ink) 70%, #000); }
+body.cab-dark .lamp.on { color: #1a0d00; }
+
+/* ---------------- 運転台パネル: 画面サイズ別 ---------------- */
+/* 以前の @media の中の #cab の指定より強くするため body #cab / html:root で書く */
+html:root { --cab-h: 196px; }
+body #cab .cab-mascon #lever { grid-column: auto; grid-row: auto; width: auto; }
+body #cab .lever-grip { left: -4px; right: -4px; }
+
+/* iPad(横): すこし高くして1段14px以上 */
+@media (pointer: coarse) and (min-width: 861px) {
+  html:root { --cab-h: calc(214px + var(--safe-b)); }
+  body #cab { grid-template-columns: 230px minmax(0, 1fr) 136px 150px 150px; }
 }
-.lever-grip.lg-b {
-  color: #ffdca6;
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -4px 7px rgba(0, 0, 0, 0.5), 0 0 14px rgba(224, 160, 80, 0.6);
-  border-color: #f2c58a;
+/* デスクトップでも横幅がせまいときは、そのさきの駅を出さない */
+@media (max-width: 1100px) {
+  body #cab .tims-list { display: none; }
+  body #cab .tims-body { grid-template-columns: minmax(0, 1fr); }
 }
-.lever-grip.lg-eb {
-  color: #ffc2c2;
-  background: linear-gradient(180deg, #8d5a5a 0%, #6e3a3a 30%, #4a2222 65%, #6e3a3a 100%);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.35),
-    inset 0 -4px 7px rgba(0, 0, 0, 0.5), 0 0 16px rgba(214, 69, 69, 0.75);
-  border-color: #ff9a9a;
+
+/* 860px以下(iPad縦など): 速度計 | モニタ(下に表示灯の帯) | 制限 | マスコン */
+@media (max-width: 860px) {
+  html:root { --cab-h: calc(218px + var(--safe-b)); }
+  body #cab {
+    grid-template-columns: 132px minmax(0, 1fr) 104px 128px; grid-template-rows: minmax(0, 1fr) 44px;
+    gap: 7px; padding: 8px 8px calc(8px + var(--safe-b));
+  }
+  body #cab .cab-speedo { grid-column: 1; grid-row: 1 / 3; flex-direction: column; gap: 10px; padding: 6px; }
+  body #cab #speedo { width: 116px; height: 116px; }
+  body #cab .bc-wrap { display: flex; flex-direction: column; gap: 4px; }
+  body #cab .bc-leds { flex-direction: row; gap: 3px; padding: 3px; }
+  body #cab .bc-leds i { width: 8px; height: 12px; }
+  body #cab .cab-tims { grid-column: 2; grid-row: 1; padding: 5px; }
+  body #cab .tims-head { height: 22px; font-size: 0.74rem; }
+  body #cab .tims-list { display: none; }
+  body #cab .tims-body { grid-template-columns: minmax(0, 1fr); padding: 4px 10px 6px; }
+  body #cab #tims-next { font-size: 1.5rem; }
+  body #cab #tims-dist { font-size: 1.1rem; }
+  body #cab .cab-lamps {
+    display: grid; grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px; padding: 5px 6px; align-content: stretch;
+  }
+  body #cab .lamp { padding: 2px 1px; display: flex; align-items: center; justify-content: center; line-height: 1.05; }
+  body #cab .cab-limit { grid-column: 3; grid-row: 1 / 3; padding: 6px 4px; }
+  body #cab #lim-now { width: 54px; height: 54px; line-height: 46px; font-size: 1.7rem; border-width: 4px; margin: 3px auto; }
+  body #cab #lim-now.l3 { font-size: 1.35rem; }
+  body #cab #grade-ind small { display: none; }
+  body #cab .cab-mascon { grid-column: 4; grid-row: 1 / 3; grid-template-columns: minmax(0, 1fr) 46px; gap: 5px; padding: 5px; }
+  body #cab .lever-grip { height: 30px; font-size: 0.82rem; }
+  body #cab .lg-led { left: 11px; right: 11px; }
 }
-.lever-grip.tb-flash { outline: 3px solid rgba(127, 216, 255, 0.9); outline-offset: 3px; }
+/* iPad(縦): パネルを高くして1段およそ19px(指でさわれる大きさ) */
+@media (orientation: portrait) and (min-height: 900px) {
+  html:root { --cab-h: calc(272px + var(--safe-b)); }
+  body #cab #tims-next { font-size: 1.9rem; }
+  body #cab #tims-dist { font-size: 1.3rem; }
+  body #cab .tims-main { gap: 6px; }
+}
+/* たて長のスマホ: 表示灯は速度計のLEDと液晶の表示にまかせる */
+@media (max-width: 560px) {
+  body #cab { grid-template-columns: 92px minmax(0, 1fr) 64px 96px; grid-template-rows: minmax(0, 1fr); gap: 6px; padding: 6px 6px calc(6px + var(--safe-b)); }
+  body #cab .cab-speedo { grid-row: 1; padding: 3px; }
+  body #cab #speedo { width: 84px; height: 84px; }
+  body #cab .bc-wrap { display: none; }
+  body #cab .cab-tims { grid-row: 1; }
+  body #cab .cab-lamps { display: none; }
+  body #cab .tims-head .tims-dest { display: none; }
+  body #cab #tims-next { font-size: 1.2rem; }
+  body #cab .cab-limit { grid-row: 1; padding: 4px 2px; }
+  body #cab .lim-cap { font-size: 0.6rem; letter-spacing: 0; }
+  body #cab #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 3px; }
+  body #cab #lim-now.l3 { font-size: 1.05rem; }
+  body #cab #lim-next { font-size: 0.64rem; }
+  body #cab .cab-mascon { grid-row: 1; grid-template-columns: minmax(0, 1fr) 40px; }
+}
+/* 横向きのスマホ(背の低い画面): 表示灯なし、マスコンはパネルの高さいっぱい */
+@media (max-height: 540px) and (orientation: landscape) {
+  html:root { --cab-h: calc(118px + var(--safe-b)); }
+  body #cab { grid-template-columns: 104px minmax(0, 1fr) 84px 112px; grid-template-rows: minmax(0, 1fr); gap: 6px; padding: 6px 8px calc(6px + var(--safe-b)); }
+  body #cab::before { top: -6px; height: 6px; }
+  body #cab .cab-speedo { grid-column: 1; grid-row: 1; padding: 3px; }
+  body #cab #speedo { width: 96px; height: 96px; }
+  body #cab .bc-wrap { display: none; }
+  body #cab .cab-tims { grid-column: 2; grid-row: 1; padding: 4px; }
+  body #cab .tims-head { height: 18px; font-size: 0.66rem; gap: 6px; padding: 0 6px; }
+  body #cab .tims-svc { padding: 1px 5px; }
+  body #cab .tims-head rt { display: none; }
+  body #cab #tims-clock { font-size: 0.8rem; }
+  body #cab .tims-body { grid-template-columns: minmax(0, 1fr); padding: 2px 8px 4px; }
+  body #cab .tims-main { gap: 1px; }
+  body #cab .tims-cap { display: none; }
+  body #cab #tims-next { font-size: 1.15rem; }
+  body #cab #tims-next rt { font-size: 0.6rem; }
+  body #cab #tims-dist { font-size: 0.95rem; }
+  body #cab .tims-prog { height: 4px; }
+  body #cab .cab-lamps { display: none; }
+  body #cab .cab-limit { grid-column: 3; grid-row: 1; padding: 4px 2px; gap: 1px; }
+  body #cab .lim-cap, body #cab #grade-ind { display: none; }
+  body #cab #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 3px; margin: 2px auto; }
+  body #cab #lim-now.l3 { font-size: 1.05rem; }
+  body #cab #lim-next { font-size: 0.62rem; }
+  body #cab .ln-board { min-width: 20px; height: 16px; line-height: 12px; font-size: 0.66rem; }
+  body #cab .cab-mascon { grid-column: 4; grid-row: 1; grid-template-columns: minmax(0, 1fr) 44px; gap: 4px; padding: 6px 4px; }
+  body #cab .nt { font-size: 0.56rem; }
+  body #cab .nt-cap { font-size: 0.5rem; letter-spacing: 0; }
+  body #cab .lever-grip { height: 18px; font-size: 0.66rem; border-radius: 5px; }
+  body #cab .lever-grip::before, body #cab .lever-grip::after { width: 6px; top: 2px; bottom: 2px; }
+  body #cab .lg-led { left: 9px; right: 9px; bottom: 1px; height: 2px; }
+  body #cab .lg-t { top: -1px; }
+}
 
 /* ---------------- 一時停止・せってい ---------------- */
 .pause-card {

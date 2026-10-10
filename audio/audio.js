@@ -552,6 +552,10 @@ const RENDER = {
   /* ATS接近: 明るい「ピンポン」 */
   atsChime: (sr) => renderChime(sr, 1.0, [[0, 1568, 0.2, 0.9, 1.2], [0.13, 1318, 0.32, 1.0, 1.0]]),
   atsBell: (sr) => renderAtsBell(sr),
+  /* 停車の判定チャイム(機器の報知音ふう): ぴったり=3音のぼり / よい=2音 / いまいち=低い2音 */
+  stopPerfect: (sr) => renderChime(sr, 1.6, [[0, 1318.5, 0.32, 0.85, 0.7], [0.11, 1661, 0.34, 0.9, 0.7], [0.22, 1975.5, 0.62, 1.0, 0.6]]),
+  stopGood: (sr) => renderChime(sr, 1.3, [[0, 1318.5, 0.3, 0.9, 0.7], [0.13, 1760, 0.55, 1.0, 0.6]]),
+  stopNg: (sr) => renderBeep(sr, 0.8, [[0, 0.2, 587], [0.27, 0.38, 440]], 3200),
   /* 過走: 「ピピピッ」×2 */
   beep: (sr) => renderBeep(sr, 0.95, [0, 0.15, 0.3, 0.5, 0.65, 0.8].map((t) => [t, 0.09, 2093])),
   beepLow: (sr) => renderBeep(sr, 1.0, [[0, 0.32, 880], [0.45, 0.45, 698]]),
@@ -964,6 +968,7 @@ export class CabAudio {
   _warm() {
     const names = ['joint0', 'joint1', 'joint2', 'hissShort', 'hissLong', 'doorThud', 'doorSlide',
       'doorChime', 'atsChime', 'horn', 'atsBell', 'beep', 'beepLow', 'buzzer', 'ebHiss', 'pressure', 'ir', 'cross', 'rain',
+      'stopPerfect', 'stopGood', 'stopNg',
       ...MELODIES.map((m, i) => 'mel' + i)];
     const ctx = this.ctx;
     const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -977,6 +982,12 @@ export class CabAudio {
       if (names.length) setTimeout(step, 45);
     };
     setTimeout(step, 80);
+  }
+
+  /* 名前つきの音を1回鳴らす(UI用。例: cue('stopPerfect')) */
+  cue(name, gain = 1, rate = 1) {
+    if (!this.ctx || !this.enabled) return null;
+    try { return this._play(name, this.uiBus, gain, rate !== 1 ? { rate } : {}); } catch (e) { return null; }
   }
 
   /* ---------------- sim との接続 ---------------- */
@@ -1040,9 +1051,21 @@ export class CabAudio {
         this._play('atsBell', this.uiBus, 0.38);
         break;
       case 'eb':
+        /* 止まっているときの非常ブレーキは、空気の音だけを小さく(ブザーは鳴らさない) */
+        if (d && d.moving === false) {
+          this._play('ebHiss', this.uiBus, 0.15);
+          break;
+        }
         this._play('ebHiss', this.uiBus, 0.4);
         this._play('buzzer', this.uiBus, 0.2);
         break;
+      case 'arrived': {
+        /* 停止位置の判定チャイム(ドアの音と重ならないよう少しおくらせる) */
+        const e = Math.abs(Number(d.err));
+        const name = !Number.isFinite(e) ? null : e <= 0.35 ? 'stopPerfect' : e <= 1 ? 'stopGood' : 'stopNg';
+        if (name) this._play(name, this.uiBus, 0.34, { delay: 0.25 });
+        break;
+      }
       case 'overrun':
         this._play('beep', this.uiBus, 0.26);
         break;
@@ -1050,7 +1073,7 @@ export class CabAudio {
         this._play('beepLow', this.uiBus, 0.26);
         break;
       default:
-        break;     // arrived / finished / 未知のイベントは無視
+        break;     // finished / 未知のイベントは無視
     }
   }
 
