@@ -771,11 +771,13 @@ const App = {
       const last = this.sim.score.stops[this.sim.score.stops.length - 1];
       const abs = Math.abs(last.err);
       this.showStopCard(e.name, last);
-      /* スタンプ・くんしょうは カードのあとに じゅんばんに出す */
-      this._queuePop(null, 900);
+      /* スタンプ・くんしょうは カードのあとに じゅんばんに出す。
+       * スタンプが出るときは カードの0.9秒あと、出ないときは くんしょうが カード(3.4秒)と かさならないよう待つ */
       const prevBest = this.save.bestErr[e.name];
       this.save.bestErr[e.name] = Math.min(prevBest == null ? 99 : prevBest, abs);
       const tier = tierOf(abs);
+      const raised = tier >= 1 && tier > (this.save.stampTier[e.name] || 0);
+      this._queuePop(null, raised ? 900 : 3400);
       if (tier >= 1) this.awardStamp(e.name, tier);
       else this.writeSave();
     }
@@ -1288,7 +1290,7 @@ const App = {
     if (this.endIdx != null && this.endIdx < stops.length - 1) {
       const span = this.endIdx - this.startIdx;
       const nTo = Math.min(stops.length - 1, this.endIdx + span);
-      nb.innerHTML = `つづきを はしる ${icon('chevron-right')}<small>${stops[this.endIdx].name} → ${stops[nTo].name}</small>`;
+      nb.innerHTML = `つづきを はしる ${icon('chevron-right')}<small>${rubyStation(stops[this.endIdx].name)} → ${rubyStation(stops[nTo].name)}</small>`;
       nb.classList.remove('hidden');
     } else nb.classList.add('hidden');
     /* 段階的に見せる */
