@@ -5,8 +5,8 @@
  *   インスタンスごとに拡大しても、窓の大きさ・階の高さが本物どおり(約3m)になるよう、
  *   UVを頂点シェーダで「位置×拡大率」から作り直す(patchFacade)。
  * ・色は白っぽい下地に描き、インスタンス色(instanceColor)で壁の色味を付ける。
- * ・ORM画像を1枚にまとめる: R=夜に灯る窓のマスク / G=粗さ / B=金属度。
- *   ガラスだけ粗さが低く金属度があるので、空(環境光)が映り込む。
+ * ・ORM画像を1枚にまとめる: R=夜に灯る窓のマスク / G=粗さ / B=金属度。emissiveMap として
+ *   1回だけ読み、粗さ・金属度もそこから取る。ガラスだけ粗さが低く金属度があるので空が映り込む。
  * ・夜の窓明かりは建物ごと・窓ごとにハッシュで点灯/色温度を決める(全部同じ模様にならない)。
  *   昼夜の切り替えは uFcLit(共有ユニフォーム)と emissive の値だけ。シェーダは作り直さない。
  * ========================================================= */
@@ -329,7 +329,10 @@ const EMIT_F = /* glsl */`
   float fcHu = fcH12(fcCell * 1.73 + fcSd * 13.1);
   vec3 fcWc = fcHu < .55 ? vec3(1., .78, .45) : fcHu < .85 ? vec3(.85, .93, 1.) : vec3(.33, .39, .6);
   #ifdef USE_EMISSIVEMAP
+  /* ORM(R=窓マスク G=粗さ B=金属度)は emissiveMap として1回だけ読む(粗さ・金属度もここから) */
   totalEmissiveRadiance = emissive * emissiveColor.r;
+  roughnessFactor *= emissiveColor.g;
+  metalnessFactor *= emissiveColor.b;
   #endif
   totalEmissiveRadiance *= fcWc * fcOn * (.7 + .6 * fcH12(fcCell + 3.1)) * (1. - vFcRoof);
 }
@@ -370,8 +373,9 @@ export function facadeMaterial(name, aniso = 4) {
   map.colorSpace = THREE.SRGBColorSpace;
   const orm = new THREE.CanvasTexture(P.orm);   // データなので色空間なし(リニア)
   [map, orm].forEach((t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = aniso; });
+  /* roughnessMap/metalnessMap は付けない(同じ画像を3回読まないよう、シェーダで emissiveMap から取り出す) */
   const mat = new THREE.MeshStandardMaterial({
-    map, roughnessMap: orm, metalnessMap: orm, emissiveMap: orm,
+    map, emissiveMap: orm,
     roughness: 1, metalness: 1, emissive: 0x000000, envMapIntensity: 1,
   });
   patchFacade(mat, { tile: d.tile, grid: d.grid, steps: d.steps, roofCol: d.roof, key: 'bld', boost: name === 'shop' ? 1.9 : name === 'house' ? 1.1 : 1 });

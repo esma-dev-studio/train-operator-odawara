@@ -1205,8 +1205,8 @@ export function makeTreeGeosP1() {
   const tc = srgbLin(0x584736).map((v) => v + 2);
   const trunk = () => { const t = new THREE.CylinderGeometry(0.13, 0.2, 2.9, 6); t.translate(0, 1.45, 0); return { g: t, col: tc }; };
   const trunkC = () => { const t = new THREE.CylinderGeometry(0.1, 0.16, 2.0, 5); t.translate(0, 1.0, 0); return { g: t, col: tc }; };
-  /* 近景用: 大きい2つの葉のかたまりだけ細かく、小さい2つは粗く(三角形を節約) */
-  const broad = (spec, detail) => spec.map(([r, x, y, z, sy], i) => ({ g: shade(blob(r, x, y, z, sy || 1.15, i < 2 ? detail : 0), 2.2, 5.5) }));
+  /* 近景用: 大きい3つの葉のかたまりは細かく、いちばん小さい1つは粗く(三角形を節約) */
+  const broad = (spec, detail) => spec.map(([r, x, y, z, sy], i) => ({ g: shade(blob(r, x, y, z, sy || 1.15, i < 3 ? detail : 0), 2.2, 5.5) }));
   const A = [[1.55, 0, 3.7, 0], [1.1, 0.95, 3.1, 0.35], [1.0, -0.85, 3.25, -0.3], [0.9, 0.1, 4.6, -0.5]];
   const B = [[1.25, 0, 3.3, 0, 1.3], [1.15, 0.2, 4.4, 0.2, 1.2], [0.85, -0.7, 3.0, 0.5], [0.8, 0.75, 3.6, -0.55]];
   const cones = (seg) => [[1.5, 2.2, 2.6], [1.15, 1.9, 3.9], [0.75, 1.6, 5.0]].map(([r, h, y]) => {
