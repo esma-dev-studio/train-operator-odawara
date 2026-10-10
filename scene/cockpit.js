@@ -112,7 +112,7 @@ export class Cockpit {
     /* ワイパー: 黒い腕・ブレード / ゴム / 根元のメッキ */
     this.matWiper = new THREE.MeshStandardMaterial({ color: 0x0c0d0f, roughness: 0.55, metalness: 0.4, fog: false });
     this.matRubber = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.9, metalness: 0, fog: false });
-    this.matChrome = new THREE.MeshStandardMaterial({ color: 0xb8bec4, roughness: 0.3, metalness: 0.8, fog: false });
+    this.matChrome = new THREE.MeshStandardMaterial({ color: 0x7d858b, roughness: 0.3, metalness: 0.8, fog: false });
     this.light = 1;          // 室内の明るさ(昼1・夜/トンネル小)
     this.wiperOn = false;
     this.wiperT = 0;
@@ -255,7 +255,8 @@ export class Cockpit {
     const k = this.light;
     this.matFrame.color.setScalar(0.35 + 0.65 * k);
     /* 天板: 昼の見た目が #262b2f 前後(パネル上端 --console-hi とつながる)になるよう係数を合わせた */
-    this.matDash.color.setScalar(0.18 + 0.5 * k);
+    const kd = 0.18 + 0.5 * k;
+    this.matDash.color.setRGB(kd * 0.95, kd * 1.12, kd * 1.3);   // 日なたの暖色をうち消して青みのグレーに
     this.matDash.envMapIntensity = 0.04 + 0.10 * k;
     /* ワイパー: 左右に往復(1往復1.4秒)。止めると休止位置へ戻る */
     if (wiper) this.wiperOn = true;

@@ -368,14 +368,16 @@ export class Cab {
     const a = h.ats;
     const pat = a && a.pattern < lim ? a.pattern : 999;
     const patI = pat < 999 ? Math.floor(pat / 2.5) : 99;
+    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置のLEDをきいろで1つ */
+    const tgtI = a && a.kind !== 'stop' && a.target < lim ? Math.floor(a.target / 2.5) : -1;
     const lamp = h.atsLamp;
     const blinking = lamp === 'brake' || (lamp === 'pattern' && pat < lim);
     const blink = blinking ? ((performance.now() / 250) | 0) & 1 : 0;   // 2Hzで点滅
     const v10 = (v * 10) | 0, night = this._night ? 1 : 0;
     const k = this._k;
-    if (k.v10 === v10 && k.lim === lim && k.patI === patI && k.lamp === lamp && k.blink === blink && k.night === night && k.w === W) return;
-    k.v10 = v10; k.lim = lim; k.patI = patI; k.lamp = lamp; k.blink = blink; k.night = night; k.w = W;
-    this._drawSpeedo(v, lim, pat, lamp, blink, night);
+    if (k.v10 === v10 && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.blink === blink && k.night === night && k.w === W) return;
+    k.v10 = v10; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.blink = blink; k.night = night; k.w = W;
+    this._drawSpeedo(v, lim, pat, tgtI, lamp, blink, night);
   }
 
   _ledPts(W) {
@@ -386,7 +388,7 @@ export class Cab {
     return this._led;
   }
 
-  _drawSpeedo(v, lim, pat, lamp, blink, night) {
+  _drawSpeedo(v, lim, pat, tgtI, lamp, blink, night) {
     const c = this.ctx, W = this.speedo.width, R = W / 2;
     const small = (this._cssW || 150) < 100;
     const dial = this._dial(W, night, small);
@@ -394,7 +396,8 @@ export class Cab {
     c.clearRect(0, 0, W, W);
     c.drawImage(dial, 0, 0);
 
-    /* LEDリング: みどり=だいじょうぶ / きいろ=このさき下げる / あか=制限 / 消灯=制限より上 */
+    /* LEDリング: みどり=だいじょうぶ / きいろ=このさき下げる(パターンより上・つぎの制限の目標) /
+     * あか=いまの制限 / 消灯=制限より上 */
     const L = this._ledPts(W), pts = L.pts, rd = L.rd;
     const limI = Math.floor(Math.min(lim, VMAX) / 2.5);
     const greenMax = Math.min(lim, pat);
@@ -404,6 +407,7 @@ export class Cab {
       let ci;
       if (i > limI) ci = 3;
       else if (i === limI) ci = 2;
+      else if (i === tgtI) ci = 1;
       else if (d <= greenMax) ci = 0;
       else ci = lamp === 'pattern' && blink ? 3 : 1;
       if (lamp === 'brake' && ci !== 3) ci = blink ? 3 : 2;
@@ -460,7 +464,8 @@ export class Cab {
   }
 
   _lcdBox(R, small) {
-    return small ? { x: R - R * 0.46, y: R + R * 0.36, w: R * 0.92, h: R * 0.3 }
+    /* 小さい速度計: 0 と 120 の数字にかからないよう、下のすきまいっぱいに */
+    return small ? { x: R - R * 0.41, y: R + R * 0.53, w: R * 0.82, h: R * 0.27 }
       : { x: R - R * 0.30, y: R + R * 0.40, w: R * 0.60, h: R * 0.24 };
   }
 
