@@ -525,9 +525,10 @@ export const texSuburbGround = (aniso) => canvasTex(512, 512, (c) => {
     c.fillStyle = R() < 0.5 ? 'rgba(120,112,80,0.25)' : 'rgba(70,84,52,0.25)';
     c.beginPath(); c.ellipse(R() * 512, R() * 512, 10 + R() * 40, 8 + R() * 30, R() * 3, 0, 7); c.fill();
   }
-  for (let i = 0; i < 22; i++) {
-    const w = 50 + R() * 110, h = 50 + R() * 100, x = R() * 512, y = R() * 512;
-    c.fillStyle = R() < 0.7 ? '#8d8a83' : '#9a968c'; wrapRect(c, 512, 512, x, y, w, h);
+  const lots = ['#8d8a83', '#9a968c', '#7a7770', '#85827a'];
+  for (let i = 0; i < 16; i++) {
+    const w = 40 + R() * 80, h = 40 + R() * 60, x = R() * 512, y = R() * 512;
+    c.fillStyle = lots[(R() * 4) | 0]; wrapRect(c, 512, 512, x, y, w, h);
     c.fillStyle = '#3f4d31';
     if (R() < 0.7) wrapRect(c, 512, 512, x, y - 5, w, 5);
     if (R() < 0.5) wrapRect(c, 512, 512, x - 5, y, 5, h);
@@ -806,15 +807,16 @@ function bracketGeo(b) {
   const acc = newAcc();
   const steel = new THREE.Color(0x7d8287), ins = new THREE.Color(0x6b3f2a);
   const DX = brkDX(b);
-  accCyl(acc, V3(0, b.top + 0.05, 0), V3(0, b.pipeBot, 0), 0.03, steel, false, 6);
+  /* 吊り下げ管(太さ約8cm)と、懸垂がいし3連(直径約22cm・茶色の磁器) */
+  accCyl(acc, V3(0, b.top + 0.05, 0), V3(0, b.pipeBot, 0), 0.04, steel, false, 6);
   for (let k = 0; k < 3; k++) {
-    const y = b.top - 0.16 - k * 0.075;
-    accCyl(acc, V3(0, y - 0.025, 0), V3(0, y + 0.025, 0), 0.07, ins, true, 5);
+    const y = b.top - 0.17 - k * 0.085;
+    accCyl(acc, V3(0, y - 0.03, 0), V3(0, y + 0.03, 0), 0.11, ins, true, 6);
   }
-  accBar(acc, V3(0, b.msgY, 0), V3(DX + 0.05, b.msgY, 0), 0.045, 0.045, AZ, steel);
+  accBar(acc, V3(0, b.msgY, 0), V3(DX + 0.05, b.msgY, 0), 0.055, 0.055, AZ, steel);
   for (let k = 0; k < 3; k++) {
-    const x = 0.12 + k * 0.07;
-    accCyl(acc, V3(x - 0.02, b.msgY, 0), V3(x + 0.02, b.msgY, 0), 0.05, ins, true, 5);
+    const x = 0.14 + k * 0.08;
+    accCyl(acc, V3(x - 0.025, b.msgY, 0), V3(x + 0.025, b.msgY, 0), 0.085, ins, true, 6);
   }
   accBar(acc, V3(0, b.pipeBot, 0), V3(DX, b.wireY, 0), 0.045, 0.045, AZ, steel);
   accBar(acc, V3(DX - 0.05, b.wireY + 0.02, 0), V3(DX + 0.05, b.wireY + 0.02, 0), 0.06, 0.06, AZ, steel);
@@ -1069,7 +1071,9 @@ export function updateExitGlow(rs) {
   if (!eg || !eg.items.length) return;
   const cs = rs._camS != null ? rs._camS : rs.sim ? rs.sim.pos : 0;
   const look = rs.look;
-  const key = look ? look.rev : `${rs.timeOfDay}|${rs.weather}`;
+  /* 見た目の設定の番号(P4 の look.rev。無いときは時間帯・天気が変わったら番号を進める。文字列は作らない) */
+  if (!look && (eg.tod !== rs.timeOfDay || eg.wx !== rs.weather)) { eg.tod = rs.timeOfDay; eg.wx = rs.weather; eg.fk = (eg.fk || 0) + 1; }
+  const key = look ? look.rev : eg.fk;
   const indoor = look ? (look.indoor || (look.k != null && look.k < 0.95)) : !!rs._inTunnelNow;
   if (key !== eg.key) {
     if (!indoor && rs.scene.fog && rs.scene.fog.color) {
@@ -1077,9 +1081,11 @@ export function updateExitGlow(rs) {
       eg.mat.color.copy(rs.scene.fog.color).multiplyScalar(1.3);
     } else if (eg.key === null) {
       eg.mat.color.setHex(GLOW_FALLBACK[rs.timeOfDay] || GLOW_FALLBACK.day).multiplyScalar(1.3);
+      eg.key = -1;
     }
   }
-  for (const it of eg.items) it.mesh.visible = cs > it.from && cs < it.to;
+  const items = eg.items;
+  for (let i = 0; i < items.length; i++) items[i].mesh.visible = cs > items[i].from && cs < items[i].to;
 }
 
 /* ---------------- 多摩川橋梁(ワーレントラス2連・堤防・橋脚) ---------------- */
