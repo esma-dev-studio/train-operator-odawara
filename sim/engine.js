@@ -288,7 +288,13 @@ export class TrainSim {
     /* 停車中でドアが開いていたら力行は入らない */
     if (n > 0 && this.doorOpen) return;
     this.notch = n;
-    if (n === -8) { this.score.ebUsed++; this._emit('eb'); }
+    /* 非常ブレーキの減点は「走っているとき」だけ。停車中・ドア開きでレバーを
+     * いじっただけ(子どもがよくやる)では減点しない。音は鳴らす(moving で強さを変える) */
+    const moving = this.v > 3 && !this.doorOpen;
+    if (n === -8) {
+      if (moving) this.score.ebUsed++;
+      this._emit('eb', { moving });
+    }
   }
 
   /* ============ 毎フレーム ============ */
@@ -474,7 +480,8 @@ export class TrainSim {
   skipDwell() {
     if (!this.doorOpen || this.finished) return false;
     const schedDep = this.timetable[Math.max(0, this.stopIdx - 1)].dep;
-    const target = Math.max(this.t + 4, schedDep - 120);
+    /* 6秒後: ドアチャイム(dep-10)と「しまった」音(dep-4)が同じ瞬間に重ならないように */
+    const target = Math.max(this.t + 6, schedDep - 120);
     if (target < this._departTime - 0.5) {
       this._departTime = target;
       this._melodyDone = true;   // メロディは省略（すぐドアチャイム）
@@ -524,7 +531,15 @@ export class TrainSim {
    * 力行・惰行中や停止中は null。ATSは考えない（運転士の目安）。 */
   predictStop() {
     if (this.v < 0.5 || this.notch >= 0 || this.doorOpen) return null;
-    const wantB = this.notch === -8 ? TRAIN.ebDecel : TRAIN.maxServiceB * (-this.notch / TRAIN.brakeSteps);
+    return this.stopDistance(this.notch);
+  }
+
+  /* ノッチ n(-1..-8)のブレーキを「いま」かけたら、あと何mで止まるか。
+   * コーチの「ブレーキまで あと ◯m」の計算にも使う(物理は tick と同じ。粘着上限・下り坂で止まらないときは null) */
+  stopDistance(n) {
+    if (this.v < 0.5) return 0;
+    n = clamp(Math.round(n), -8, -1);
+    const wantB = n === -8 ? TRAIN.ebDecel : TRAIN.maxServiceB * (-n / TRAIN.brakeSteps);
     const cap = (ADHESION[this.weather] || ADHESION.clear) * 0.92;
     let v = this.v, b = this.brakeCur, a = this.accelCur, d = 0, s = this.pos;
     const dt = 0.1;
