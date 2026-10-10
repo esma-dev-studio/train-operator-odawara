@@ -14,9 +14,8 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { FACADE, facadeMaterial, uFcLit, uFcAmb } from './facade.js';
 import { poolTexture, makePoolMaterial } from './lightpool.js';
-import { addCars, carPaint, CAR_TYPES, CAR_LEN, CAR_WID, CAR_PAINTS } from './cars.js';
+import { addCars as addCarsRaw, carPaint, CAR_TYPES, CAR_LEN, CAR_WID, CAR_PAINTS } from './cars.js';
 import { buildShopSigns, signMaterial, SIGN_WORDS } from './shopsign.js';
-export { addCars };
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const HARD = 2, SOFT = 1;            // 占有の強さ: 2=線路・道路・駅など(絶対に避ける) 1=建物
@@ -564,11 +563,18 @@ export function buildTown(rs) {
   buildHouses(rs, T);
   T.obb = null;   // 配置が終わったら外形の表は不要
   /* 車庫・駐車場の車と店の看板(どちらも かたまりごとに1回の描画)。遠くでは小さすぎるので近いかたまりだけ描く */
-  addCars(rs, T.cars, T.groups.town).forEach((m) => nearOnly(T, m, 270));
+  addCarsRaw(rs, T.cars, T.groups.town).forEach((m) => nearOnly(T, m, 270));
   buildShopSigns(rs, T.groups.town, T.signs).forEach((m) => nearOnly(T, m, 650));
   T.carCount = T.cars.length; T.signCount = T.signs.length;
   T.cars = T.signs = null;
   buildSkyline(rs, T);
+}
+
+/* 踏切待ちの車(scene.js _buildCrossings から1回だけ): 種類ごとのインスタンス。450mより遠い踏切の車は描かない */
+export function addCars(rs, spots) {
+  const ms = addCarsRaw(rs, spots);
+  if (rs._town) ms.forEach((m) => nearOnly(rs._town, m, 450));
+  return ms;
 }
 
 /* 近いときだけ見せるかたまりに登録(外接矩形は形の箱+インスタンスの位置から)。
