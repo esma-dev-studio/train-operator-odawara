@@ -826,11 +826,27 @@ export class RailScene {
     const rt0 = r.getRenderTarget();
     try {
       r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
-      r.compile(this.scene, this.camera);
+      this._compileMain(false);
       this._prewarmTail();
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
     this._flushStale();
+  }
+
+  /* 運転台を別に重ね描きする(renderOverlay がある)ときは、その部品をシーン本体のコンパイルから外す
+   * (ブルーム用の描画先の版を作っても使わないため)。戻り値は compileAsync の Promise か null */
+  _compileMain(async) {
+    const r = this.renderer, ck = this.cockpit;
+    const ovl = ck && typeof ck.renderOverlay === 'function' && ck.scene && ck.scene.isScene && ck.root ? ck : null;
+    let par = null;
+    if (ovl && ovl.root.parent && ovl.root.parent !== ovl.scene) { par = ovl.root.parent; par.remove(ovl.root); }
+    try {
+      if (async && typeof r.compileAsync === 'function') return r.compileAsync(this.scene, this.camera);
+      r.compile(this.scene, this.camera);
+      return null;
+    } finally {
+      if (par) par.add(ovl.root);
+    }
   }
 
   /* 運転開始の暗転中に使う版: シェーダの完成を待つ間、ほかの処理を止めない(compileAsync)。
@@ -855,8 +871,7 @@ export class RailScene {
       let p = null;
       try {
         r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
-        p = typeof r.compileAsync === 'function' ? r.compileAsync(this.scene, this.camera) : null;
-        if (!p) r.compile(this.scene, this.camera);
+        p = this._compileMain(true);
       } catch (e) { p = null; }
       r.setRenderTarget(prev);
       if (p) { try { await p; } catch (e) { /* 描画時にコンパイルされるだけ */ } }
@@ -877,11 +892,11 @@ export class RailScene {
   /* prewarm の後半(同期): 運転台の重ね描き・背景とブルーム各パス・影の深度シェーダ */
   _prewarmTail() {
     const r = this.renderer;
-    /* 運転台の重ね描き(キャンバスへ直接描く)の材質 */
+    /* 運転台の重ね描き(キャンバスへ直接描く)の材質。まだカメラの子のままでも、重ね描き用の版を作る */
     const ck = this.cockpit;
     if (ck && ck.scene && ck.scene.isScene) {
       r.setRenderTarget(null);
-      r.compile(ck.scene, this.camera);
+      r.compile(ck.root && typeof ck.renderOverlay === 'function' ? ck.root : ck.scene, this.camera, ck.scene);
     }
     const shadows = r.shadowMap.enabled && this.sun && this.sun.castShadow;
     if (this.composer) {
