@@ -590,7 +590,7 @@ function buildStreets(rs, T) {
   };
 
   /* (a) 側道: 300〜900mの区間を左右交互に(6割は左) */
-  const fr = FR(), fr2 = FR();
+  const fr = FR();
   const runs = [];
   let s = 150, lastSide = 0;
   while (s < L - 120) {
@@ -711,7 +711,6 @@ function buildStreets(rs, T) {
       }
     }
   });
-  void fr2;
 
   /* --- メッシュ化 --- */
   const g = T.groups.streets;
@@ -1044,7 +1043,7 @@ function ringCanvas(kind) {
     c.clearRect(0, 0, w, h);
     if (kind === 'hills') {
       const layers = [['#93a39a', 0.45, 120, 40], ['#748a74', 0.7, 92, 34], ['#57704f', 0.9, 66, 26]];
-      layers.forEach(([col, a, base, amp], li) => {
+      layers.forEach(([col, a, base, amp]) => {
         const ph = [r() * 7, r() * 7, r() * 7];
         c.globalAlpha = a; c.fillStyle = col;
         c.beginPath(); c.moveTo(0, h);
@@ -1061,7 +1060,6 @@ function ringCanvas(kind) {
           const y = h - base - amp * (0.5 * Math.sin(t * 3 + ph[0]) + 0.3 * Math.sin(t * 7 + ph[1]) + 0.2 * Math.sin(t * 17 + ph[2]));
           c.beginPath(); c.arc(x, y + 1, 2 + r() * 3, 0, 7); c.fill();
         }
-        void li;
       });
       c.globalAlpha = 1;
       return;
@@ -1394,7 +1392,8 @@ function applyLook(rs, T, L) {
   }
 }
 
-export function updateTown(rs, dt) {
+/* dt は今は使わない(10フレームごとの判定はフレーム数で数える) */
+export function updateTown(rs, dt) {   // eslint-disable-line no-unused-vars
   const T = rs._town;
   if (!T || !rs.sim) return;
   T.frame++;
@@ -1464,5 +1463,4 @@ export function updateTown(rs, dt) {
       c.obj.visible = dx * dx + dz * dz < 450 * 450;
     }
   }
-  void dt;
 }
