@@ -1403,7 +1403,8 @@ export function stationBodiesP1(rs, list) {
   const rng = makeRng(555);
   const g = rs._town ? rs._town.groups.town : rs.world;
   const items = list.map((b) => paint({ ...b, s: 0, sh: true }, pick([0xe4e2dc, 0xd9dcdf, 0xcfc9bd], rng), 0.03, rng));
-  emitInstanced(g, geoUnitBoxOpen(), M.office, items, () => 0, { shadow: true });
+  /* 駅の上の橋上駅舎(P2)は下から見えるので、底のある箱のまま */
+  emitInstanced(g, geoUnitBox(), M.office, items, () => 0, { shadow: true });
 }
 
 /* =========================================================
