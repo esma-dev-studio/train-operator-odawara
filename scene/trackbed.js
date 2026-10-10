@@ -14,8 +14,10 @@ import * as THREE from '../vendor/three.module.min.js';
 export const QUAD_OFF = [7.0, 10.8];
 /* 狭軌のレール頭部中心(scene.js と同じ値) */
 export const RAIL_HALF = 1.067 / 2 + 0.032;
-/* 架線柱の位置(線路中心から。+が左) */
-export const POLE = { L: 3.5, R: -8.3, stL: 4.75, stR: -8.55, quadL: QUAD_OFF[1] + 3.1 };
+/* 架線柱の位置(線路中心から。+が左)。
+ * 左の柱は駅でも駅の外でも同じ 4.75m(ホームの背の内側・柵の手前)にそろえる:
+ * 線路わきの撮影カメラ(左4.4m)の目の前に柱が立たず、門型ビームの形も1種類で済む */
+export const POLE = { L: 4.75, R: -8.45, stL: 4.75, stR: -8.45, quadL: QUAD_OFF[1] + 3.1 };
 /* トンネルの壁(左は複々線の外側) */
 export const TUN = { L: QUAD_OFF[1] + 2.4, R: -9.5, H: 6.2 };
 
@@ -850,6 +852,7 @@ export function gantryVariant(s, inStation, qi = curQI) {
   return quadOffAt(s, 1, qi) > 0.3 ? 'quad' : inStation ? 'station' : 'double';
 }
 export const GANTRY_POLES = { double: [POLE.L, POLE.R], station: [POLE.stL, POLE.stR], quad: [POLE.quadL, POLE.R] };
+const sameSpan = POLE.L === POLE.stL && POLE.R === POLE.stR;
 
 export function buildCatenary(rs, o = {}) {
   const F = rs.frames, step = rs.step, L = rs.line.meta.length, qi = quadInfo(rs.line);
@@ -884,7 +887,7 @@ export function buildCatenary(rs, o = {}) {
     if (sp.type !== 'terminal') { if (quadSep(sp.s, 0, qi) >= 2.5) keys.push('q0'); if (quadSep(sp.s, 1, qi) >= 2.5) keys.push('q1'); }
     if (sp.type === 'gantry') {
       const v = gantryVariant(sp.s, inStation(sp.s), qi);
-      gList[v].push({ m: m4.makeBasis(fr.left, UPV, fr.t).setPosition(fr.p).clone(), s: sp.s });
+      gList[sameSpan && v === 'station' ? 'double' : v].push({ m: m4.makeBasis(fr.left, UPV, fr.t).setPosition(fr.p).clone(), s: sp.s });
     }
     const bv = sp.type === 'tunnel' ? 'tunnel' : 'normal';
     const B = BRK[bv], DX = brkDX(B);
@@ -903,21 +906,23 @@ export function buildCatenary(rs, o = {}) {
   const shadows = !!o.shadows;
   /* 門型ビームは450mごとのまとまりにして、カメラから約800m以内だけ描く(遠くは霧でほとんど見えない) */
   rs._brkCells = [];
-  [['double', gantryGeo(POLE.L, POLE.R)], ['station', gantryGeo(POLE.stL, POLE.stR)], ['quad', gantryGeo(POLE.quadL, POLE.R)]].forEach(([k, geo]) => {
+  [['double', POLE.L, POLE.R], ['station', POLE.stL, POLE.stR], ['quad', POLE.quadL, POLE.R]].forEach(([k, xl, xr]) => {
+    if (!gList[k].length) return;
+    const geo = gantryGeo(xl, xr);
     const cells = new Map();
     gList[k].forEach((g) => {
       const c = Math.floor(g.s / 450);
       if (!cells.has(c)) cells.set(c, []);
-      cells.get(c).push(g.m);
+      cells.get(c).push(g);
     });
     cells.forEach((list, c) => {
       const im = new THREE.InstancedMesh(geo, M.catenary, list.length);
-      list.forEach((m, i) => im.setMatrixAt(i, m));
+      list.forEach((g, i) => im.setMatrixAt(i, g.m));
       im.castShadow = shadows;
       im.userData.noSplit = true;
       im.computeBoundingSphere();
       rs.world.add(im);
-      rs._brkCells.push({ mesh: im, s0: c * 450, s1: c * 450 + 450, r: 800 });
+      rs._brkCells.push({ mesh: im, s0: c * 450, s1: c * 450 + 450, r: 800, sList: list.map((g) => g.s) });
     });
   });
   /* ブラケットは小さいので、カメラから約400m以内の区間だけ描く(300mごとのまとまり) */
@@ -1061,13 +1066,36 @@ export function buildTunnel(rs, o = {}) {
 }
 
 /* ブラケットの遠近(毎フレーム): カメラの位置から遠い区間は描かない */
+const _hideM = new THREE.Matrix4().makeScale(0, 0, 0);
 export function updateCatenaryLod(rs) {
   const cells = rs._brkCells;
   if (!cells) return;
-  const cs = rs._camS != null ? rs._camS : rs.sim ? rs.sim.pos : 0;
+  const front = rs.camMode === 'front';
+  const cs = front && rs._frontCamS != null ? rs._frontCamS : rs._camS != null ? rs._camS : rs.sim ? rs.sim.pos : 0;
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i];
     c.mesh.visible = c.s1 > cs - c.r && c.s0 < cs + c.r;
+  }
+  /* 線路わきの撮影カメラ(左4.4m)のすぐ横に立つ門型ビームは隠す(柱が画面の真ん中をふさがないように)。
+   * カメラの場所が変わったときだけ行列を書きかえる */
+  const hk = front ? Math.round(cs) : null;
+  if (hk === rs._gHideKey) return;
+  rs._gHideKey = hk;
+  const H = rs._gHidden || (rs._gHidden = []);
+  for (let i = 0; i < H.length; i++) { H[i].mesh.setMatrixAt(H[i].j, H[i].m); H[i].mesh.instanceMatrix.needsUpdate = true; }
+  H.length = 0;
+  if (!front) return;
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (!c.sList || c.s1 < cs - 10 || c.s0 > cs + 10) continue;
+    for (let j = 0; j < c.sList.length; j++) {
+      if (Math.abs(c.sList[j] - cs) > 7) continue;
+      const m = new THREE.Matrix4();
+      c.mesh.getMatrixAt(j, m);
+      H.push({ mesh: c.mesh, j, m });
+      c.mesh.setMatrixAt(j, _hideM);
+      c.mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 }
 

@@ -856,7 +856,7 @@ export class RailScene {
   _buildTrack() {
     this.quadOff = QUAD_OFF;
     this._qi = quadInfo(this.line);
-    this._exitGlow = null; this._brkCells = null;   // 前の路線の分(作り直しで捨てられる)は使わない
+    this._exitGlow = null; this._brkCells = null; this._gHidden = null; this._gHideKey = undefined;   // 前の路線の分は使わない
     buildTrackBed(this, { aniso: QUALITY[this.quality].aniso });
   }
 
