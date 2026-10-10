@@ -58,11 +58,13 @@ const errors = [];
 async function pageFor(vp = [1280, 800], touch = false) {
   const key = vp.join('x') + (touch ? 't' : '');
   if (pages.has(key)) return pages.get(key);
+  /* 別サイズのページを開く前に、前のページを閉じる(裏で描画し続けてCPUを取り合うため) */
+  for (const [k, p] of pages) { await p.context().close(); pages.delete(k); }
   const ctx = await browser.newContext({ viewport: { width: vp[0], height: vp[1] }, deviceScaleFactor: 1, hasTouch: touch });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${key}: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`${key}: ${m.text()}`); });
-  await page.goto(`${BASE}/index.html?debug=1&q=${Q}&v=${Date.now()}`);
+  await page.goto(`${BASE}/index.html?debug=1&q=${Q}&v=${Date.now()}`, { timeout: 180000 });
   await page.waitForFunction(() => window.__test && __test.app.mode === 'title', null, { timeout: 180000 });
   pages.set(key, page);
   return page;
