@@ -304,7 +304,7 @@ const boardDraw = (bg, fg, text, size, weight = 900, border = '#111') => (c, s) 
   c.fillStyle = bg; c.fillRect(0, 0, s, s);
   c.strokeStyle = border; c.lineWidth = 7 * k; c.strokeRect(6 * k, 6 * k, s - 12 * k, s - 12 * k);
   c.fillStyle = fg;
-  fitText(c, text, s / 2, s / 2 + 4 * k, s - 26 * k, size * k, weight);
+  fitText(c, text, s / 2, s / 2 + 4 * k, s - 20 * k, size * k, weight);
 };
 
 export function lineBoard(rs, key) {
@@ -314,10 +314,10 @@ export function lineBoard(rs, key) {
   const A = boardAtlas(rs);
   let fn, small = false;
   const [kind, val] = key.split(':');
-  if (kind === 'lim') fn = boardDraw('#e8bf1f', '#111111', val, val.length > 2 ? 64 : 80);
+  if (kind === 'lim') fn = boardDraw('#e8bf1f', '#111111', val, val.length > 2 ? 72 : 88);
   else if (kind === 'kai') fn = boardDraw('#f4f4f0', '#111111', '解', 78);
   else if (kind === 'stop8') fn = boardDraw('#ffffff', '#111111', '8', 96, 900, '#111');
-  else if (kind === 'appr') fn = boardDraw('#f4f4f0', '#111111', val, val.length > 2 ? 54 : 74, 900, '#1d2a36');
+  else if (kind === 'appr') fn = boardDraw('#f4f4f0', '#111111', val, val.length > 2 ? 72 : 90, 900, '#1d2a36');
   else if (kind === 'km') { fn = boardDraw('#f2f2ee', '#16283a', val, val.length > 1 ? 70 : 84, 900, '#16283a'); small = true; }
   else if (kind === 'nori') { fn = boardDraw('#20272d', '#ffffff', val, 88, 900, '#f2c230'); small = true; }
   else fn = boardDraw('#ffffff', '#111111', val || key, 60);

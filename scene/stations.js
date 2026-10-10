@@ -342,7 +342,7 @@ function stationMats() {
   clockTex.colorSpace = THREE.SRGBColorSpace;
   clockTex.anisotropy = 4;
   drawClock(clockCv.getContext('2d'), 10, 0);
-  const clock = new THREE.MeshStandardMaterial({ map: clockTex, alphaTest: 0.5, emissive: 0xffffff, emissiveMap: clockTex, emissiveIntensity: 0.15, roughness: 0.4 });
+  const clock = new THREE.MeshBasicMaterial({ map: clockTex, alphaTest: 0.5, color: new THREE.Color(0.95, 0.95, 0.95) });
   const out = { atlas, st, stUG, pool, poolIn, strip, fixture, clock, clockTex };
   Object.keys(out).forEach((k) => { if (out[k].isMaterial) out[k].name = 'st-' + k; });
   return out;
@@ -423,7 +423,8 @@ export function buildStations(rs) {
     const prev = rs.line.stations[si - 1], next = rs.line.stations[si + 1];
     const num = up ? nSt - si : si + 1;
     W.signInfo.push({ st, prev, next, num });
-    const smat = new THREE.MeshStandardMaterial({ map: W.signPH, emissive: 0xffffff, emissiveMap: W.signPH, emissiveIntensity: 0.2, roughness: 0.55 });
+    /* 駅名標は内照式(中から光る看板): ライトの影響を受けない材質にして、夜は少し暗めに */
+    const smat = new THREE.MeshBasicMaterial({ map: W.signPH, color: new THREE.Color(0.95, 0.95, 0.95) });
     smat.name = 'st-sign';
     W.signMats.push(smat);
     if (isTerm) W.termSign = smat;
@@ -533,15 +534,15 @@ export function buildStations(rs) {
         twoFaced(c, n, 1.9, 0.65, true);
         legs(c, n, yb, 1.25 + 0.65 + 0.03, 0.82);
       });
-      /* ホームの先端: 線路に直角、入ってくる運転台のほうを向く */
-      frameInto(rs, st.s + 12, f);
+      /* ホームの先端: 線路に直角、入ってくる運転台のほうを向く(停車中の運転台から読める大きさ) */
+      frameInto(rs, st.s + 11, f);
       flatT(f, n).negate();
       c.copy(f.p).addScaledVector(f.left, mid(P));
       const yb = f.p.y + 1.05;
-      const hh = (1.9 * 138) / 512;
-      c.y = yb + 1.25 + hh / 2;
-      twoFaced(c, n, 1.9, hh, false);
-      legs(c, n, yb, 1.25 + hh + 0.03, 0.82);
+      const ww = 2.5, hh = (ww * 138) / 512;
+      c.y = yb + 1.2 + hh / 2;
+      twoFaced(c, n, ww, hh, false);
+      legs(c, n, yb, 1.2 + hh + 0.03, 1.08);
     });
 
     /* ---- 停止位置目標「8」: 白い板に黒い8、へりから0.35mの柱(2.0m)の上 ---- */
@@ -1268,8 +1269,7 @@ function updateSignPool(rs) {
   const lo = Math.max(0, hi - SIGN_POOL + 1);
   W.signPool.forEach((e) => {
     if (e.si >= 0 && (e.si < lo || e.si > hi)) {
-      const m = W.signMats[e.si];
-      m.map = W.signPH; m.emissiveMap = W.signPH;
+      W.signMats[e.si].map = W.signPH;
       e.si = -1;
     }
   });
@@ -1279,8 +1279,7 @@ function updateSignPool(rs) {
     if (!e) { e = { tex: texStationSign(), si: -1 }; W.signPool.push(e); }
     e.si = i;
     e.tex.userData.setStation(W.signInfo[i]);
-    const m = W.signMats[i];
-    m.map = e.tex; m.emissiveMap = e.tex;
+    W.signMats[i].map = e.tex;
   }
 }
 
@@ -1316,8 +1315,10 @@ function stationLook(rs) {
   M.st.emissiveIntensity = night ? 1.6 : eve ? 0.8 : wet ? 0.5 : 0;     // 屋根の照明の帯
   M.pool.visible = night || eve || wet;
   M.pool.opacity = night ? 1 : eve ? 0.35 : 0.15;
-  M.clock.emissiveIntensity = night ? 0.4 : eve ? 0.3 : 0.15;
-  W.signMats.forEach((m) => { m.emissiveIntensity = night ? 0.45 : eve ? 0.32 : 0.2; });
+  /* 内照式の駅名標・時計: 夜は光りすぎない明るさに(にじみ過ぎない) */
+  const lit = night ? 0.62 : eve ? 0.8 : 0.95;
+  M.clock.color.setScalar(lit);
+  W.signMats.forEach((m) => m.color.setScalar(lit));
   if (rs._atlas) rs._atlas.mat.emissiveIntensity = night || eve ? 0.5 : 0.12;   // 停止位置「8」などの標識
   if (W.termBld) W.termBld.emissiveIntensity = night ? 1.0 : eve ? 0.35 : 0;
 }
