@@ -783,10 +783,13 @@ export class RailScene {
       const comp = new EffectComposer(this.renderer, rt);
       comp.addPass(new RenderPass(this.scene, this.camera));
       const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.82);
-      /* 中: にじみの計算は1/4の解像度で(最後の重ね合わせは元の解像度のまま) */
+      /* 中: にじみの計算は1/4の解像度で(最後の重ね合わせは元の解像度のまま)。
+       * 1/4 にすると いちばん粗い段が画面ぜんたいに広がって明るくなりすぎる(ターミナルで平均+7)ので、
+       * 各段の重みを0.74倍にして 1/2 のときの明るさにそろえる(ターミナル・夜とも平均の差0.1以内で実測) */
       if (this.quality === 'mid') {
         const ss = bloom.setSize.bind(bloom);
         bloom.setSize = (w, h) => ss(Math.max(1, w >> 1), Math.max(1, h >> 1));
+        bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74));
       }
       comp.addPass(bloom);
       comp.addPass(new OutputPass());
@@ -2539,7 +2542,8 @@ export class RailScene {
     if (!this._shTgt) this._shTgt = new THREE.Vector3(1e9, 0, 0);
     /* act: 速く動くもの(毎フレーム) / slow: ゆっくり動くもの(ホームを歩く人・踏切の棒。3フレームに1回で足りる) */
     let act = false, slow = false;
-    if (tg.x !== this._shTgt.x || tg.y !== this._shTgt.y || tg.z !== this._shTgt.z) { this._shTgt.copy(tg); act = true; }
+    /* 影の箱が動いた(2cm以上。止まっていても位置が計算の誤差でわずかにゆれるので、小さい差は数えない) */
+    if (tg.distanceToSquared(this._shTgt) > 0.0004) { this._shTgt.copy(tg); act = true; }
     if (!act && dt > 0 && sim) {
       if (sim.v > 0.5) act = true;
       else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(this._camS, 250)) act = true;
