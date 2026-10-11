@@ -6,9 +6,11 @@
  *   npx http-server -p 8123 -c-1 .
  *   node tools/shots.mjs <出力フォルダ> [場面名の一部でしぼる...]
  * 環境変数: BASE(既定 http://localhost:8123) / Q=high|mid|low(既定mid) / GPU=1(実GPU)
- * 場面ごとの描画負荷(draw call・三角形・シェーダー数)を <出力フォルダ>/calls.json に書く。
+ * 場面ごとの描画負荷(draw call・三角形・シェーダー数・影の地図のぶんの draw call)を <出力フォルダ>/calls.json に書く。
  * 場面の項目: setup / advance / approach / notch / cam / finish / arrive(停車するまで自動運転) /
- *            overrun(「8」を m すぎて止まる) / vp(画面サイズ) / touch / dpr(画素密度) / wait
+ *            overrun(「8」を m すぎて止まる) / toCrossing(つぎの踏切の m 手前まで自動運転) /
+ *            vp(画面サイズ) / touch / dpr(画素密度) / wait /
+ *            loading(よみこみ画面: data/line.json を おくらせて、とちゅうで撮る) / fadeCard(しゅっぱつの暗転カード)
  * ========================================================= */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,6 +61,21 @@ const SCENES = [
   { name: '30_overrun', setup: { start: 9, end: 11 }, approach: 120, overrun: 15.2, cam: 'cab', wait: 1500 },
   /* iPadの たて: 列車えらび(じかん・天気・出発が 下のパネルに 見えているか) */
   { name: '31_select_portrait', screen: 'select', vp: [768, 1024], touch: true, dpr: 2 },
+  /* デザイン第3回で ふやした場面 */
+  { name: '32_evening_cab_up', setup: { start: 9, dir: 'up', daytime: 'evening' }, advance: 45, cam: 'cab' },
+  { name: '33_night_rain_cab', setup: { start: 3, daytime: 'night', weather: 'rain' }, advance: 45, cam: 'cab' },
+  /* 終点の手前(ゴールの演出で使う そらからの視点) */
+  { name: '34_drone_goal', setup: { start: 21, end: 22 }, approach: 157, cam: 'drone' },
+  { name: '35_drone_setagaya', setup: { start: 11 }, advance: 60, cam: 'drone' },
+  /* 踏切の 60m 手前(遮断機・警報灯・待っている車) */
+  { name: '36_crossing_cab', setup: { start: 18 }, toCrossing: 60, cam: 'cab' },
+  { name: '37_up_cab_suburb', setup: { start: 2, dir: 'up' }, advance: 45, cam: 'cab' },
+  /* iPadの 画面分割(Split View 678x1024) */
+  { name: '38_ipad_split', setup: { start: 8 }, advance: 40, cam: 'cab', vp: [678, 1024], touch: true, dpr: 2 },
+  /* よみこみ画面(線路データを4秒おくらせて、2秒のところで撮る) */
+  { name: '39_loading', loading: { delay: 4000, at: 2000 } },
+  /* しゅっぱつの暗転カード(__test.fadeCard) */
+  { name: '40_fade_card', setup: { start: 9 }, fadeCard: true },
 ];
 
 const pick = filters.length ? SCENES.filter((s) => filters.some((f) => s.name.includes(f))) : SCENES;
@@ -83,8 +100,30 @@ async function pageFor(vp = [1280, 800], touch = false, dpr = 1) {
   return page;
 }
 
+/* よみこみ画面だけは 新しいページで(線路データを おくらせる) */
+async function shootLoading(sc) {
+  for (const [k, p] of pages) { await p.context().close(); pages.delete(k); }
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+  const page = await ctx.newPage();
+  page.on('pageerror', (e) => errors.push(`loading: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`loading: ${m.text()}`); });
+  await page.route('**/data/line.json*', async (route) => {
+    await new Promise((r) => setTimeout(r, sc.loading.delay));
+    await route.continue();
+  });
+  await page.goto(`${BASE}/index.html?debug=1&q=${Q}&v=${Date.now()}`, { timeout: 180000 });
+  await page.waitForTimeout(sc.loading.at);
+  await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
+  await ctx.close();
+}
+
 for (const sc of pick) {
   const t0 = Date.now();
+  if (sc.loading) {
+    await shootLoading(sc);
+    console.log(`${sc.name}  ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    continue;
+  }
   const page = await pageFor(sc.vp, sc.touch, sc.dpr || 1);
   if (sc.screen === 'title') {
     await page.evaluate(() => { const a = __test.app; if (a.mode !== 'title') a.go('title'); });
@@ -98,6 +137,18 @@ for (const sc of pick) {
     await page.waitForTimeout(800);
     if (sc.advance) await page.evaluate((s) => __test.advance(s), sc.advance);
     if (sc.approach) await page.evaluate((m) => __test.approach(m), sc.approach);
+    if (sc.toCrossing) {
+      /* つぎの踏切(scene.crossSpots)の m 手前まで、1秒ずつ自動運転で進める */
+      const r = await page.evaluate((m) => {
+        const A = __test.app, S = A.scene, sim = A.sim;
+        const next = (S.crossSpots || []).filter((c) => c - m > sim.pos + 5).sort((a, b) => a - b)[0];
+        if (next == null) return null;
+        for (let i = 0; i < 3000 && !sim.ended && sim.pos < next - m; i++) __test.advance(0.5);
+        S._camPos = null;
+        return { crossing: Math.round(next), pos: Math.round(sim.pos) };
+      }, sc.toCrossing);
+      if (!r) errors.push(`${sc.name}: この先に踏切がない`);
+    }
     if (sc.notch != null) await page.evaluate((n) => __test.app.sim.setNotch(n), sc.notch);
     if (sc.cam) await page.evaluate((m) => __test.cam(m), sc.cam);
     if (sc.overrun) {
@@ -126,6 +177,9 @@ for (const sc of pick) {
         if (showing) { clearTimeout(a._stampT); clearTimeout(a._popT); }
         const fin = (el) => !el || !el.getAnimations || el.getAnimations().every((x) => x.playState === 'finished');
         if (!fin(document.querySelector('#stop-card'))) return false;
+        /* スタンプがカードの中に押されるとき(#sc-stamp)は、その演出が おわるまで */
+        const scs = document.querySelector('#sc-stamp');
+        if (scs && !fin(scs)) return false;
         if (!showing && a._popBusy) return false;   // スタンプの順番待ち
         return !showing || fin(document.querySelector('#stamp-pop-cv'));
       }, null, { timeout: 90000, polling: 250 }).catch(() => errors.push(`${sc.name}: 判定カードの表示待ちが時間切れ`));
@@ -142,28 +196,71 @@ for (const sc of pick) {
       }, null, { timeout: 90000, polling: 250 }).catch(() => errors.push(`${sc.name}: 成績票の演出待ちが時間切れ`));
     }
   }
+  /* 撮る場面に置いたら、運転(sim)の時計を止める(待っているあいだに列車が進んで 場面が ずれないように。
+   * 描画・計器・コーチは そのまま動く)。つぎの場面の setup で新しい運転になる */
+  if (sc.setup) {
+    await page.evaluate(() => {
+      const sim = __test.app.sim;
+      if (sim && !sim.__frozen) { sim.__frozen = true; sim.tick = function () { /* 撮影中は止める */ }; }
+    });
+  }
   await page.waitForTimeout(sc.wait || 2500);
   /* 運転開始の暗転(#fade)が ソフト描画では なかなか明けないので、明けきるまで待つ */
   await page.waitForFunction(() => {
     const f = document.querySelector('#fade');
     return !f || parseFloat(getComputedStyle(f).opacity) < 0.01;
   }, null, { timeout: 30000, polling: 200 }).catch(() => errors.push(`${sc.name}: 暗転が明けない`));
+  /* シェーダの準備(prewarmAsync)が まだ続いていれば 終わるまで(ソフト描画では 出発の10秒の待ちを こえることがある) */
+  await page.waitForFunction(() => { const S = __test.app.scene; return !S || !S._warming; }, null, { timeout: 180000, polling: 250 })
+    .catch(() => errors.push(`${sc.name}: シェーダの準備が終わらない`));
+  /* 画面の部品の登場アニメ・切りかえ(ブレーキめやす・「8」の目印など)が おわるまで(くりかえしのアニメは のぞく)。
+   * ソフト描画では CSS の時計が おくれるので */
+  await page.waitForFunction(() => document.getAnimations().every((a) => {
+    const t = a.effect && a.effect.getComputedTiming ? a.effect.getComputedTiming() : null;
+    return !t || t.iterations === Infinity || a.playState !== 'running';
+  }), null, { timeout: 30000, polling: 250 }).catch(() => { /* 撮るだけ */ });
+  if (sc.fadeCard) {
+    /* しゅっぱつの暗転カードを出して撮る(撮ったら もどす) */
+    const ok = await page.evaluate(() => { if (!__test.fadeCard) return false; __test.fadeCard(true); return true; });
+    if (!ok) errors.push(`${sc.name}: __test.fadeCard がない`);
+    await page.waitForFunction(() => {
+      const f = document.querySelector('#fade');
+      return !f || parseFloat(getComputedStyle(f).opacity) > 0.99;
+    }, null, { timeout: 30000, polling: 200 }).catch(() => { /* noop */ });
+    await page.waitForTimeout(600);
+  }
   await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
+  if (sc.fadeCard) await page.evaluate(() => { if (__test.fadeCard) __test.fadeCard(false); });
   /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える。
    * メニューの うしろは 3フレームに1回しか描かないので、3Dを描いた回数(__test.renders)で わる */
   const info = await page.evaluate(() => new Promise((resolve) => {
-    const r = __test.app.scene && __test.app.scene.renderer;
+    const S = __test.app.scene;
+    const r = S && S.renderer;
     if (!r) { resolve(null); return; }
-    const cnt = () => (__test.renders ? __test.renders() : 0);
+    /* 数えるのは実際に描いたコマ(GPUの おくれで描かなかったコマ・間引いた画面のコマは数えない) */
+    const cnt = () => (typeof S.drawCount === 'number' ? S.drawCount : __test.renders ? __test.renders() : 0);
+    /* 間引いて描く画面(成績票・スタンプ帳など)も1回は描かせる */
+    if (__test.redraw) __test.redraw();
+    const sm = r.shadowMap, smRender = sm.render;
+    let shadowCalls = 0;
     requestAnimationFrame(() => {
       r.info.autoReset = false; r.info.reset();
-      const r0 = cnt();
+      sm.render = function (...a) {
+        const c0 = r.info.render.calls;
+        const o = smRender.apply(this, a);
+        shadowCalls += r.info.render.calls - c0;
+        return o;
+      };
+      const r0 = cnt(), t0 = performance.now();
       let k = 0;
       const wait = () => {
         const n = cnt() - r0;
-        if (__test.renders && n < 1 && k++ < 30) { requestAnimationFrame(wait); return; }
+        /* ソフト描画ではGPUが追いつくまで描かないコマがある(scene の _paceSkip)。描くまで最大20秒待つ */
+        if (n < 1 && performance.now() - t0 < 20000) { if (__test.redraw && ++k % 10 === 0) __test.redraw(); requestAnimationFrame(wait); return; }
         const d = Math.max(1, n);
-        const o = { calls: Math.round(r.info.render.calls / d), triangles: Math.round(r.info.render.triangles / d), programs: r.info.programs ? r.info.programs.length : null };
+        const o = { calls: Math.round(r.info.render.calls / d), triangles: Math.round(r.info.render.triangles / d),
+          programs: r.info.programs ? r.info.programs.length : null, shadow: Math.round(shadowCalls / d) };
+        sm.render = smRender;
         r.info.autoReset = true;
         resolve(o);
       };
@@ -172,7 +269,7 @@ for (const sc of pick) {
   })).catch(() => null);
   if (info) perf[sc.name] = info;
   writeFileSync(join(out, 'calls.json'), JSON.stringify(perf, null, 1));
-  console.log(`${sc.name}  ${((Date.now() - t0) / 1000).toFixed(1)}s${info ? `  calls=${info.calls} tris=${info.triangles} prog=${info.programs}` : ''}`);
+  console.log(`${sc.name}  ${((Date.now() - t0) / 1000).toFixed(1)}s${info ? `  calls=${info.calls} (shadow ${info.shadow}) tris=${info.triangles} prog=${info.programs}` : ''}`);
 }
 await browser.close();
 if (errors.length) { console.error('★ エラー:\n' + [...new Set(errors)].join('\n')); process.exit(1); }

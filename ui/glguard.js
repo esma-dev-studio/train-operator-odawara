@@ -81,7 +81,8 @@ export function installGlGuard(app) {
           app._enterAttract();
         }
         if (typeof S.prewarmAsync === 'function') {
-          await Promise.race([S.prewarmAsync(), new Promise((r) => setTimeout(r, 12000))]);
+          /* 遅い端末でも 準備が終わってから明ける(止まったときだけ 30秒で先へ) */
+          await Promise.race([S.prewarmAsync(), new Promise((r) => setTimeout(r, 30000))]);
         } else if (typeof S.prewarm === 'function') {
           S.prewarm();
         }
