@@ -338,24 +338,51 @@ const boardDraw = (bg, fg, text, size, weight = 900, border = '#111') => (c, s) 
   fitText(c, text, s / 2, s / 2 + 4 * k, s - 20 * k, size * k, weight);
 };
 
-/* 停止位置の予告: 上に紺の帯「とまる まで」、下に大きな数字と小さな m(速度制限の黄色い板と見まちがえない) */
+/* 停止位置の予告: 大きな数字(板の高さの2/3)と小さな m。100・50 は上に紺の帯「とまる まで」
+ * (速度制限の黄色い板と見まちがえない)。300・200 は帯なしで数字をいちばん大きく(遠くから読める) */
 const drawAppr = (val) => (c, s) => {
   const k = s / 128;
+  const band = val === '100' || val === '50';
   c.fillStyle = '#f6f6f2'; c.fillRect(0, 0, s, s);
-  c.fillStyle = '#1f3a5f'; c.fillRect(0, 0, s, 27 * k);
   c.strokeStyle = '#1f3a5f'; c.lineWidth = 6 * k; c.strokeRect(3 * k, 3 * k, s - 6 * k, s - 6 * k);
-  c.fillStyle = '#ffffff'; fitText(c, 'とまる まで', s / 2, 15 * k, s - 18 * k, 18 * k, 700);
-  const maxW = s - 14 * k, gap = 2 * k, ms = 30 * k;
-  let ns = 64 * k;
+  if (band) {
+    c.fillStyle = '#1f3a5f'; c.fillRect(0, 0, s, 27 * k);
+    c.fillStyle = '#ffffff'; fitText(c, 'とまる まで', s / 2, 15 * k, s - 18 * k, 18 * k, 700);
+  }
+  const maxW = s - 12 * k, gap = 2 * k, ms = 26 * k;
+  let ns = 84 * k;
   c.font = `900 ${ns}px ${FONT}`;
   let nw = c.measureText(val).width;
   c.font = `700 ${ms}px ${FONT}`;
   const mw = c.measureText('m').width;
-  if (nw + gap + mw > maxW) { ns = Math.floor((ns * (maxW - gap - mw)) / nw); c.font = `900 ${ns}px ${FONT}`; nw = c.measureText(val).width; }
-  const x0 = s / 2 - (nw + gap + mw) / 2, yb = 104 * k;
+  /* 3けたは横だけ少し細くして、字の高さ(84px)を保つ */
+  let sx = 1;
+  if (nw + gap + mw > maxW) sx = Math.max(0.62, (maxW - gap - mw) / nw);
+  if (nw * sx + gap + mw > maxW) { ns = Math.floor((ns * (maxW - gap - mw)) / (nw * sx)); c.font = `900 ${ns}px ${FONT}`; nw = c.measureText(val).width; }
+  const tw = nw * sx + gap + mw;
+  const x0 = s / 2 - tw / 2, yb = (band ? 27 + (128 - 27) / 2 + 30 : 64 + 30) * k;
   c.fillStyle = '#111111'; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
-  c.font = `900 ${ns}px ${FONT}`; c.fillText(val, x0, yb);
-  c.font = `700 ${ms}px ${FONT}`; c.fillText('m', x0 + nw + gap, yb);
+  c.save(); c.translate(x0, yb); c.scale(sx, 1);
+  c.font = `900 ${ns}px ${FONT}`; c.fillText(val, 0, 0);
+  c.restore();
+  c.font = `700 ${ms}px ${FONT}`; c.fillText('m', x0 + nw * sx + gap, yb);
+};
+/* 踏切警標(×印)の黄と黒のななめの しま */
+const drawXbuck = (c, s) => {
+  c.fillStyle = '#e8d22c'; c.fillRect(0, 0, s, s);
+  c.fillStyle = '#16161a';
+  const k = s / 8;
+  for (let x = -s; x < 2 * s; x += 2 * k) {
+    c.beginPath(); c.moveTo(x, s); c.lineTo(x + k, s); c.lineTo(x + k + s, 0); c.lineTo(x + s, 0); c.closePath(); c.fill();
+  }
+};
+/* 道路の「とまれ」(踏切の手前の路面。舗装の色の地に白い字。上が とまる線のほう) */
+const drawTomare = (c, s) => {
+  c.fillStyle = '#54585c'; c.fillRect(0, 0, s, s);
+  c.fillStyle = 'rgba(0,0,0,0.08)';
+  for (let i = 0; i < 40; i++) c.fillRect((i * 37) % s, (i * 61) % s, 2, 2);
+  c.fillStyle = '#ecece6';
+  fitText(c, 'とまれ', s / 2, s / 2 + 2, s - 8, s * 0.42, 900);
 };
 /* ホームの端の柵の札「この さき はいれません」(白地に赤いふち) */
 const drawNoEntry = (c, s) => {
@@ -400,11 +427,13 @@ export function lineBoard(rs, key) {
   else if (kind === 'appr') fn = drawAppr(val);
   else if (kind === 'noent') fn = drawNoEntry;
   else if (kind === 'itv') fn = drawItv;
+  else if (kind === 'xbuck') fn = drawXbuck;
+  else if (kind === 'tomare') fn = drawTomare;
   else if (kind === 'km') { fn = boardDraw('#f2f2ee', '#16283a', val, val.length > 1 ? 70 : 84, 900, '#16283a'); small = true; }
   else if (kind === 'nori') { fn = boardDraw('#20272d', '#ffffff', val, 88, 900, '#f2c230'); small = true; }
   else fn = boardDraw('#ffffff', '#111111', val || key, 60);
   const uv = A.cell(key, fn, small);
-  A.text += (val || '') + '解8' + (kind === 'appr' ? 'とまるでm' : kind === 'noent' ? 'このさきはいれません' : '');
+  A.text += (val || '') + '解8' + (kind === 'appr' ? 'とまるでm' : kind === 'noent' ? 'このさきはいれません' : kind === 'tomare' ? 'とまれ' : '');
   const ent = { tex: A.tex, mat: A.mat, uv };
   rs._texCache.set(key, ent);
   return ent;
@@ -451,13 +480,14 @@ export function buildBoards(rs, plat, inPlat, ahead) {
     face(s2, 2.3, inPlat(s2) ? 1.05 : 0, 'kai', 0.55, 1.25);
   });
   /* 停止位置の予告(「8」まで 300/200/100/50m): ブレーキをかけはじめる目安。
-   * ホームの上では「8」と同じ列(へりから0.45m)に立てて、100 → 50 → 8 が一直線に見えるように */
+   * ホームの上では「8」と同じ列(へりから0.6m)に立てて、100 → 50 → 8 が一直線に見えるように */
+  /* 300・200 は 1.1m の板を 1.3m の柱に(線路から2.6m)、100・50 は 0.95m */
   rs.line.stations.forEach((st) => {
     [300, 200, 100, 50].forEach((d) => {
       const s = st.s + A8 - d;
       if (s < 20 || rs._inTerminal(s, 4)) return;
-      const on = inPlat(s);
-      face(s, on ? plat.L.edge + 0.45 : 2.4, on ? 1.05 : 0, `appr:${d}`, 0.85, 1.1);
+      const on = inPlat(s), big = d >= 200;
+      face(s, on ? plat.L.edge + 0.6 : big ? 2.6 : 2.4, on ? 1.05 : 0, `appr:${d}`, big ? 1.1 : 0.95, big && !on ? 1.3 : 1.1);
     });
   });
   /* キロ程(100mごとの白い杭と50mごとの短い杭。1kmごとに数字の札) */
@@ -828,13 +858,40 @@ export function updateSignals(rs) {
   if (dirty) S.glows.instanceMatrix.needsUpdate = true;
 }
 
-/* ---------- 発車標(オレンジのLED) ----------
- * 1行目: 種別・行き先(左)と発車時刻(右) / 2行目: 両数。
- * 文字を書いてから、丸い点の格子でくり抜いて「点の集まり」に見せる */
-export function texLed() {
-  const W = 512, H = 112;
+/* ---------- 発車標(LED) ----------
+ * 1台ぶん = 512x128。上の段に「つぎ」の電車、下の段に「そのつぎ」の電車。
+ * 1段: [つぎ] 種別(種別ごとの色) 行き先(かな) [8りょう] 発車時刻(右はし)。
+ * 種別の色は会社の色ではない一般的な色: かくえきていしゃ=緑 / きゅうこう=赤みのオレンジ / かいそくきゅうこう=水色。
+ * 長い かなは 字の高さ(34px以上)を保ったまま横だけ細くする(本物のLEDの細字と同じ)。
+ * 文字を書いてから、丸い点の格子でくり抜いて「点の集まり」に見せる。
+ * boards: 1枚の画像に何台ぶん縦に並べるか(新宿は左右の島の2台を1枚に) */
+export const LED_KIND = {
+  local: { kana: 'かくえきていしゃ', col: '#6fe08a' },
+  exp: { kana: 'きゅうこう', col: '#ff6a3d' },
+  rapid: { kana: 'かいそくきゅうこう', col: '#54d4ff' },
+};
+const LED_ROW = 128;
+/* 横だけ縮めて幅に収める(字の高さは size のまま。縮めすぎるときだけ字を小さく) */
+function fitCondensed(c, text, x, y, maxW, size, align = 'left', minSx = 0.5) {
+  let s = size;
+  c.font = `900 ${s}px ${FONT}`;
+  let w = c.measureText(text).width;
+  let sx = w > maxW ? maxW / w : 1;
+  if (sx < minSx) { s = Math.max(12, Math.floor((s * maxW) / (w * minSx))); c.font = `900 ${s}px ${FONT}`; w = c.measureText(text).width; sx = Math.min(1, maxW / w); }
+  c.save();
+  c.translate(align === 'right' ? x - w * sx : align === 'center' ? x - (w * sx) / 2 : x, y);
+  c.scale(sx, 1);
+  c.textAlign = 'left'; c.textBaseline = 'middle';
+  c.fillText(text, 0, 0);
+  c.restore();
+}
+export function texLed(boards = 1, extra = null) {
+  /* extra: { h, draw(c, y0, W) } LEDの下に、同じ材質で描くほかの絵(新宿の のりば案内・車止めの赤い灯)の場所 */
+  const W = 512, HL = LED_ROW * boards, H = HL + (extra ? extra.h : 0);
   const t = canvasTexture(W, H, () => {});
-  t.userData.lines = ['', '', ''];
+  t.userData.rows = [];
+  t.userData.keys = [];
+  t.userData.redraws = 0;              // 描き直した回数(毎フレーム描いていないかの確認用)
   const cv = t.image, c = cv.getContext('2d');
   const tmp = document.createElement('canvas');
   tmp.width = W; tmp.height = H;
@@ -843,32 +900,72 @@ export function texLed() {
   dot.width = dot.height = 3;
   const dc = dot.getContext('2d');
   dc.fillStyle = '#fff'; dc.beginPath(); dc.arc(1.5, 1.5, 1.2, 0, Math.PI * 2); dc.fill();
-  const draw = () => {
-    const [l1, tm, l2] = t.userData.lines;
-    c.fillStyle = '#070605'; c.fillRect(0, 0, W, H);
-    /* 消えている点(うっすら) */
-    c.globalAlpha = 0.12; c.fillStyle = c.createPattern(dot, 'repeat'); c.fillRect(6, 6, W - 12, H - 12); c.globalAlpha = 1;
-    c.fillStyle = '#2a2d30'; c.fillRect(0, 56, W, 1);
-    tc.clearRect(0, 0, W, H);
-    tc.fillStyle = '#ff9a1f';
-    fitText(tc, tm, W - 12, 30, 120, 40, 900, 'right');
-    fitText(tc, l1, 12, 30, W - 150, 38, 900, 'left');
+  /* 1段(高さ64px)。e: { kind, dest, time, cars } / tag: 'つぎ' | 'そのつぎ' */
+  const line = (y, tag, e) => {
+    if (!e) return;
+    const k = LED_KIND[e.kind] || LED_KIND.local;
+    /* [つぎ] の札(わく) */
+    tc.strokeStyle = '#ffb347'; tc.lineWidth = 3;
+    tc.strokeRect(5, y - 25, 58, 50);
     tc.fillStyle = '#ffb347';
-    fitText(tc, l2, 12, 84, 200, 34, 900, 'left');
+    fitCondensed(tc, tag, 34, y + 1, 50, tag.length > 2 ? 26 : 30, 'center', 0.45);
+    tc.fillStyle = k.col;
+    fitCondensed(tc, k.kana, 70, y + 1, 164, 38);
+    tc.fillStyle = '#ff9a1f';
+    fitCondensed(tc, e.dest, 240, y + 1, 128, 38);
+    /* 両数の小さな札(ぬりつぶしに暗い字: 大きな数字+小さな「りょう」) */
+    tc.fillStyle = '#ffb347'; tc.fillRect(372, y - 17, 52, 34);
+    tc.fillStyle = '#000';
+    tc.globalCompositeOperation = 'destination-out';
+    const cw = String(e.cars).length > 1 ? 24 : 15;
+    fitCondensed(tc, String(e.cars), 375, y + 1, cw, 30, 'left', 0.6);
+    fitCondensed(tc, 'りょう', 377 + cw, y + 3, 44 - cw, 16, 'left', 0.5);
+    tc.globalCompositeOperation = 'source-over';
+    tc.fillStyle = '#ff9a1f';
+    fitCondensed(tc, e.time, W - 6, y + 1, 82, 38, 'right', 0.6);
+  };
+  const draw = () => {
+    c.fillStyle = '#070605'; c.fillRect(0, 0, W, HL);
+    /* 消えている点(うっすら) */
+    c.globalAlpha = 0.12; c.fillStyle = c.createPattern(dot, 'repeat');
+    for (let b = 0; b < boards; b++) c.fillRect(4, b * LED_ROW + 4, W - 8, LED_ROW - 8);
+    c.globalAlpha = 1;
+    c.fillStyle = '#2a2d30';
+    for (let b = 0; b < boards; b++) c.fillRect(0, b * LED_ROW + LED_ROW / 2, W, 1);
+    tc.clearRect(0, 0, W, H);
+    for (let b = 0; b < boards; b++) {
+      const r = t.userData.rows[b];
+      if (!r) continue;
+      line(b * LED_ROW + 32, 'つぎ', r[0]);
+      line(b * LED_ROW + 96, 'そのつぎ', r[1]);
+    }
     tc.globalCompositeOperation = 'destination-in';
     tc.fillStyle = tc.createPattern(dot, 'repeat');
-    tc.fillRect(0, 0, W, H);
+    tc.fillRect(0, 0, W, HL);
     tc.globalCompositeOperation = 'source-over';
-    c.drawImage(tmp, 0, 0);
+    c.drawImage(tmp, 0, 0, W, HL, 0, 0, W, HL);
+    t.userData.redraws++;
     t.needsUpdate = true;
   };
-  t.userData.redraw = draw;
-  t.userData.set = (l1, tm, l2) => {
-    const L = t.userData.lines;
-    if (L[0] === l1 && L[1] === tm && L[2] === l2) return;
-    t.userData.lines = [l1, tm, l2];
+  const full = () => {
+    if (extra) { c.clearRect(0, HL, W, H - HL); extra.draw(c, HL, W); }
     draw();
-    redrawWhenFonts(t, l1 + tm + l2);
   };
+  t.userData.redraw = full;
+  if (extra) full();
+  /* b台目に「つぎ」a と「そのつぎ」n を出す。中身が同じなら描き直さない */
+  t.userData.setBoard = (b, a, n) => {
+    const key = [a, n].map((e) => (e ? `${e.kind}|${e.dest}|${e.time}|${e.cars}` : '-')).join('/');
+    if (t.userData.keys[b] === key) return;
+    t.userData.keys[b] = key;
+    t.userData.rows[b] = [a, n];
+    draw();
+    redrawWhenFonts(t, [a, n].map((e) => (e ? (LED_KIND[e.kind] || LED_KIND.local).kana + e.dest + e.time + e.cars : '')).join('') + 'つぎそのりょう');
+  };
+  /* そのボードの画像の範囲(uv: [u0,v0,u1,v1])。上の台が b=0 */
+  t.userData.uvOf = (b) => [0, 1 - ((b + 1) * LED_ROW) / H, 1, 1 - (b * LED_ROW) / H];
+  /* 画素の四角(x0,y0)-(x1,y1) の uv */
+  t.userData.uvPx = (x0, y0, x1, y1) => [x0 / W, 1 - y1 / H, x1 / W, 1 - y0 / H];
+  t.userData.extraY = HL;
   return t;
 }
