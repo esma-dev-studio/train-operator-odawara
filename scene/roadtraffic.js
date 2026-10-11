@@ -2,7 +2,10 @@
  * scene/roadtraffic.js — 側道を走る車(8台をくり返し使う)
  *
  * ・カメラから350m以内の側道(rs._roadRuns)に車を出し、25〜35km/hで左側の車線を走らせる。
- *   400mより遠くなったか道の終わりに来たら、別の場所に出しなおす(手前で急に出ないよう、出す所は60m以上先)。
+ *   400mより遠くなったか道の終わりに来たら、別の場所に出しなおす。
+ *   目の前で急に出たり消えたりしないよう、出す所は「画面の外」か230mより先(最初の1コマと視点が飛んだ直後だけはどこでも)。
+ *   道の終わりに来た車は、画面の中なら そこで止まって待ち、画面の外になってから消える。
+ *   出しなおしは1コマに2台まで(毎フレームの手間を一定以下に)。
  * ・踏切の遮断機が下りている間(腕の角度 < 1.0)は、踏切の12m手前で止まる。前の車にも近づきすぎない。
  * ・形と材質は cars.js(木と同じ 'fc-tree' のシェーダ)。種類ごとに1つの InstancedMesh(描画は最大3回。
  *   外接球を出ている車に合わせて毎フレーム置きなおすので、画面に入っていない種類は描かない)。
@@ -14,12 +17,14 @@ import { geoCar, carMaterial, carPaint, CAR_PAINTS, CAR_LEN } from './cars.js';
 
 const TYPES = ['kei', 'sedan', 'minivan', 'kei', 'sedan', 'kei', 'minivan', 'sedan'];
 const KINDS = ['kei', 'minivan', 'sedan'];
-const NEAR = 350, FAR = 400, MIN_SPAWN = 60;
+const NEAR = 350, FAR = 400, MIN_SPAWN = 60, HIDE_D = 230, KEEP_D = 650, VIEW_COS = 0.55;
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _c = new THREE.Color();
 const _fr = { x: 0, y: 0, z: 0, lx: 1, lz: 0, yaw: 0 };
+/* カメラの水平の向き(毎フレーム1回。割り当てなし) */
+const _cv = { x: 0, z: 1 };
 
 /* s(m)の位置・左向き・向き(town.js の sampleFrame と同じ計算。割り当てなし) */
 function frameAt(F, step, s, o) {
@@ -43,6 +48,9 @@ export class RoadTraffic {
     this.meshes = [];
     this.cars = [];
     this._seed = 97531;
+    this._fill = true;           // 最初の1コマ(どこに出してもよい)
+    this._ex = 1e9; this._ez = 1e9;
+    this._budget = 0;
     const mat = carMaterial(rs);
     const parent = rs._town ? rs._town.groups.streets : rs.world;
     const ims = {};
@@ -65,7 +73,7 @@ export class RoadTraffic {
     const rnd = () => this._rnd();
     TYPES.forEach((type) => {
       const e = ims[type];
-      const car = { type, im: e.im, i: e.n++, run: null, s: 0, dir: 1, v: 0, vmax: 8, lat: 0, on: false, x: 0, y: 0, z: 0 };
+      const car = { type, im: e.im, i: e.n++, run: null, s: 0, dir: 1, v: 0, vmax: 8, lat: 0, on: false, wait: false, x: 0, y: 0, z: 0 };
       /* 塗装(白・銀が多い)。r に 2 を足して「灯火をつけている」印 */
       const col = carPaint({}, CAR_PAINTS[Math.floor(rnd() * CAR_PAINTS.length)], rnd);
       _c.setRGB(col.r + 2, col.g, col.b);
@@ -80,10 +88,18 @@ export class RoadTraffic {
     return this._seed / 2147483647;
   }
 
-  /* 車を出す: カメラの近くの側道から1つ選び、カメラから60〜350mの所に */
+  /* (x,z) が画面に入りそうか(カメラの水平の向きから約57度以内で maxD より近い) */
+  _inView(x, z, eye, maxD) {
+    const dx = x - eye.x, dz = z - eye.z, d = Math.hypot(dx, dz);
+    return d < maxD && dx * _cv.x + dz * _cv.z > VIEW_COS * d;
+  }
+
+  /* 車を出す: カメラの近くの側道から1つ選び、カメラから60〜350mの所に(画面の中の近くには出さない) */
   _spawn(rs, car, eye) {
     const runs = rs._roadRuns, pos = rs.sim.pos;
     car.on = false;
+    if (this._budget <= 0) return false;
+    this._budget--;
     /* 近くの側道だけから選ぶ(全部の中から選ぶと、ほとんどが遠くて出せない) */
     let nNear = 0;
     for (let k = 0; k < runs.length; k++) if (Math.min(runs[k].s1 - 6, pos + NEAR) - Math.max(runs[k].s0 + 6, pos - NEAR) >= 20) nNear++;
@@ -102,6 +118,7 @@ export class RoadTraffic {
       const x = _fr.x + _fr.lx * lat, z = _fr.z + _fr.lz * lat;
       const d = Math.hypot(x - eye.x, z - eye.z);
       if (d > NEAR || d < MIN_SPAWN) continue;
+      if (!this._fill && this._inView(x, z, eye, HIDE_D)) continue;
       /* ほかの車と重ならない */
       let clash = false;
       for (let k = 0; k < this.cars.length; k++) {
@@ -140,13 +157,22 @@ export class RoadTraffic {
     const runs = rs._roadRuns;
     if (!runs || !runs.length || !rs.sim || !rs.frames) return;
     const eye = rs.camera.position;
+    /* カメラの水平の向き(行列の3列目の逆)。視点が300m以上飛んだら、画面の中にも出してよい(まわりを埋めなおす) */
+    const me = rs.camera.matrixWorld.elements;
+    let fx = -me[8], fz = -me[10];
+    const fl = Math.hypot(fx, fz);
+    if (fl > 1e-4) { _cv.x = fx / fl; _cv.z = fz / fl; }
+    if (Math.hypot(eye.x - this._ex, eye.z - this._ez) > 300) this._fill = true;
+    this._ex = eye.x; this._ez = eye.z;
+    this._budget = this._fill ? 99 : 2;
     const T = rs._town;
     const rampY = T && typeof T.rampY === 'function' ? T.rampY : null;
     const cr = rs.crossings || [];
     const cars = this.cars;
     for (let n = 0; n < cars.length; n++) {
       const car = cars[n];
-      if (car.on && Math.hypot(car.x - eye.x, car.z - eye.z) > FAR) car.on = false;
+      /* 遠くなった車・道の終わりで待っている車は、画面の外に出てから消す(650mより先は霧の中なので消してよい) */
+      if (car.on && (car.wait || Math.hypot(car.x - eye.x, car.z - eye.z) > FAR) && !this._inView(car.x, car.z, eye, KEEP_D)) car.on = false;
       if (!car.on && !this._spawn(rs, car, eye)) { car.im.setMatrixAt(car.i, _zero); car.im.instanceMatrix.needsUpdate = true; continue; }
       /* 止まる所: 遮断機の下りている踏切の12m手前・前の車の8m うしろ */
       let lim = Infinity;
@@ -170,7 +196,13 @@ export class RoadTraffic {
       if (step > lim) { step = Math.max(0, lim); car.v = 0; }
       car.s += car.dir * step;
       const r = car.run;
-      if (car.s < r.s0 + 3 || car.s > r.s1 - 3) { car.on = false; car.im.setMatrixAt(car.i, _zero); car.im.instanceMatrix.needsUpdate = true; continue; }
+      car.wait = false;
+      if (car.s < r.s0 + 3 || car.s > r.s1 - 3) {
+        /* 道の終わり: 画面の中なら そこで止まって待つ(目の前で消さない)。外なら消す */
+        if (!this._fill && this._inView(car.x, car.z, eye, KEEP_D)) {
+          car.s = car.s < r.s0 + 3 ? r.s0 + 3 : r.s1 - 3; car.v = 0; car.wait = true;
+        } else { car.on = false; car.im.setMatrixAt(car.i, _zero); car.im.instanceMatrix.needsUpdate = true; continue; }
+      }
       frameAt(rs.frames, rs.step, car.s, _fr);
       car.x = _fr.x + _fr.lx * car.lat; car.z = _fr.z + _fr.lz * car.lat;
       car.y = _fr.y + (rampY ? rampY(car.s) : -0.4);
@@ -180,6 +212,7 @@ export class RoadTraffic {
       car.im.setMatrixAt(car.i, _m4);
       car.im.instanceMatrix.needsUpdate = true;
     }
+    this._fill = false;
     this._bounds();
   }
 }

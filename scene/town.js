@@ -536,7 +536,9 @@ export function texLeaf() {
 function texForest() {
   const cv = canvasOnce('forest', 512, 512, (c) => {
     const r = makeRng(313);
-    c.fillStyle = '#2b3a25'; c.fillRect(0, 0, 512, 512);
+    /* 地(樹冠のすき間)は樹冠に近い中間の緑。小さな樹冠は面の3割ほどしかおおわないので、
+     * 地が暗いと遠くの丘が まっ黒・灰色に沈む(すき間の暗さは、樹冠の右下のかげと暗い点で出す) */
+    c.fillStyle = '#37492e'; c.fillRect(0, 0, 512, 512);
     const cols = ['#34482c', '#3d5331', '#45603a', '#4f6a3d', '#3a4f30'];
     const wrap = (x, y, fn) => { [[0, 0], [512, 0], [-512, 0], [0, 512], [0, -512]].forEach(([dx, dy]) => fn(x + dx, y + dy)); };
     for (let i = 0; i < 1800; i++) {
@@ -544,6 +546,8 @@ function texForest() {
       const col = pick(cols, r);
       wrap(x, y, (px, py) => {
         if (px < -8 || px > 520 || py < -8 || py > 520) return;
+        /* 右下のかげ(樹冠の丸み。先に描いて、樹冠の外にだけ三日月形に残す) */
+        c.fillStyle = 'rgba(14,22,10,.3)'; c.beginPath(); c.arc(px + rr * 0.4, py + rr * 0.4, rr, 0, 7); c.fill();
         c.fillStyle = col; c.beginPath(); c.arc(px, py, rr, 0, 7); c.fill();
         /* 左上の光の当たる縁 */
         c.fillStyle = 'rgba(150,180,110,.22)'; c.beginPath(); c.arc(px - rr * 0.35, py - rr * 0.35, rr * 0.45, 0, 7); c.fill();
@@ -1073,7 +1077,8 @@ function buildPlazas(rs, T) {
     const sc = st.s - 55;
     sampleFrame(F, step, sc, fr);
     const lat = -39, R = 12.5;
-    const cx = fr.x + fr.lx * lat, cz = fr.z + fr.lz * lat, y = fr.y - 0.41;
+    /* 高さ: 舗装 -0.43 < 外への道 -0.40 < ロータリー -0.38(重なる面を2cm以上はなす。遠くからの見下ろしでちらつかない) */
+    const cx = fr.x + fr.lx * lat, cz = fr.z + fr.lz * lat, y = fr.y - 0.38, yR = fr.y - 0.4;
     /* 広場は手前(線路の向きで手前)に広く空ける(上から見下ろすカメラから見えるように)。舗装は土間の色 */
     stampBand(rs, sc - 46, sc + 19, -24, -57, HARD);
     const b = T.rb(sc);
@@ -1090,7 +1095,7 @@ function buildPlazas(rs, T) {
     T.disc(b, cx, y, cz, R, 24);
     /* 外への道(幅6m・60m) */
     const P = (o, dt, yy) => [fr.x + fr.lx * o + fr.tx * dt, yy, fr.z + fr.lz * o + fr.tz * dt];
-    T.quad(b, P(lat - R + 0.6, -3, y), P(lat - R + 0.6, 3, y), P(lat - R - 60, -3, y), P(lat - R - 60, 3, y), 0, 0.5, 0, 3);
+    T.quad(b, P(lat - R + 0.6, -3, yR), P(lat - R + 0.6, 3, yR), P(lat - R - 60, -3, yR), P(lat - R - 60, 3, yR), 0, 0.5, 0, 3);
     stampBand(rs, sc - 3.6, sc + 3.6, -52, -114, HARD);
     /* バス乗り場の白線(円の外周に沿った4本の線) */
     const RU = ROAD_UV.white;
@@ -1432,10 +1437,11 @@ function buildHouses(rs, T) {
   const lanePts = [];
   for (const side of [1, -1]) {
     const cs = rs._crossStreets.filter((c) => c.side === side);
-    /* 5mおき + 交差道路の両側の縁 */
+    /* 5mおき + 交差道路の両側の縁と中心(中心の点は かならず「通さない」になるので、
+     * 5mおきの点が道の上に1つもないときでも、路地の帯が交差道路の上にかからない: 同じ高さの面が重なってちらつく) */
     const list = [];
     for (let s = 20; s < L - 30; s += 5) list.push(s);
-    cs.forEach((c) => { list.push(c.s - 2.25, c.s + 2.25); });
+    cs.forEach((c) => { list.push(c.s - 2.25, c.s, c.s + 2.25); });
     list.sort((a, b) => a - b);
     for (let k = 1; k <= 6; k++) {
       let run = [];
@@ -1576,7 +1582,10 @@ function buildHouses(rs, T) {
         {
           const pd = d + g + 0.8, hw = (fw - 0.3) / 2;
           const l0 = edgeLat, l1 = edgeLat - fDir * pd, yp = fr.y - 0.47;
-          const Q = (o, dt) => [fr.x + fr.lx * side * o + fr.tx * dt, yp, fr.z + fr.lz * side * o + fr.tz * dt];
+          /* 線路の勾配に合わせて傾ける(地面は線路の高さについてくるので、平らな板だと坂の上の側が地面にうまる) */
+          sampleFrame(F, step, sMid + 4, fr2);
+          const gr = (fr2.y - fr.y) / 4;
+          const Q = (o, dt) => [fr.x + fr.lx * side * o + fr.tx * dt, yp + gr * dt, fr.z + fr.lz * side * o + fr.tz * dt];
           const uv = lotUV(rng);
           T.quad(T.rb(sMid), Q(l0, -hw), Q(l0, hw), Q(l1, -hw), Q(l1, hw), uv[0], uv[1], uv[2], uv[3]);
         }
@@ -2191,9 +2200,14 @@ function applyLook(rs, T, L) {
 }
 
 /* ---------- 踏切が開いたら、待っていた車が走り出す(いちばん近い踏切だけ) ----------
- * 車は踏切の道を 20km/h で線路をこえて進み、70m 進んだら列の45m うしろにもどって また来る。
- * 遮断機が下りたら、列の場所(d=0)で止まる。行列は addCars が書いた sp._im / sp._i に直接書く(割り当てなし) */
-const XC_V = 20 / 3.6, XC_BACK = -45, XC_FWD = 70;
+ * 車ごとに「進んだ向きの位置」x(m)を持つ(x = -side*o: 線路へ向かって増え、線路をこえても増える)。
+ * 遮断機が上がって2秒たつと 20km/h で進み、とまる線の75m先まで行ったら列のいちばん後ろ(線の45m以上手前)へもどる。
+ * 遮断機が下りはじめたら、まだ とまる線をこえていない車は線の手前(か前の車のうしろ)で止まり、
+ * もう線をこえた車はそのまま渡りきる(列ごと動かすと、うしろの車が下りてくる遮断機をくぐってしまう)。
+ * 行列は addCars が書いた sp._im / sp._i に直接書く(割り当てなし) */
+const XC_V = 20 / 3.6, XC_BACK = 45, XC_FWD = 75;
+/* とまる線(x。線路の中心から左は9.0m・右は12.8m。遮断機の1m外) */
+const xStopOf = (side) => (side > 0 ? -9.0 : -12.8);
 const _xq = new THREE.Quaternion(), _xp = new THREE.Vector3(), _xs = new THREE.Vector3(1, 1, 1), _xm = new THREE.Matrix4();
 function crossGroups(rs, T) {
   const list = rs._crossCarList || [];
@@ -2205,7 +2219,10 @@ function crossGroups(rs, T) {
     const sp = list[i];
     if (!sp._im || sp._xs == null) continue;
     let g = map.get(sp._xs);
-    if (!g) map.set(sp._xs, (g = { s: sp._xs, cars: [], cr: null, d: 0, upT: 0 }));
+    if (!g) map.set(sp._xs, (g = { s: sp._xs, cars: [], cr: null, upT: 0, home: true }));
+    sp._x0 = -sp._side * sp._o0;
+    sp._x = sp._x0;
+    sp._hl = (CAR_LEN[sp.type] || 4) / 2;
     g.cars.push(sp);
   }
   const cr = rs.crossings || [];
@@ -2222,16 +2239,53 @@ function xRoadY(sp, o) {
   const t = o > 26 ? (o - 26) / 10 : o < -29.8 ? (-29.8 - o) / 10 : 0;
   return top + (low - top) * (t > 1 ? 1 : t);
 }
-function placeXCars(g) {
+function placeXCar(sp) {
+  const o = -sp._side * sp._x;
+  _xp.set(sp._fx + sp._lx * o + sp._tx * sp._lane, xRoadY(sp, o), sp._fz + sp._lz * o + sp._tz * sp._lane);
+  _xq.setFromAxisAngle(Y_AXIS, sp.yaw);
+  _xm.compose(_xp, _xq, _xs);
+  sp._im.setMatrixAt(sp._i, _xm);
+  sp._im.instanceMatrix.needsUpdate = true;
+}
+/* 列の場所にもどす(ほかの踏切がいちばん近くなったとき) */
+function homeXCars(g) {
   for (let i = 0; i < g.cars.length; i++) {
     const sp = g.cars[i];
-    const o = sp._o0 - sp._side * g.d;
-    _xp.set(sp._fx + sp._lx * o + sp._tx * sp._lane, xRoadY(sp, o), sp._fz + sp._lz * o + sp._tz * sp._lane);
-    _xq.setFromAxisAngle(Y_AXIS, sp.yaw);
-    _xm.compose(_xp, _xq, _xs);
-    sp._im.setMatrixAt(sp._i, _xm);
-    sp._im.instanceMatrix.needsUpdate = true;
+    if (sp._x !== sp._x0) { sp._x = sp._x0; placeXCar(sp); }
   }
+  g.upT = 0; g.home = true;
+}
+/* 1コマぶん進める。go: 遮断機が上がって2秒たった */
+function stepXCars(g, go, dt) {
+  const cars = g.cars;
+  let moved = false;
+  for (let i = 0; i < cars.length; i++) {
+    const c = cars[i];
+    const xs = xStopOf(c._side);
+    let lim = Infinity;
+    /* 遮断機が下りている(下りはじめた): 前の端がまだ線を1mこえていなければ、線の手前で止まる */
+    if (!go && c._x + c._hl <= xs + 1.0) lim = xs + 0.3 - c._hl;
+    /* 前の車に1.5mより近づかない(同じ側の列。線路をこえた車も同じ車線) */
+    for (let k = 0; k < cars.length; k++) {
+      const o = cars[k];
+      if (o === c || o._side !== c._side || o._x <= c._x) continue;
+      const gap = o._x - o._hl - c._hl - 1.5;
+      if (gap < lim) lim = gap;
+    }
+    let x = c._x + XC_V * dt;
+    if (x > lim) x = Math.max(c._x, lim);
+    if (x > xs + XC_FWD) {
+      /* 走り去った: 列のいちばん後ろの車のさらに後ろ(線の45m以上手前)へ */
+      let back = xs - XC_BACK;
+      for (let k = 0; k < cars.length; k++) {
+        const o = cars[k];
+        if (o !== c && o._side === c._side) back = Math.min(back, o._x - o._hl - c._hl - 3);
+      }
+      x = back;
+    }
+    if (x !== c._x) { c._x = x; placeXCar(c); moved = true; }
+  }
+  return moved;
 }
 function updateCrossCars(rs, T, dt) {
   const gs = crossGroups(rs, T);
@@ -2244,22 +2298,16 @@ function updateCrossCars(rs, T, dt) {
     if (d < bd) { bd = d; best = gs[i]; }
   }
   if (bd > 700) best = null;
-  if (T.xAct && T.xAct !== best) {
-    /* 前の踏切の車は列にもどす */
-    T.xAct.d = 0; T.xAct.upT = 0;
-    placeXCars(T.xAct);
-  }
+  /* 前の踏切の車は列にもどす */
+  if (T.xAct && T.xAct !== best) homeXCars(T.xAct);
   T.xAct = best;
   if (!best || !best.cr || !best.cr.arms || !best.cr.arms.length) return;
   const up = best.cr.arms[0].rotation.z > 1.2;
   best.upT = up ? best.upT + dt : 0;
   const go = up && best.upT >= 2;
-  if (!go && best.d === 0) return;
-  let d = best.d + XC_V * dt;
-  if (!go && best.d < 0 && d >= 0) d = 0;          // 遮断機が下りている: 列の場所で止まる
-  if (d > XC_FWD) d = XC_BACK;                      // 走り去った車は列のうしろから また来る
-  best.d = d;
-  placeXCars(best);
+  /* 列で止まって待っているあいだは何もしない */
+  if (!go && best.home) return;
+  best.home = !stepXCars(best, go, dt) && !go;
 }
 
 /* dt: 前のフレームからの秒(道を走る車・踏切の車を動かす。木のLODの判定はフレーム数で数える) */
