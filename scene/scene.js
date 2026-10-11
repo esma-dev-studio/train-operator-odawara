@@ -17,7 +17,7 @@ import { STATION_KANA } from '../sim/kana.js';
 import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle } from './stations.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
-import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree } from './town.js';
+import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree, addCars } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
 import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper, STAIR } from './trackbed.js';
@@ -2206,6 +2206,8 @@ export class RailScene {
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x565e63, roughness: 0.6, metalness: 0.4 });
     const boxMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.7 });
     this.crossings = [];
+    /* 踏切待ちの車は全踏切ぶんを集めて、種類ごとのインスタンスで1回ずつ描く(scene/cars.js) */
+    this._crossCarSpots = [];
     this.crossSpots.forEach((s) => {
       const f = frameAt(F, this.step, s);
       /* 道路(線路を横切る) */
@@ -2256,6 +2258,7 @@ export class RailScene {
         const arm = new THREE.Mesh(armGeo, armMat);
         arm.position.y = 1.05;
         arm.rotation.z = 1.25;
+        arm.userData.dyn = true;   // 毎フレーム動く(行列の更新を止めない)
         arms.push(arm);
         g.add(arm);
         const p = f.p.clone().addScaledVector(f.left, off).addScaledVector(f.t, roadSide);
@@ -2264,10 +2267,12 @@ export class RailScene {
         g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.t.clone().multiplyScalar(off > 0 ? 1 : -1));
         this.world.add(g);
       });
-      /* 踏切待ちの車(両側に2〜3台) */
+      /* 踏切待ちの車(両側に1〜3台) */
       this._crossCars(f, s);
       this.crossings.push({ s, arms, lamps });
     });
+    addCars(this, this._crossCarSpots);
+    this._crossCarSpots = null;
   }
 
   _updateCrossings(dt) {
@@ -2296,21 +2301,11 @@ export class RailScene {
     updateTown(this, dt);
   }
 
+  /* 踏切待ちの車の位置を集める(形・材質は scene/cars.js。左側通行で、線路のほうを向いて止まっている) */
   _crossCars(f, s) {
-    if (!this._carRes) {
-      const body = new THREE.BoxGeometry(1.7, 0.75, 4.2); body.translate(0, 0.62, 0);
-      const cabin = new THREE.BoxGeometry(1.5, 0.62, 2.2); cabin.translate(0, 1.3, -0.2);
-      const wheels = new THREE.BoxGeometry(1.76, 0.5, 3.0); wheels.translate(0, 0.25, 0);
-      this._carRes = {
-        body: mergeNonIndexed([body, cabin]), wheels,
-        glass: new THREE.MeshStandardMaterial({ color: 0x1a232b, roughness: 0.15, metalness: 0.6 }),
-        paint: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.5 }),
-        tire: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 }),
-        cols: [0xd8dadc, 0x23272b, 0xa8242a, 0x2b4f8a, 0xe6e2d6, 0x6f7479, 0x3d6b4a],
-      };
-      [this._carRes.glass, this._carRes.paint, this._carRes.tire].forEach((m) => this._keep.add(m));
-    }
-    const R = this._carRes;
+    const TYPES = ['kei', 'minivan', 'sedan'];
+    const COLS = [0xf2f2f0, 0xd9dadc, 0x2a2c30, 0x9a2a2a, 0x2c4a7a, 0x8e939a, 0xb8a98c];
+    const col = new THREE.Color();
     let seed = Math.floor(s);
     const rnd = () => (seed = (seed * 16807 + 11) % 2147483647) / 2147483647;
     [-1, 1].forEach((side) => {
@@ -2318,17 +2313,14 @@ export class RailScene {
       for (let i = 0; i < n; i++) {
         const along = side * (13 + i * 5.6 + rnd() * 1.2);   // 線路からの距離(道路方向)
         const lane = side > 0 ? -1.3 : 1.3;                  // 左側通行
-        const g = new THREE.Group();
-        const car = new THREE.Mesh(R.body, R.paint.clone());
-        car.material.color.setHex(R.cols[Math.floor(rnd() * R.cols.length)]);
-        car.castShadow = true;
-        const w = new THREE.Mesh(R.wheels, R.tire);
-        g.add(car, w);
-        g.position.copy(f.p).addScaledVector(f.left, along - 1.9).addScaledVector(f.t, lane);
-        g.position.y += 0.12;
-        /* 車は線路のほうを向いて止まっている */
-        g.lookAt(g.position.clone().addScaledVector(f.left, -side * 10));
-        this.world.add(g);
+        const p = f.p.clone().addScaledVector(f.left, along - 1.9).addScaledVector(f.t, lane);
+        /* 前(+z)を線路のほうへ */
+        const dx = -side * f.left.x, dz = -side * f.left.z;
+        col.setHex(COLS[Math.floor(rnd() * COLS.length)]);
+        this._crossCarSpots.push({
+          x: p.x, y: p.y + 0.14, z: p.z, yaw: Math.atan2(dx, dz), type: TYPES[Math.floor(rnd() * 3) % 3],
+          r: col.r, g: col.g, b: col.b, s, sh: true,
+        });
       }
     });
   }
