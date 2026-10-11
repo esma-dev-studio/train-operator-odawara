@@ -859,17 +859,19 @@ export class RailScene {
     this._booted = true;
     const r = this.renderer;
     if (!r || !this.scene) return;
-    /* 雨・雪の空を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる) */
-    const wk = this.weather !== 'clear' ? 'rain' : 'clear';
-    const ld = this._envLoad[wk];
-    if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
-      await Promise.race([ld, new Promise((res) => setTimeout(res, 3000))]);
-    }
-    if (this._lateN) this._promoteEnv(true);
-    this._needPrewarm = false;
-    this._placeView();
-    this._warming = true;
+    /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
+    this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
+    const cap = (ms) => new Promise((res) => setTimeout(res, ms));
     try {
+      /* 雨・雪の空を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる) */
+      const wk = this.weather !== 'clear' ? 'rain' : 'clear';
+      const ld = this._envLoad[wk];
+      if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
+        await Promise.race([ld, cap(3000)]);
+      }
+      if (this._lateN) this._promoteEnv(true);
+      this._needPrewarm = false;
+      this._placeView();
       const prev = r.getRenderTarget();
       let p = null;
       try {
@@ -877,10 +879,12 @@ export class RailScene {
         p = this._compileMain(true);
       } catch (e) { p = null; }
       r.setRenderTarget(prev);
-      if (p) { try { await p; } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+      /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒で先へ(描かないまま止まらないように) */
+      if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
     } finally {
-      this._warming = false;
+      this._warming = Math.max(0, (this._warming || 0) - 1);
     }
+    if (this._warming) return;   // あとから呼ばれた準備がまだ続いている(仕上げはそちらで)
     const rt0 = r.getRenderTarget();
     try {
       this._placeView();   // 待っている間に動いたかもしれないので置きなおす
@@ -1034,16 +1038,18 @@ export class RailScene {
     this._lateN++;
     /* 最初の準備の前・止まっているときは すぐ使う。走っている最中なら、つぎの時間帯・天気・路線の切替(暗転中)まで待つ */
     const sim = this.sim;
-    if (k === 'rain' && this.weather === 'clear') this._promoteEnv(false);   // いまは使っていない(先読み): 見た目は変えない
+    /* いまは使っていない(先読み): 見た目は変えない。待たせている晴れの空(太陽の向きも変わる)は巻きこまない */
+    if (k === 'rain' && this.weather === 'clear') this._promoteEnv(false, 'rain');
     else if (!this._booted || !sim || sim.ended || sim.v < 0.05) this._promoteEnv(true);
     return true;
   }
 
-  /* 届いて待たせていた空を使いはじめる。apply: すぐ見た目に反映する */
-  _promoteEnv(apply) {
+  /* 届いて待たせていた空を使いはじめる。apply: すぐ見た目に反映する / only: その空だけ(なければ全部) */
+  _promoteEnv(apply, only) {
     if (!this._lateN) return;
     const L = this._envLate;
     Object.keys(L).forEach((k) => {
+      if (only && k !== only) return;
       const e = L[k];
       const old = this.env[k];
       this.env[k] = e.env;
@@ -1053,7 +1059,7 @@ export class RailScene {
       if (old && old.cube && old.cube !== e.env.cube) old.cube.dispose();
       delete L[k];
     });
-    this._lateN = 0;
+    this._lateN = Object.keys(L).length;
     this._shadowDirty = true;
     if (apply) this._applyWeather();
   }
