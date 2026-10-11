@@ -2168,7 +2168,7 @@ function applyLook(rs, T, L) {
   for (let i = 0; i < T.glows.length; i++) T.glows[i].visible = lamps;
   /* 街灯の光だまり(材質で切り替える: メッシュは _splitInstances で作り直されるので参照を持たない)。ぬれた道は少し明るく */
   M.lampPool.visible = lamps;
-  M.lampPool.opacity = (L.night ? 0.3 : 0.12) * (L.wet ? 1.3 : 1);
+  M.lampPool.opacity = (L.night ? 0.24 : 0.11) * (L.wet ? 1.3 : 1);
   /* 玄関の明かり(夜だけ) */
   M.porchPool.visible = !!L.night;
   M.porchPool.opacity = 0.42 * (L.wet ? 1.3 : 1);
