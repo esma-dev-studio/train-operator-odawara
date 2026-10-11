@@ -1,12 +1,12 @@
 /* =========================================================
  * cab/cab.js — 運転台の計器盤（DOM+Canvas 2D）
- * 速度計(LEDリング・液晶) / ブレーキの強さ / マスコン(13段) /
+ * 速度計(区切りの帯・制限の三角・液晶) / ブレーキの強さ / マスコン(13段) /
  * 表示灯 / 運転モニタ / 制限スピード板
  *
  * index.html の #cab をコンストラクタで組みかえる(要素は移動するだけ。idとリスナーはそのまま)。
  * 毎フレームの書き込みは「値が変わったときだけ」(_set)。止まっている間はDOMを一切さわらない。
  * main.js との約束(なくても動く): render(h) / bindInput({canOp,setNotch}) / flashGrip() /
- *   setService({svcHtml,color,destHtml}) / setLight(lum)
+ *   setService({svcHtml,color,destHtml}) / setLight(lum) / setTarget(n|null: つぎにねらうノッチを点滅)
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
 
@@ -36,8 +36,9 @@ const zoneOf = (n) => (n === -8 ? 'eb' : n > 0 ? 'p' : n < 0 ? 'b' : 'n');
 /* 速度計の目盛り: 0〜120km/h を 270°(下があく) */
 const A0 = Math.PI * 0.75, A1 = Math.PI * 2.25, VMAX = 120;
 const angOf = (v) => A0 + (A1 - A0) * (v / VMAX);
-const LED_N = 49;                 // 2.5km/hごと
-const LED_COL = ['#1fa85a', '#ffb32e', '#ff4a3d', '#241514'];   // みどり・きいろ・あか・消灯
+/* 帯は 2.5km/h ごとの区切り(49こ)。1つの区切りは目盛りを中心に 1.8km/h ぶん光る */
+const SEG_N = 48, SEG_HALF = 0.9;
+const NO_DASH = [];
 
 export class Cab {
   constructor(sim) {
@@ -64,6 +65,7 @@ export class Cab {
       timsDist: $('#tims-dist'),
       timsSch: $('#tims-sch'),
       timsClock: $('#tims-clock'),
+      timsCap: this.root.querySelector('.tims-cap'),
       timsDelay: $('#tims-delay'),
       timsProg: $('#tims-prog'),
       timsList: $('#tims-list'),
@@ -117,6 +119,12 @@ export class Cab {
       keep['tims-clock'].textContent = '';
     }
 
+    /* 表示灯: 見出し(ほかの計器とおなじく、穴の上に小さく) */
+    const lamps = root.querySelector('.cab-lamps');
+    if (lamps && !lamps.querySelector('.lamps-cap')) lamps.insertAdjacentHTML('afterbegin', '<span class="lamps-cap">ランプ</span>');
+    /* レンズの文字(2行)は1つの箱に入れて、レンズのまん中におく(flex の中の <br> にたよらない) */
+    root.querySelectorAll('.lamp').forEach((l) => { if (!l.querySelector('.lamp-t')) l.innerHTML = `<span class="lamp-t">${l.innerHTML}</span>`; });
+
     /* 制限スピード: 見出しにふりがな */
     const cap = root.querySelector('.lim-cap');
     if (cap) cap.innerHTML = '<ruby>制限<rt>せいげん</rt></ruby>スピード';
@@ -144,11 +152,11 @@ export class Cab {
       `<div class="nt nt-${zoneOf(val)}" data-n="${val}" style="grid-row:${i + 1}">${label}</div>`).join('');
     /* 左の見出し(さわっても反応しない。.nt ではない) */
     const caps = '<span class="nt-cap nt-cap-p" style="grid-row:1/5">すすむ</span>'
-      + '<span class="nt-cap nt-cap-b" style="grid-row:6/13">ブレーキ</span>'
-      + '<span class="nt-cap nt-cap-eb" style="grid-row:13"></span>';
+      + '<span class="nt-cap nt-cap-b" style="grid-row:6/13">ブレーキ</span>';
     this.els.notchList.innerHTML = caps + rows;
     this._nt = [...this.els.notchList.querySelectorAll('.nt')];
     this._onIdx = -1;
+    this._tgtIdx = -1;
     this._lastNotch = null;
   }
 
@@ -179,7 +187,7 @@ export class Cab {
 
   /* 大きさが変わったとき: 速度計の解像度・レバーの持ち手の位置 */
   _observeSizes() {
-    const onResize = () => { this._fitSpeedo(); this._measureLever(); };
+    const onResize = () => { this._fitSpeedo(); this._measureLever(); this._measureGlass(); };
     if (typeof ResizeObserver !== 'undefined') {
       this._ro = new ResizeObserver(onResize);
       this._ro.observe(this.speedo);
@@ -187,6 +195,25 @@ export class Cab {
     }
     addEventListener('resize', onResize);
     onResize();
+  }
+
+  /* 夜のガラスに映る計器の明かりの位置(モニタ・速度計)を #glass-sheen の CSS 変数へ。
+   * 大きさが変わったときだけ(値が同じなら書かない) */
+  _measureGlass() {
+    const gw = $('#gl-wrap'), sh = $('#glass-sheen'), ts = this.root.querySelector('.tims-screen');
+    if (!gw || !sh || !ts) return;
+    const g = gw.getBoundingClientRect(), t = ts.getBoundingClientRect(), sp = this.speedo.getBoundingClientRect();
+    if (!(g.width > 0) || !(t.width > 0)) return;
+    const pct = (v) => v.toFixed(1) + '%';
+    const tx = pct(((t.left + t.width / 2 - g.left) / g.width) * 100);
+    const tw = pct((t.width / g.width) * 55);
+    const sx = sp.width > 0 ? pct(((sp.left + sp.width / 2 - g.left) / g.width) * 100) : '8.0%';
+    const key = tx + tw + sx;
+    if (key === this._rfKey) return;
+    this._rfKey = key;
+    sh.style.setProperty('--rf-tx', tx);
+    sh.style.setProperty('--rf-tw', tw);
+    sh.style.setProperty('--rf-sx', sx);
   }
 
   _fitSpeedo() {
@@ -198,7 +225,6 @@ export class Cab {
     if (this.speedo.width !== px || this.speedo.height !== px) {
       this.speedo.width = this.speedo.height = px;
       this._dials = {};
-      this._led = null;
       this._grad = null;
       this._k.w = -1;
     }
@@ -263,6 +289,16 @@ export class Cab {
     g.classList.add('tb-flash');
     clearTimeout(this._flashT);
     this._flashT = setTimeout(() => g.classList.remove('tb-flash'), 320);
+  }
+
+  /* つぎにねらうノッチ(-8〜4)。その段の枠を点滅させる。null で消す(変わったときだけ書く) */
+  setTarget(n) {
+    const idx = n == null || !Number.isFinite(n) ? -1 : notchIdx(clamp(Math.round(n), -8, 4));
+    if (idx === this._tgtIdx) return;
+    const nt = this._nt || [];
+    if (this._tgtIdx >= 0 && nt[this._tgtIdx]) nt[this._tgtIdx].classList.remove('tgt');
+    if (idx >= 0 && nt[idx]) nt[idx].classList.add('tgt');
+    this._tgtIdx = idx;
   }
 
   /* 運転モニタの見出し(種別・行き先)。呼ばれるまでは sim から作る */
@@ -343,12 +379,17 @@ export class Cab {
     this._delayK = null;
     this._clockM = null;
     this._arrM = null;
+    this._atSta = null;   // 最初のフレームでかならず「つぎは」「ただいま」を書く
+    this._atCur = null;
     this._lastNotch = null;
+    this._vs = null;
   }
 
   _renderNotch(n) {
     this._lastNotch = n;
     const idx = notchIdx(n);
+    /* 1段ずつ動かしたときだけ 90ms でカチッと動く(CSS)。目盛りを遠くまでタップしたときなどは すぐその段へ */
+    this._cls(this.els.leverGrip, 'lg-jump', !(this._onIdx >= 0 && Math.abs(idx - this._onIdx) === 1));
     if (this._onIdx >= 0 && this._nt[this._onIdx]) this._nt[this._onIdx].classList.remove('on');
     if (this._nt[idx]) this._nt[idx].classList.add('on');
     this._onIdx = idx;
@@ -368,70 +409,66 @@ export class Cab {
     const W = this.speedo.width;
     if (!W) return;
     const v = Math.max(0, h.v || 0);
+    /* 針はなめらかに追いかける(実時間で時定数0.1秒)。液晶は切り捨ての整数のまま */
+    const now = performance.now();
+    const dtR = this._vsT != null ? Math.min(1, (now - this._vsT) / 1000) : 1;
+    this._vsT = now;
+    if (this._vs == null || this._jump) this._vs = v;
+    else this._vs += (v - this._vs) * Math.min(1, dtR * 10);
+    if (Math.abs(v - this._vs) < 0.03) this._vs = v;
     const lim = h.limit;
     const a = h.ats;
     const pat = a && a.pattern < lim ? a.pattern : 999;
     const patI = pat < 999 ? Math.floor(pat / 2.5) : 99;
-    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置のLEDをきいろで1つ */
+    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置に小さいきいろの三角 */
     const tgtI = a && a.kind !== 'stop' && a.target < lim ? Math.floor(a.target / 2.5) : -1;
     const lamp = h.atsLamp;
+    /* きいろの帯(パターン〜制限)を光らせるのは、ATSが注意を出しているか、パターンに近いときだけ
+     * (駅で止まっているあいだに 帯がきいろ一色にならないように) */
+    const warn = lamp !== 'normal' || v > pat - 10 ? 1 : 0;
     const blinking = lamp === 'brake' || (lamp === 'pattern' && pat < lim);
-    const blink = blinking ? ((performance.now() / 250) | 0) & 1 : 0;   // 2Hzで点滅
-    const v10 = (v * 10) | 0, night = this._night ? 1 : 0;
+    const blink = blinking ? ((now / 250) | 0) & 1 : 0;   // 2Hzで点滅
+    const v10 = (this._vs * 10) | 0, vi = Math.floor(v), night = this._night ? 1 : 0;
     const k = this._k;
-    if (k.v10 === v10 && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.blink === blink && k.night === night && k.w === W) return;
-    k.v10 = v10; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.blink = blink; k.night = night; k.w = W;
-    this._drawSpeedo(v, lim, pat, tgtI, lamp, blink, night);
+    if (k.v10 === v10 && k.vi === vi && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.warn === warn && k.blink === blink && k.night === night && k.w === W) return;
+    k.v10 = v10; k.vi = vi; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.warn = warn; k.blink = blink; k.night = night; k.w = W;
+    this._drawSpeedo(this._vs, vi, lim, pat, tgtI, lamp, warn, blink, night);
   }
 
-  _ledPts(W) {
-    if (this._led && this._led.W === W) return this._led;
-    const R = W / 2, r = R * 0.885, pts = [];
-    for (let i = 0; i < LED_N; i++) { const an = angOf(i * 2.5); pts.push(R + Math.cos(an) * r, R + Math.sin(an) * r); }
-    this._led = { W, pts, rd: R * 0.025 };
-    return this._led;
-  }
-
-  _drawSpeedo(v, lim, pat, tgtI, lamp, blink, night) {
+  _drawSpeedo(vn, vi, lim, pat, tgtI, lamp, warn, blink, night) {
     const c = this.ctx, W = this.speedo.width, R = W / 2;
     const small = (this._cssW || 150) < 100;
+    const px = W / (this._cssW || W);   // CSSの1pxぶん
     const dial = this._dial(W, night, small);
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, W, W);
     c.drawImage(dial, 0, 0);
 
-    /* LEDリング: みどり=だいじょうぶ / きいろ=このさき下げる(パターンより上・つぎの制限の目標) /
-     * あか=いまの制限 / 消灯=制限より上 */
-    const L = this._ledPts(W), pts = L.pts, rd = L.rd;
+    /* 区切りの帯: 消灯の地 → みどり(だいじょうぶ) → きいろ(このさき下げる)。制限より上は消灯のまま */
+    const rr = R * 0.885, seg = (A1 - A0) / SEG_N;
     const limI = Math.floor(Math.min(lim, VMAX) / 2.5);
-    const greenMax = Math.min(lim, pat);
-    const col = this._ledCol || (this._ledCol = new Int8Array(LED_N));
-    for (let i = 0; i < LED_N; i++) {
-      const d = i * 2.5;
-      let ci;
-      if (i > limI) ci = 3;
-      else if (i === limI) ci = 2;
-      else if (i === tgtI) ci = 1;
-      else if (d <= greenMax) ci = 0;
-      else ci = lamp === 'pattern' && blink ? 3 : 1;
-      if (lamp === 'brake' && ci !== 3) ci = blink ? 3 : 2;
-      col[i] = ci;
+    const gI = Math.min(limI, Math.floor(Math.min(lim, pat) / 2.5));
+    c.lineWidth = R * 0.07;
+    c.lineCap = 'butt';
+    /* 破線の長さは大きさが変わったときだけ作りなおす(毎回の配列を作らない) */
+    if (!this._dash || this._dashW !== W) { this._dash = [rr * seg * 0.72, rr * seg * 0.28]; this._dashW = W; }
+    c.setLineDash(this._dash);
+    this._segArc(c, R, rr, 0, SEG_N, '#241514');
+    if (lamp === 'brake') {
+      if (!blink) this._segArc(c, R, rr, 0, limI, '#ff4a3d');
+    } else {
+      this._segArc(c, R, rr, 0, gI, '#1fa85a');
+      this._segArc(c, R, rr, gI + 1, limI, warn && !(lamp === 'pattern' && blink) ? '#ffb32e' : '#4a3812');
     }
-    for (let ci = 0; ci < 4; ci++) {
-      c.beginPath();
-      let any = false;
-      for (let i = 0; i < LED_N; i++) {
-        if (col[i] !== ci) continue;
-        const x = pts[i * 2], y = pts[i * 2 + 1];
-        c.moveTo(x + rd, y); c.arc(x, y, rd, 0, TAU);
-        any = true;
-      }
-      if (any) { c.fillStyle = LED_COL[ci]; c.fill(); }
-    }
+    c.setLineDash(NO_DASH);
+
+    /* 制限の三角(あか)と、このさきの目標(小さいきいろ)。中心をさす三角で、ふちは黒 */
+    if (tgtI >= 0) this._wedge(c, R, px, tgtI * 2.5, 0.04, '#ffb32e');
+    this._wedge(c, R, px, lim, 0.065, '#ff4a3d');
 
     /* 液晶: 速度(切り捨て)。小さい速度計では ATS の状態も出す */
     const lcd = this._lcdBox(R, small);
-    let txt = String(Math.floor(v)), ink = night ? '#e6fff1' : '#d6ffe8';
+    let txt = String(vi), ink = night ? '#e6fff1' : '#d6ffe8';
     if (small && lamp !== 'normal') {
       c.fillStyle = lamp === 'brake' ? '#ff4a3d' : '#ffb32e';
       this._rrect(c, lcd.x + 1, lcd.y + 1, lcd.w - 2, lcd.h - 2, lcd.h * 0.25);
@@ -447,7 +484,7 @@ export class Cab {
     c.fillText(txt, R, lcd.y + lcd.h * 0.54, lcd.w - 4);
 
     /* 針(先細り・影つき) */
-    const av = angOf(Math.min(VMAX + 2, v));
+    const av = angOf(Math.min(VMAX + 2, vn));
     c.save();
     c.translate(R, R); c.rotate(av);
     c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = R * 0.04; c.shadowOffsetY = R * 0.02;
@@ -467,10 +504,32 @@ export class Cab {
     c.beginPath(); c.arc(R, R, R * 0.915, 0, TAU); c.fill();
   }
 
+  /* 区切りの帯の i0〜i1 番目(2.5km/hごと)を1本の破線の弧で */
+  _segArc(c, R, rr, i0, i1, col) {
+    if (i1 < i0) return;
+    c.strokeStyle = col;
+    c.beginPath();
+    c.arc(R, R, rr, angOf(i0 * 2.5 - SEG_HALF), angOf(i1 * 2.5 + SEG_HALF));
+    c.stroke();
+  }
+
+  /* 目盛りの外がわの三角(先が中心をさす)。sp: km/h、hw: 半分の幅(R に対する比) */
+  _wedge(c, R, px, sp, hw, col) {
+    const an = angOf(Math.min(VMAX, sp)), ca = Math.cos(an), sa = Math.sin(an);
+    const r0 = R * 0.80, r1 = R * 0.95, w = R * hw;
+    c.beginPath();
+    c.moveTo(R + ca * r0, R + sa * r0);
+    c.lineTo(R + ca * r1 - sa * w, R + sa * r1 + ca * w);
+    c.lineTo(R + ca * r1 + sa * w, R + sa * r1 - ca * w);
+    c.closePath();
+    c.fillStyle = col; c.fill();
+    c.lineWidth = px; c.lineJoin = 'round'; c.strokeStyle = '#000'; c.stroke();
+  }
+
   _lcdBox(R, small) {
     /* 小さい速度計: 0 と 120 の数字にかからないよう、下のすきまいっぱいに */
     return small ? { x: R - R * 0.41, y: R + R * 0.53, w: R * 0.82, h: R * 0.27 }
-      : { x: R - R * 0.30, y: R + R * 0.40, w: R * 0.60, h: R * 0.24 };
+      : { x: R - R * 0.30, y: R + R * 0.36, w: R * 0.60, h: R * 0.30 };
   }
 
   _grads(R) {
@@ -533,7 +592,7 @@ export class Cab {
     }
     c.fillStyle = ink;
     c.textAlign = 'center'; c.textBaseline = 'middle';
-    c.font = `700 ${(R * (small ? 0.19 : 0.16)).toFixed(1)}px ${NUM_FONT}`;
+    c.font = `700 ${(R * (small ? 0.19 : 0.18)).toFixed(1)}px ${NUM_FONT}`;
     for (let v = 0; v <= VMAX; v += 20) {
       const an = angOf(v);
       c.fillText(String(v), Math.cos(an) * R * 0.62, Math.sin(an) * R * 0.62);
@@ -541,8 +600,8 @@ export class Cab {
     c.shadowBlur = 0; c.shadowColor = 'transparent';
     if (!small) {
       c.fillStyle = night ? '#a8977a' : '#7d8890';
-      c.font = `500 ${(R * 0.09).toFixed(1)}px ${NUM_FONT}`;
-      c.fillText('km/h', 0, R * 0.30);
+      c.font = `500 ${(R * 0.1).toFixed(1)}px ${NUM_FONT}`;
+      c.fillText('km/h', 0, R * 0.27);
     }
     /* 液晶の窓 */
     c.translate(-R, -R);
@@ -595,18 +654,34 @@ export class Cab {
       E.timsClock.innerHTML = `${hh}<i class="tc-c">:</i>${mm}`;
     }
     const nx = h.next;
+    /* 駅でドアが開いているあいだは「ただいま <いまの駅>」、つぎの駅は小さく(停止の判定カード・スタンプと同じ駅) */
+    const cur = sim.stopIdx > 0 && sim.stops ? sim.stops[sim.stopIdx - 1] : null;
+    const atSta = !!h.doorOpen && !!cur;
+    if (atSta !== this._atSta || (atSta && cur !== this._atCur)) {
+      this._atSta = atSta;
+      this._atCur = atSta ? cur : null;
+      if (E.timsCap) E.timsCap.textContent = atSta ? 'ただいま' : 'つぎは';
+      this._cls(E.timsDist, 'tims-dist-small', atSta);
+      if (atSta) {
+        E.timsNext._t = null;
+        E.timsNext.innerHTML = rubySt(cur.name);
+        E.timsDist.innerHTML = nx ? `つぎは ${rubySt(nx.name)}` : '';
+      }
+      /* ドアが閉まったら、つぎの駅・のこり距離・つく時刻を書きなおす */
+      this._nextName = null; this._distK = null; this._arrM = null; this._noNext = false;
+    }
     if (!nx) {
       if (!this._noNext) {
         this._noNext = true;
         this._nextName = null; this._distK = null; this._delayK = null;
-        E.timsNext.textContent = '—';
-        E.timsDist.textContent = ''; E.timsDelay.textContent = '';
+        if (!atSta) { E.timsNext.textContent = '—'; E.timsDist.textContent = ''; }
+        E.timsDelay.textContent = '';
         E.timsSch._t = null; E.timsSch.textContent = ''; this._arrM = null;
       }
       return;
     }
     this._noNext = false;
-    if (this._nextName !== nx.name) {
+    if (!atSta && this._nextName !== nx.name) {
       this._nextName = nx.name;
       E.timsNext._t = null;
       E.timsNext.innerHTML = rubySt(nx.name);
@@ -615,9 +690,12 @@ export class Cab {
     if (this._listIdx !== sim.stopIdx) {
       this._listIdx = sim.stopIdx;
       const items = [];
+      const lastI = sim.stops.length - 1;
       for (let i = sim.stopIdx; i < Math.min(sim.stops.length, sim.stopIdx + 3); i++) {
         const st = sim.stops[i], tt = sim.timetable && sim.timetable[i];
-        items.push(`<li${i === sim.stopIdx ? ' class="next"' : ''}><span class="tl-n">${rubySt(st.name)}</span><span class="tl-t">${tt ? this._hm(tt.arr) : ''} つく</span></li>`);
+        /* 終点(この運転のゴール)は黄色いわくの「ゴール」をつける */
+        const cls = [i === sim.stopIdx ? 'next' : '', i === lastI ? 'goal' : ''].filter(Boolean).join(' ');
+        items.push(`<li${cls ? ` class="${cls}"` : ''}><span class="tl-n">${rubySt(st.name)}</span>${i === lastI ? '<span class="tl-goal">ゴール</span>' : ''}<span class="tl-t">${tt ? this._hm(tt.arr) : ''} つく</span></li>`);
       }
       E.timsList.innerHTML = items.join('');
       const cur = sim.stops[sim.stopIdx], prev = sim.stops[sim.stopIdx - 1];
@@ -627,7 +705,7 @@ export class Cab {
     /* のこりの距離(m は1mごと、km は10mごと) */
     const d = Math.max(0, nx.dist);
     const dk = d >= 1000 ? 100000 + Math.round(d / 10) : Math.round(d);
-    if (dk !== this._distK) {
+    if (!atSta && dk !== this._distK) {
       this._distK = dk;
       E.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
     }
@@ -657,9 +735,12 @@ export class Cab {
       this._lim = h.limit;
       E.limNow.textContent = h.limit;
       this._cls(E.limNow, 'l3', h.limit >= 100);
-      /* かわったときだけ「ポン」 */
-      if (!first && !this._jump && E.limNow.animate) {
-        E.limNow.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(.2,1.6,.4,1)' });
+      /* かわったときだけ「ポン」と、白いふちが 0.6秒 光る(目が計器盤にいくように) */
+      if (!first && !this._jump) {
+        if (E.limNow.animate) E.limNow.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(.2,1.6,.4,1)' });
+        E.limNow.classList.add('flash');
+        clearTimeout(this._limFlashT);
+        this._limFlashT = setTimeout(() => E.limNow.classList.remove('flash'), 600);
       }
     }
     const a = h.ats;

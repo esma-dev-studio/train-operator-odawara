@@ -2532,6 +2532,13 @@ export class RailScene {
       cam.rotateX(this._accSm * 0.01 + this._by * 0.25);
       cam.rotateZ(this._roll);
       cam.position.y += this._by * 0.012;
+      /* 運転台は車体に固定、目(カメラ)はその中で少し動く: 揺れの一部だけ逆向きに枠をずらす(1〜3px)。
+       * f.left はカメラの -x なので、左へのゆれ sway はカメラ座標では +x に。
+       * 横ゆれは大きいので係数を小さく(上限 4mm に張りついて カクッと動かないように) */
+      if (typeof this.cockpit.setHeadOffset === 'function') {
+        this.cockpit.setHeadOffset(sway * k * 0.12, -(bob * k) * 0.5 - this._by * 0.006,
+          -(this._accSm * 0.01 + this._by * 0.25) * 0.5, -this._roll * 0.5);
+      }
       cam.fov = 58;
       this._camS = s;
     } else if (mode === 'chase' || mode === 'drone') {
@@ -2577,6 +2584,8 @@ export class RailScene {
       cam.fov = Math.max(18, Math.min(50, 50 - Math.max(0, (this._frontCamS - s) - 60) * 0.12));
       this._camS = this._frontCamS;
     }
+    /* 外からの視点では運転台を描かないので、頭のずれはもどしておく */
+    if (mode !== 'cab' && typeof this.cockpit.setHeadOffset === 'function') this.cockpit.setHeadOffset(0, 0, 0, 0);
     cam.updateProjectionMatrix();
   }
 
