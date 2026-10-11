@@ -266,37 +266,90 @@ function drawShop() {
   return P;
 }
 
-/* ---------- 戸建て(サイディング): 8m×9m。1階=掃き出し窓+玄関ドア / 2階=窓2つ+バルコニー ---------- */
+/* ---------- 戸建て(サイディング): 1軒ぶん 8m×9m の絵を4つ横に並べた 512×128 ----------
+ * A: 1階=掃き出し窓+玄関ドア(右) / 2階=窓2つ+バルコニー(いままでの絵)
+ * B: 1階=玄関ドア(左)+出窓 / 2階=小さな窓3つ(バルコニーなし)
+ * C: 細い3階建て: 1階=玄関(右)+ルーバー窓 / 2階=はば一杯のバルコニーと掃き出し窓 / 3階=ルーバー窓
+ * 横の壁(妻の面): 1階・2階に小さな窓が1つずつ、換気口、雨どい(玄関はない)
+ * 玄関の位置(1軒の絵の中の横の位置 0..1)は HOUSE_DOOR に書く(玄関の光だまりを合わせる) */
+export const HOUSE_DOOR = [0.75, 0.2, 0.78];
 function drawHouse() {
-  const P = painter(128, 128);
+  const P = painter(512, 128);
   const Y = (m) => Math.round(128 - m * 14.22);    // 高さ(m)→キャンバスのy
-  P.wall(0, 0, 128, 128, '#f2f1ed');
-  for (let y = 0; y < 128; y += 4) P.tint(0, y, 128, 1, 'rgba(0,0,0,.06)');   // サイディングの目地
-  P.wall(0, Y(0.35), 128, 128 - Y(0.35), '#b9b6ae');                           // 基礎
-  /* 1階: 掃き出し窓(左)と玄関ドア(右) */
-  P.wall(9, Y(2.25), 38, Y(0.35) - Y(2.25), '#8d9195', 120, 120);
-  P.glass(11, Y(2.15), 34, Y(0.4) - Y(2.15), '#a4b5c2', '#3e4952');
-  P.tint(27, Y(2.15), 2, Y(0.4) - Y(2.15), 'rgba(110,116,120,.95)');
-  P.wall(86, Y(2.2), 20, Y(0.35) - Y(2.2), '#6b5844', 180, 0);
-  P.tint(88, Y(2.1), 3, Y(0.5) - Y(2.1), 'rgba(255,255,255,.12)');
-  P.tint(100, Y(1.2), 2, 3, 'rgba(220,210,170,.9)');
-  P.tint(84, Y(2.45), 24, 3, 'rgba(0,0,0,.3)');                                 // 玄関ひさしの影
-  /* 門灯(もんとう。夜はいつも点く灯りの帯 R=140) */
-  P.wall(80, Y(2.4), 4, 4, '#f4efe0', 250, 0);
-  P.ormRect(80, Y(2.4), 4, 4, 140, 250, 0);
-  /* 2階: 窓2つ + バルコニーの白い手すり */
-  [[18, 3.55, 26, 1.45], [66, 3.75, 18, 1.15]].forEach(([x, y1, w, h]) => {
-    P.wall(x - 2, Y(y1 + h + 0.1), w + 4, Y(y1 - 0.1) - Y(y1 + h + 0.1), '#8d9195', 120, 120);
-    P.glass(x, Y(y1 + h), w, Y(y1) - Y(y1 + h), '#a4b5c2', '#3e4952');
-  });
-  P.wall(14, Y(3.85), 36, Y(2.95) - Y(3.85), '#f7f7f4');                       // バルコニー
+  const H = (y0, y1) => Y(y0) - Y(y1);             // 高さの範囲(m)→画素
+  P.wall(0, 0, 512, 128, '#f2f1ed');
+  for (let y = 0; y < 128; y += 4) P.tint(0, y, 512, 1, 'rgba(0,0,0,.06)');   // サイディングの目地
+  P.wall(0, Y(0.35), 512, 128 - Y(0.35), '#b9b6ae');                           // 基礎
+  /* 窓(サッシ枠+ガラス) */
+  const win = (x, y0, w, h) => {
+    P.wall(x - 2, Y(y0 + h + 0.1), w + 4, H(y0 - 0.1, y0 + h + 0.1), '#8d9195', 120, 120);
+    P.glass(x, Y(y0 + h), w, H(y0, y0 + h), '#a4b5c2', '#3e4952');
+  };
+  /* 玄関ドア(木目調)と門灯(夜はいつも点く灯りの帯 R=140) */
+  const door = (x, col, lampX) => {
+    P.wall(x, Y(2.2), 20, H(0.35, 2.2), col, 180, 0);
+    P.tint(x + 2, Y(2.1), 3, H(0.5, 2.1), 'rgba(255,255,255,.12)');
+    P.tint(x + (x % 2 ? 4 : 14), Y(1.2), 2, 3, 'rgba(220,210,170,.9)');
+    P.tint(x - 2, Y(2.45), 24, 3, 'rgba(0,0,0,.3)');                              // 玄関ひさしの影
+    P.wall(lampX, Y(2.4), 4, 4, '#f4efe0', 250, 0);
+    P.ormRect(lampX, Y(2.4), 4, 4, 140, 250, 0);
+  };
+  /* ルーバー窓(細いガラスの羽根を横に重ねた窓) */
+  const louver = (x, y0, w, h) => {
+    win(x, y0, w, h);
+    for (let y = Y(y0 + h) + 2; y < Y(y0); y += 3) { P.tint(x, y, w, 1, 'rgba(230,236,240,.55)'); P.tint(x, y + 1, w, 1, 'rgba(0,0,0,.18)'); }
+  };
+  const pipe = (x) => P.wall(x, 0, 2, 128, '#8a8780', 200, 30);   // 雨どい
+
+  /* ---- A(0..128): いままでの絵 ---- */
+  P.wall(9, Y(2.25), 38, H(0.35, 2.25), '#8d9195', 120, 120);
+  P.glass(11, Y(2.15), 34, H(0.4, 2.15), '#a4b5c2', '#3e4952');
+  P.tint(27, Y(2.15), 2, H(0.4, 2.15), 'rgba(110,116,120,.95)');
+  door(86, '#6b5844', 80);
+  [[18, 3.55, 26, 1.45], [66, 3.75, 18, 1.15]].forEach(([x, y1, w, h]) => win(x, y1, w, h));
+  P.wall(14, Y(3.85), 36, H(2.95, 3.85), '#f7f7f4');                       // バルコニー
   P.tint(14, Y(2.95), 36, 2, 'rgba(0,0,0,.25)');
-  for (let x = 16; x < 50; x += 4) P.tint(x, Y(3.8), 1, Y(3.0) - Y(3.8), 'rgba(0,0,0,.06)');
-  /* 3階(3階建てだけ見える高さ)・妻壁の小窓 */
-  P.wall(48, Y(7.7), 26, Y(6.5) - Y(7.7), '#8d9195', 120, 120);
-  P.glass(50, Y(7.6), 22, Y(6.6) - Y(7.6), '#a4b5c2', '#3e4952');
-  /* 雨どい */
-  P.wall(123, 0, 2, 128, '#8a8780', 200, 30);
+  for (let x = 16; x < 50; x += 4) P.tint(x, Y(3.8), 1, H(3.0, 3.8), 'rgba(0,0,0,.06)');
+  win(50, 6.6, 22, 1.0);                                                     // 3階(3階建てだけ見える高さ)
+  pipe(123);
+
+  /* ---- B(128..256): 玄関は左・出窓・2階は小窓3つ ---- */
+  door(128 + 14, '#4e4a44', 128 + 38);
+  P.wall(128 + 56, Y(2.15), 58, H(0.65, 2.15), '#e9e8e3', 200, 0);          // 出窓の枠(白)
+  P.glass(128 + 60, Y(2.0), 50, H(0.8, 2.0), '#a7b8c4', '#46525c');
+  P.tint(128 + 76, Y(2.0), 2, H(0.8, 2.0), 'rgba(110,116,120,.95)');
+  P.tint(128 + 93, Y(2.0), 2, H(0.8, 2.0), 'rgba(110,116,120,.95)');
+  P.tint(128 + 56, Y(0.65), 58, 3, 'rgba(0,0,0,.32)');                      // 出窓の下の影
+  P.tint(128 + 56, Y(2.15) - 2, 58, 2, 'rgba(0,0,0,.22)');
+  [14, 54, 94].forEach((x) => win(128 + x, 3.7, 18, 1.1));
+  win(128 + 54, 6.6, 20, 1.0);
+  pipe(128 + 123);
+
+  /* ---- C(256..384): 細い3階建て。2階ははば一杯のバルコニー ---- */
+  louver(256 + 12, 1.0, 16, 1.0);
+  win(256 + 36, 0.9, 30, 1.2);
+  door(256 + 92, '#7a7f84', 256 + 86);
+  win(256 + 10, 3.15, 50, 1.85);                                             // 2階の掃き出し窓
+  P.tint(256 + 34, Y(5.0), 2, H(3.15, 5.0), 'rgba(110,116,120,.95)');
+  win(256 + 80, 3.6, 30, 1.3);
+  P.wall(256 + 4, Y(4.05), 120, H(3.05, 4.05), '#e4e3de');                  // バルコニー(手すり壁)
+  P.tint(256 + 4, Y(4.05), 120, 2, 'rgba(255,255,255,.6)');
+  P.tint(256 + 4, Y(3.05), 120, 3, 'rgba(0,0,0,.28)');
+  louver(256 + 20, 6.5, 22, 1.1);
+  win(256 + 70, 6.5, 26, 1.1);
+  pipe(256 + 124);
+
+  /* ---- 横の壁(384..512): 小窓2つ・換気口・雨どい ---- */
+  louver(384 + 30, 1.05, 18, 0.9);
+  win(384 + 66, 3.75, 24, 1.1);
+  P.wall(384 + 96, Y(2.0), 8, 8, '#d2d0c8', 200, 20);                      // 換気口(ガラリ)
+  for (let k = 1; k < 8; k += 2) P.tint(384 + 96, Y(2.0) + k, 8, 1, 'rgba(0,0,0,.3)');
+  P.wall(384 + 60, Y(7.0), 8, 6, '#d2d0c8', 200, 20);                       // 屋根裏の換気口
+  for (let k = 1; k < 6; k += 2) P.tint(384 + 60, Y(7.0) + k, 8, 1, 'rgba(0,0,0,.3)');
+  win(384 + 44, 6.4, 18, 0.9);                                               // 3階建てだけ見える小窓
+  P.tint(384 + 10, Y(3.3), 6, 4, 'rgba(60,60,58,.55)');                     // エアコンの配管カバー
+  P.tint(384 + 12, Y(3.0), 2, H(0.6, 3.0), 'rgba(200,198,190,.9)');
+  pipe(384 + 2);
   return P;
 }
 
@@ -309,7 +362,7 @@ export const FACADE = {
   tower:    { draw: drawTower,    tile: [12.8, 16], grid: [4, 4], steps: [4, 4], roof: 0x4e5256, bay: 3.2, fh: 4.0, side: [0, 0] },
   zakkyo:   { draw: drawZakkyo,   tile: [9.6, 13.2], grid: [3, 4], steps: [3, 4], roof: 0x585550, bay: 3.2, fh: 3.3, side: [1, 4 / 256] },
   shop:     { draw: drawShop,     tile: [14.4, 4.2], grid: [3, 1], steps: [3, 1], roof: 0x8f8d88, bay: 4.8, fh: 4.2, side: [0, 0] },
-  house:    { draw: drawHouse,    tile: [8, 9], grid: [2, 3], steps: [2, 1], roof: 0x55534f, bay: 4.0, fh: 2.9, side: [0, 0] },
+  house:    { draw: drawHouse,    tile: [32, 9], grid: [8, 3], steps: [1, 1], roof: 0x55534f, bay: 4.0, fh: 2.9, side: [0, 0], fit: true },
 };
 
 function canvasesOf(name) {
@@ -328,23 +381,34 @@ uniform vec2 uFcTile;
 uniform vec2 uFcSteps;
 uniform vec2 uFcSide;
 uniform float uFcV0;
+uniform float uFcFit;
+uniform float uFcEnd;
 varying vec2 vFcUv;
 varying float vFcSeed;
 varying float vFcRoof;
 varying float vFcTop;
 varying float vFcEdge;
 varying float vFcH;
+varying vec2 vFcRoofUv;
 `;
 const MAIN_V = /* glsl */`
 #ifdef USE_INSTANCING
 {
   vec3 fcSc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
-  float fcU = abs(normal.x) > .5 ? (.5 - sign(normal.x) * position.z) * fcSc.z : (.5 + sign(normal.z) * position.x) * fcSc.x;
-  vec2 fcW = vec2(fcU, position.y * fcSc.y - uFcV0) / uFcTile;
   /* 建物ごとの乱数。補間の誤差で窓の中がざらつかないよう 1/4096 の刻みの真ん中にそろえる */
   vFcSeed = (floor(fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453) * 4096.) + .5) / 4096.;
-  fcW += floor(vec2(vFcSeed, fract(vFcSeed * 13.)) * uFcSteps) / max(uFcSteps, vec2(1.));
+  float fcU = abs(normal.x) > .5 ? (.5 - sign(normal.x) * position.z) * fcSc.z : (.5 + sign(normal.z) * position.x) * fcSc.x;
+  /* 戸建て(uFcFit): 1つの面に「1軒ぶんの絵(8m)」をちょうど1つ。長い面(±x)は表の絵3種のどれか、
+   * 妻の面(±z)は窓の少ない「横の壁」の絵。表の絵の選び方は位置の整数から(玄関の光だまりを JS で同じ所に置くため) */
+  if (uFcFit > .5) {
+    float fw = abs(normal.x) > .5 ? fcSc.z : fcSc.x;
+    float fcMod = abs(normal.z) > .5 || uFcEnd > .5 ? 3. : floor(fract(dot(floor(instanceMatrix[3].xz * .5), vec2(.1031, .1173))) * 3.);
+    fcU = fcU / fw * 8. + 8. * fcMod;
+  }
+  vec2 fcW = vec2(fcU, position.y * fcSc.y - uFcV0) / uFcTile;
+  fcW += (1. - step(.5, uFcFit)) * floor(vec2(vFcSeed, fract(vFcSeed * 13.)) * uFcSteps) / max(uFcSteps, vec2(1.));
   vFcRoof = step(.5, normal.y);
+  vFcRoofUv = position.xz * fcSc.xz;
   vFcTop = (1. - position.y) * fcSc.y;
   vFcEdge = (.5 - max(abs(position.x), abs(position.z))) * min(fcSc.x, fcSc.z);
   vFcH = position.y * fcSc.y;   // インスタンスの足もとからの高さ(m)
@@ -379,12 +443,14 @@ uniform vec2 uFcGrid;
 uniform float uFcLit;
 uniform float uFcBoost;
 uniform float uFcAmb;
+uniform float uFcFit;
 varying vec2 vFcUv;
 varying float vFcSeed;
 varying float vFcRoof;
 varying float vFcTop;
 varying float vFcEdge;
 varying float vFcH;
+varying vec2 vFcRoofUv;
 float fcH12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 `;
 const COLOR_F = /* glsl */`
@@ -393,11 +459,32 @@ vec4 fcOrm = vec4(0., 1., 0., 0.);
 #ifdef USE_EMISSIVEMAP
 fcOrm = texture2D(emissiveMap, vEmissiveMapUv);
 #endif
+/* 屋上の模様の線の太さ(画面の1画素あたり)。fwidth は分岐の外で求める */
+vec2 fcGp = vFcRoofUv / .6;
+vec2 fcGw = max(fwidth(fcGp), vec2(1e-4));
+float fcSw = max(fwidth(vFcRoofUv.x), 1e-4);
 if (vFcRoof > .5) {
-  /* 屋上: 防水シートの色 + 縁の立ち上がり(パラペット35cm)を明るく */
+  /* 屋上: 防水シートの色 + 縁の立ち上がり(パラペット35cm)を明るく。
+   * 建物ごとに模様を1つ: 0.6mの押さえコンクリート(目地) / 1mおきのシートの継ぎ目 / 緑っぽい防水塗装 / 無地。
+   * 細かい線は画面で細くなりすぎたら消す(fwidth)。縁の内側は雨水の汚れで少し暗く、補修のあとの明るい四角を1つ */
   float fcRs = fract(floor(vFcSeed * 4096.) * .00179);
   vec3 fcR = uFcRoof * (.75 + .5 * fcRs);
-  fcR *= mix(vec3(1.), vec3(.86, 1., .9), step(.82, fract(fcRs * 7.3)));   // 緑っぽい防水塗装もまぜる
+  /* 戸建て(uFcFit): 屋根の色を家ごとに(濃い灰・こげ茶・紺・赤茶・緑。town.js の ROOFS と同じ色あい) */
+  float fcRk = fract(fcRs * 5.3);
+  vec3 fcRp = fcRk < .32 ? vec3(.028, .031, .035) : fcRk < .52 ? vec3(.06, .045, .033) : fcRk < .64 ? vec3(.018, .045, .088)
+    : fcRk < .76 ? vec3(.12, .052, .03) : fcRk < .86 ? vec3(.06, .082, .051) : vec3(.05, .048, .046);
+  fcR = mix(fcR, fcRp, step(.5, uFcFit));
+  float fcPt = fract(fcRs * 7.3) + 2. * step(.5, uFcFit);   // 戸建ては模様なし
+  vec2 fcGl = 1. - smoothstep(fcGw * .5, fcGw * 1.5, abs(fract(fcGp + .5) - .5));
+  float fcGf = 1. - smoothstep(.12, .35, max(fcGw.x, fcGw.y));
+  float fcSl = (1. - smoothstep(fcSw * .5, fcSw * 1.5, abs(fract(vFcRoofUv.x + .5) - .5))) * (1. - smoothstep(.2, .6, fcSw));
+  fcR *= fcPt < .42 ? 1. - .07 * max(fcGl.x, fcGl.y) * fcGf : fcPt < .74 ? 1. - .09 * fcSl : 1.;
+  fcR *= mix(vec3(1.), vec3(.86, 1., .9), step(.82, fcPt) * step(fcPt, 1.));   // 緑っぽい防水塗装もまぜる
+  vec2 fcRc = (vec2(fcH12(vec2(fcRs * 91.3, 1.7)), fcH12(vec2(fcRs * 37.9, 5.3))) - .5) * 5.;
+  vec2 fcRh = 1.1 + 1.3 * vec2(fcH12(vec2(fcRs * 13.1, 2.9)), fcH12(vec2(fcRs * 71.7, 8.1)));
+  vec2 fcRq = step(abs(vFcRoofUv - fcRc), fcRh);
+  fcR *= 1. + .15 * fcRq.x * fcRq.y * step(.3, fract(fcRs * 3.1));
+  fcR *= mix(.9, 1., smoothstep(.35, 1.2, vFcEdge));
   diffuseColor.rgb = mix(fcR, fcR * 1.4, step(vFcEdge, .35));
 } else {
   /* ガラス(粗さ<.25)は壁の色に4分の1しか染めない(濃いタイルの建物でもガラスが茶色にならない) */
@@ -445,7 +532,7 @@ const EMIT_F = /* glsl */`
     + fcLamp * vec3(1., .92, .78) * mix(.6, 1.6, smoothstep(.4, .6, fcM))) * (1. - vFcRoof);
   /* 街の照り返し: 低い階の壁ほど道の灯りで暖かく照らされる(夜1・夕方.25)。窓とガラスには足さない */
   float fcWall = (1. - step(.35, fcM)) * (1. - vFcRoof);
-  totalEmissiveRadiance += diffuseColor.rgb * uFcAmb * fcWall * (vec3(1., .86, .66) * .26 * exp(-.32 * vFcH) + vec3(.55, .62, .8) * .035);
+  totalEmissiveRadiance += diffuseColor.rgb * uFcAmb * fcWall * (vec3(1., .86, .66) * .10 * exp(-.45 * vFcH) + vec3(.55, .62, .8) * .012);
   roughnessFactor *= fcOrm.g;
   metalnessFactor *= fcOrm.b;
 }
@@ -462,6 +549,9 @@ export function patchFacade(mat, opt) {
     uFcRoof: { value: new THREE.Color(opt.roofCol != null ? opt.roofCol : 0x8f8d88) },
     uFcV0: { value: opt.v0 != null ? opt.v0 : 0.6 },
     uFcBoost: { value: opt.boost || 1 },
+    /* 戸建て: 1つの面に1軒ぶんの絵をちょうど1つ(uFcFit) / すべての面を横の壁の絵に(uFcEnd)。材質ごとの値 */
+    uFcFit: { value: opt.fit ? 1 : 0 },
+    uFcEnd: { value: 0 },
     uFcLit,
     uFcAmb,
   };
@@ -496,7 +586,7 @@ export function facadeMaterial(name, aniso = 4) {
     map, emissiveMap: orm,
     roughness: 1, metalness: 1, emissive: 0x000000, envMapIntensity: 1,
   });
-  patchFacade(mat, { tile: d.tile, grid: d.grid, steps: d.steps, side: d.side, roofCol: d.roof, key: 'bld', boost: name === 'shop' ? 1.9 : name === 'house' ? 1.1 : 1 });
+  patchFacade(mat, { tile: d.tile, grid: d.grid, steps: d.steps, side: d.side, roofCol: d.roof, key: 'bld', boost: name === 'shop' ? 1.9 : name === 'house' ? 1.1 : 1, fit: !!d.fit });
   mat.userData.fcTex = [map, orm];
   return mat;
 }

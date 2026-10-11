@@ -17,7 +17,7 @@ import { STATION_KANA } from '../sim/kana.js';
 import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle } from './stations.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
-import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree, addCars } from './town.js';
+import { buildTownSteps, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree, addCars } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
 import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper, STAIR } from './trackbed.js';
@@ -1741,11 +1741,16 @@ export class RailScene {
   }
 
   /* ---------- 街並み(scene/town.js) ----------
-   * 占有グリッド・側道/交差道路/電柱/電線・線路と平行な中高層・戸建て・遠景リングを作る */
-  _buildTown() {
+   * 占有グリッド・側道/交差道路/電柱/電線・路地・線路と平行な中高層・戸建て・駅前広場・遠景リング・道を走る車を作る。
+   * _buildTownSteps は手順の列(引数なしの関数の配列)。順に全部呼ぶと _buildTown と同じ(あいだで画面を描いてよい) */
+  _buildTownSteps() {
     /* 昼夜でテクスチャを差し替える旧方式(_bldMats)はターミナルの駅ビルだけが使う */
-    this._bldMats = [];
-    buildTown(this);
+    return [() => { this._bldMats = []; this._extraHills = []; }].concat(buildTownSteps(this));
+  }
+
+  _buildTown() {
+    const steps = this._buildTownSteps();
+    for (let i = 0; i < steps.length; i++) steps[i]();
   }
 
   /* ---------- 沿線の柵・防音壁 ----------
@@ -2021,6 +2026,8 @@ export class RailScene {
     posts.forEach((p, i) => { m4.compose(p, qy, new THREE.Vector3(1, 1, 1)); pm.setMatrixAt(i, m4); });
     pm.castShadow = true;
     pm.userData.noSplit = true;
+    /* 遠くからの目印なので、描く距離の段階で消さない */
+    g.traverse((o) => { o.userData.keepFar = true; });
     this.world.add(pm);
     this.world.add(g);
   }
@@ -2084,21 +2091,28 @@ export class RailScene {
     shed.add(door);
     shed.position.copy(fS.p).addScaledVector(fS.left, -18);
     shed.lookAt(shed.position.clone().add(fS.t));
+    shed.traverse((o) => { o.userData.keepFar = true; });
     this.world.add(shed);
   }
 
-  /* 読売ランド前: まわる観覧車 */
+  /* 読売ランド前: まわる観覧車(丘の上。夕方・夜は輪とスポークに電飾) */
   _buildWheel() {
     const F = this.frames;
+    this._wheelLights = null; this._wheelGonMat = null;
     const s0 = this._stationS('読売ランド前');
     if (s0 === null) return;
     /* 駅の少し先・左手の丘の上(接近中ずっと前方視界に入る位置) */
     const f = frameAt(F, this.step, s0 + 280);
     const root = new THREE.Group();
     root.position.copy(f.p).addScaledVector(f.left, 145);
-    root.position.y += 34;
+    /* 足もとの丘(丘陵と同じ形。_buildHills が植える): 高さ20m。脚の下の端(軸から約41m下)が丘の上に立つように */
+    const HILL_H = 20;
+    if (!this._extraHills) this._extraHills = [];
+    this._extraHills.push({ x: root.position.x, y: f.p.y - 3, z: root.position.z, yaw: Math.atan2(f.t.x, f.t.z), rb: 70, h: HILL_H, sz: 95, s: s0 + 280 });
+    root.position.y = f.p.y - 3 + HILL_H * 0.86 + 40;
     root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.left.clone().negate());
     const spin = new THREE.Group();
+    spin.userData.dyn = true;   // 毎フレーム回る(行列の更新を止めない)
     root.add(spin);
     const white = new THREE.MeshStandardMaterial({ color: 0xe8eaec, roughness: 0.5, metalness: 0.4 });
     spin.add(new THREE.Mesh(new THREE.TorusGeometry(26, 0.6, 8, 32), white));
@@ -2111,9 +2125,10 @@ export class RailScene {
     const hub = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.0, 3.0, 12), white);
     hub.rotation.x = Math.PI / 2;
     spin.add(hub);
-    /* ゴンドラ28台(1回の描画でまとめて) */
+    /* ゴンドラ28台(1回の描画でまとめて)。夜はほのかに明るく(town.js の applyLook) */
     const cols = [0xd6604d, 0xf2b134, 0x4d9dd6, 0x62b56b, 0xb08bd0];
-    const gon = new THREE.InstancedMesh(new THREE.BoxGeometry(2.0, 2.4, 2.0), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }), 28);
+    const gonMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 });
+    const gon = new THREE.InstancedMesh(new THREE.BoxGeometry(2.0, 2.4, 2.0), gonMat, 28);
     const gm4 = new THREE.Matrix4(), gc = new THREE.Color();
     for (let i = 0; i < 28; i++) {
       const a = (i / 28) * Math.PI * 2;
@@ -2123,6 +2138,24 @@ export class RailScene {
     }
     gon.userData.noSplit = true;
     spin.add(gon);
+    this._wheelGonMat = gonMat;
+    /* 電飾: 輪に64個・スポークに6個ずつ(線路の側の面)。街灯と同じ点の材質の色ちがい(シェーダは同じ) */
+    const TM = this._town && this._town.M;
+    if (TM && TM.wheelGlow) {
+      const pts = [];
+      for (let k = 0; k < 64; k++) { const a = (k / 64) * Math.PI * 2; pts.push(Math.cos(a) * 26, Math.sin(a) * 26, 0.75); }
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI + Math.PI / 2;
+        [-21, -14, -7, 7, 14, 21].forEach((r) => pts.push(Math.cos(a) * r, Math.sin(a) * r, 0.5));
+      }
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      pg.computeBoundingSphere();
+      const lights = new THREE.Points(pg, TM.wheelGlow);
+      lights.renderOrder = 2;
+      spin.add(lights);
+      this._wheelLights = lights;
+    }
     /* 支柱: 前後2本ずつのA字形トラス */
     const legMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a5, roughness: 0.6, metalness: 0.4 });
     [-1, 1].forEach((sgn) => {
@@ -2140,6 +2173,8 @@ export class RailScene {
     const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 8, 10), legMat);
     axle.rotation.x = Math.PI / 2;
     root.add(axle);
+    /* 遠くからの目印なので、描く距離の段階で消さない */
+    root.traverse((o) => { o.userData.keepFar = true; });
     this.wheelSpin = spin;
     this.world.add(root);
   }
@@ -2340,13 +2375,16 @@ export class RailScene {
     updateTown(this, dt);
   }
 
-  /* 踏切待ちの車の位置を集める(形・材質は scene/cars.js。左側通行で、線路のほうを向いて止まっている) */
+  /* 踏切待ちの車の位置を集める(形・材質は scene/cars.js。左側通行で、線路のほうを向いて止まっている)。
+   * 灯火をつけて待っている(インスタンス色の r+2)。踏切が開くと走り出すので(town.js updateTown)、
+   * 踏切の位置・向き・道に沿った距離も覚えておく(this._crossCarList: 街の担当) */
   _crossCars(f, s) {
     const TYPES = ['kei', 'minivan', 'sedan'];
     const COLS = [0xf2f2f0, 0xd9dadc, 0x2a2c30, 0x9a2a2a, 0x2c4a7a, 0x8e939a, 0xb8a98c];
     const col = new THREE.Color();
     let seed = Math.floor(s);
     const rnd = () => (seed = (seed * 16807 + 11) % 2147483647) / 2147483647;
+    if (!this._crossCarList) this._crossCarList = [];
     [-1, 1].forEach((side) => {
       const n = 1 + Math.floor(rnd() * 2.6);
       for (let i = 0; i < n; i++) {
@@ -2356,10 +2394,14 @@ export class RailScene {
         /* 前(+z)を線路のほうへ */
         const dx = -side * f.left.x, dz = -side * f.left.z;
         col.setHex(COLS[Math.floor(rnd() * COLS.length)]);
-        this._crossCarSpots.push({
+        const sp = {
           x: p.x, y: p.y + 0.14, z: p.z, yaw: Math.atan2(dx, dz), type: TYPES[Math.floor(rnd() * 3) % 3],
-          r: col.r, g: col.g, b: col.b, s, sh: true,
-        });
+          r: col.r + 2, g: col.g, b: col.b, s, sh: true,
+          _xs: s, _side: side, _o0: along - 1.9, _lane: lane, _fx: f.p.x, _fy: f.p.y, _fz: f.p.z,
+          _lx: f.left.x, _lz: f.left.z, _tx: f.t.x, _tz: f.t.z,
+        };
+        this._crossCarSpots.push(sp);
+        this._crossCarList.push(sp);
       }
     });
   }
