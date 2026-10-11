@@ -480,14 +480,14 @@ export function buildBoards(rs, plat, inPlat, ahead) {
     face(s2, 2.3, inPlat(s2) ? 1.05 : 0, 'kai', 0.55, 1.25);
   });
   /* 停止位置の予告(「8」まで 300/200/100/50m): ブレーキをかけはじめる目安。
-   * ホームの上では「8」と同じ列(へりから0.45m)に立てて、100 → 50 → 8 が一直線に見えるように */
+   * ホームの上では「8」と同じ列(へりから0.6m)に立てて、100 → 50 → 8 が一直線に見えるように */
   /* 300・200 は 1.1m の板を 1.3m の柱に(線路から2.6m)、100・50 は 0.95m */
   rs.line.stations.forEach((st) => {
     [300, 200, 100, 50].forEach((d) => {
       const s = st.s + A8 - d;
       if (s < 20 || rs._inTerminal(s, 4)) return;
       const on = inPlat(s), big = d >= 200;
-      face(s, on ? plat.L.edge + 0.45 : big ? 2.6 : 2.4, on ? 1.05 : 0, `appr:${d}`, big ? 1.1 : 0.95, big && !on ? 1.3 : 1.1);
+      face(s, on ? plat.L.edge + 0.6 : big ? 2.6 : 2.4, on ? 1.05 : 0, `appr:${d}`, big ? 1.1 : 0.95, big && !on ? 1.3 : 1.1);
     });
   });
   /* キロ程(100mごとの白い杭と50mごとの短い杭。1kmごとに数字の札) */
@@ -885,8 +885,9 @@ function fitCondensed(c, text, x, y, maxW, size, align = 'left', minSx = 0.5) {
   c.fillText(text, 0, 0);
   c.restore();
 }
-export function texLed(boards = 1) {
-  const W = 512, H = LED_ROW * boards;
+export function texLed(boards = 1, extra = null) {
+  /* extra: { h, draw(c, y0, W) } LEDの下に、同じ材質で描くほかの絵(新宿の のりば案内・車止めの赤い灯)の場所 */
+  const W = 512, HL = LED_ROW * boards, H = HL + (extra ? extra.h : 0);
   const t = canvasTexture(W, H, () => {});
   t.userData.rows = [];
   t.userData.keys = [];
@@ -924,7 +925,7 @@ export function texLed(boards = 1) {
     fitCondensed(tc, e.time, W - 6, y + 1, 82, 38, 'right', 0.6);
   };
   const draw = () => {
-    c.fillStyle = '#070605'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#070605'; c.fillRect(0, 0, W, HL);
     /* 消えている点(うっすら) */
     c.globalAlpha = 0.12; c.fillStyle = c.createPattern(dot, 'repeat');
     for (let b = 0; b < boards; b++) c.fillRect(4, b * LED_ROW + 4, W - 8, LED_ROW - 8);
@@ -940,13 +941,18 @@ export function texLed(boards = 1) {
     }
     tc.globalCompositeOperation = 'destination-in';
     tc.fillStyle = tc.createPattern(dot, 'repeat');
-    tc.fillRect(0, 0, W, H);
+    tc.fillRect(0, 0, W, HL);
     tc.globalCompositeOperation = 'source-over';
-    c.drawImage(tmp, 0, 0);
+    c.drawImage(tmp, 0, 0, W, HL, 0, 0, W, HL);
     t.userData.redraws++;
     t.needsUpdate = true;
   };
-  t.userData.redraw = draw;
+  const full = () => {
+    if (extra) { c.clearRect(0, HL, W, H - HL); extra.draw(c, HL, W); }
+    draw();
+  };
+  t.userData.redraw = full;
+  if (extra) full();
   /* b台目に「つぎ」a と「そのつぎ」n を出す。中身が同じなら描き直さない */
   t.userData.setBoard = (b, a, n) => {
     const key = [a, n].map((e) => (e ? `${e.kind}|${e.dest}|${e.time}|${e.cars}` : '-')).join('/');
@@ -957,6 +963,9 @@ export function texLed(boards = 1) {
     redrawWhenFonts(t, [a, n].map((e) => (e ? (LED_KIND[e.kind] || LED_KIND.local).kana + e.dest + e.time + e.cars : '')).join('') + 'つぎそのりょう');
   };
   /* そのボードの画像の範囲(uv: [u0,v0,u1,v1])。上の台が b=0 */
-  t.userData.uvOf = (b) => [0, 1 - (b + 1) / boards, 1, 1 - b / boards];
+  t.userData.uvOf = (b) => [0, 1 - ((b + 1) * LED_ROW) / H, 1, 1 - (b * LED_ROW) / H];
+  /* 画素の四角(x0,y0)-(x1,y1) の uv */
+  t.userData.uvPx = (x0, y0, x1, y1) => [x0 / W, 1 - y1 / H, x1 / W, 1 - y0 / H];
+  t.userData.extraY = HL;
   return t;
 }

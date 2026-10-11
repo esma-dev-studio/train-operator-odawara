@@ -681,7 +681,7 @@ export function ensureTrackMats(rs, aniso = 4) {
   keep('tunnelWall', tunnelWallMaterial(texTunnelWall(aniso)));
   /* トンネルの天井の帯: 壁と同じ材質の作り(同じシェーダ)で、色だけ暗く(灯具は壁にあるので天井は暗め) */
   keep('tunnelCeilW', tunnelWallMaterial(M.tunnelWall.map));
-  M.tunnelCeilW.color.setHex(0xa4a4a4);
+  M.tunnelCeilW.color.setHex(0xc4c4c4);
   /* トンネルの柱: 壁と同じコンクリートに、弱い自発光(真っ黒につぶれない。プログラムは M.tunnel と同じ)。
    * 天井の帯は壁の材質(tunwall)で描く(灯具の近くの天井のすみが照らされて、箱の形がわかる) */
   const tn = rs.M.tunnel;
