@@ -25,37 +25,44 @@
   <div id="gl-wrap"><canvas id="gl"></canvas>
     <canvas id="rain-glass"></canvas>
     <div id="glass-sheen"></div>
-    <div id="fade"></div>
+    <div id="fade"><div class="fade-msg"><i class="fm-bar"></i>じゅんび<ruby>中<rt>ちゅう</rt></ruby></div></div>
 
     <!-- 運転中のHUD -->
     <div class="hud">
-      <div id="drive-head">
-        <span id="drive-head-svc">各駅停車　新百合ヶ丘 行</span>
-        <!-- 路線: いま(まえの駅) → つぎ → そのつぎ と のこりの駅数 -->
-        <div id="route-strip">
-          <div id="rs-win">
-            <div class="rs-node rs-prev"><i></i><span></span></div>
-            <div class="rs-seg"><div id="rs-train"></div></div>
-            <div class="rs-node rs-next"><i></i><span></span></div>
-            <div class="rs-seg rs-seg2"></div>
-            <div class="rs-node rs-after"><i></i><span></span></div>
-            <div class="rs-left"></div>
-          </div>
-          <div class="rs-all"><i id="rs-all-fill"></i></div>
+      <!-- 上の帯: 大型HUD | 路線 | してん・ポーズ(1本の帯にそろえる。高さは --hud-top-h) -->
+      <div class="hud-top">
+        <div id="bighud">
+          <div class="bh-row"><span class="bh-cap">じそく</span><span id="bh-v">0</span><small>km/h</small>
+            <span class="bh-limw"><span id="bh-lim" class="bh-lim">100</span><span id="bh-lim-next" class="bh-limn hidden"></span></span></div>
+          <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small></div>
         </div>
-      </div>
-      <div class="gl-btns">
-        <button id="btn-cam" class="gl-btn" title="してん(C)"><span class="gl-ico" data-ico="camera"></span><span class="gl-cap">してん</span></button>
-        <button id="btn-pause-touch" class="gl-btn" title="ポーズ(P)"><span class="gl-ico" data-ico="pause"></span><span class="gl-cap">ポーズ</span></button>
+        <div id="drive-head">
+          <div class="dh-top">
+            <span id="drive-head-svc">各駅停車　新百合ヶ丘 行</span>
+            <!-- この運転の ◎○△× (さいきんの10えき) と れんぞく -->
+            <div id="rs-marks" aria-hidden="true"></div>
+          </div>
+          <!-- 路線: いま(まえの駅) → つぎ → そのつぎ と のこりの駅数 -->
+          <div id="route-strip">
+            <div id="rs-win">
+              <div class="rs-node rs-prev"><i></i><span></span></div>
+              <div class="rs-seg"><div id="rs-train"></div></div>
+              <div class="rs-node rs-next"><i></i><span></span></div>
+              <div class="rs-seg rs-seg2"></div>
+              <div class="rs-node rs-after"><i></i><span></span></div>
+              <div class="rs-left"></div>
+            </div>
+            <div class="rs-all"><i id="rs-all-fill"></i></div>
+          </div>
+        </div>
+        <div class="gl-btns">
+          <button id="btn-cam" class="gl-btn" title="してん(C)"><span class="gl-ico" data-ico="camera"></span><span class="gl-cap">してん</span></button>
+          <button id="btn-pause-touch" class="gl-btn" title="ポーズ(P)"><span class="gl-ico" data-ico="pause"></span><span class="gl-cap">ポーズ</span></button>
+        </div>
       </div>
       <div id="cam-label" class="hidden"></div>
       <button id="btn-skip" class="skip-btn hidden"><i data-ico="play"></i>はやく しゅっぱつ する</button>
       <div id="coach" class="hidden"></div>
-      <div id="bighud">
-        <div class="bh-row"><span class="bh-cap">じそく</span><span id="bh-v">0</span><small>km/h</small>
-          <span class="bh-limw"><span id="bh-lim" class="bh-lim">100</span><span id="bh-lim-next" class="bh-limn hidden"></span></span></div>
-        <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small><span></span></div>
-      </div>
       <!-- ブレーキめやす(このままのブレーキで止まる位置) -->
       <div id="brake-guide" class="hidden">
         <div class="bg-cap">ブレーキ<br>めやす</div>
@@ -93,9 +100,15 @@
       </div>
       <div id="badge-toast" class="hidden"><span class="bt-ico"></span><span class="bt-txt"></span></div>
       <div id="stamp-pop" class="hidden"><canvas id="stamp-pop-cv"></canvas><p id="stamp-pop-txt"></p></div>
-      <div id="overrun-modal" class="modal danger hidden">
-        <p>とまるところを 大きくいきすぎました。<br>ひとつまえの<ruby>駅<rt>えき</rt></ruby>から やりなおします。</p>
-        <button id="btn-overrun-retry" class="btn btn-primary">やりなおす</button>
+      <!-- 大きく いきすぎた: 画面を暗くして「やりなおす / このまま つぎの駅へ」をえらぶ(レバーは うごかない) -->
+      <div id="overrun-modal" class="ov-scrim hidden">
+        <div class="ov-card">
+          <span class="ov-ico" data-ico="warn"></span>
+          <h3>いきすぎ！</h3>
+          <p id="ov-txt"></p>
+          <button id="btn-overrun-retry" class="btn btn-primary btn-big"><i data-ico="retry"></i>まえの<ruby>駅<rt>えき</rt></ruby>から やりなおす</button>
+          <button id="btn-overrun-go" class="btn btn-ghost">このまま つぎの<ruby>駅<rt>えき</rt></ruby>へ</button>
+        </div>
       </div>
     </div>
   </div>
@@ -200,7 +213,7 @@
       <div class="sel-col sel-opts">
         <h3 class="opt-h"><span class="step">4</span>じかん・<ruby>天気<rt>てんき</rt></ruby></h3>
         <div class="seg seg-ico" id="tod-seg">
-          <button data-v="day" class="on"><i data-ico="sun"></i>ひる</button>
+          <button data-v="day" class="on"><i data-ico="day"></i>ひる</button>
           <button data-v="evening"><i data-ico="sunset"></i>ゆうがた</button>
           <button data-v="night"><i data-ico="moon"></i>よる</button>
         </div>
@@ -299,7 +312,8 @@
     </div>
     <div class="book-pane" id="book-stamps">
       <div class="book-prog"><i id="stamps-prog-fill"></i></div>
-      <p class="stamps-help">「8」のかんばんに とまると スタンプが もらえるよ。<b>±1m</b> で スタンプ、<b>±35cm</b> で いろつき、<b>±10cm</b> で きんいろ</p>
+      <!-- スタンプの3つのランク(くろ・いろ・きん)を 見本で しめす -->
+      <div class="stamp-legend" id="stamp-legend"></div>
       <div id="stamps-grid" class="stamps-grid"></div>
     </div>
     <div class="book-pane hidden" id="book-badges">

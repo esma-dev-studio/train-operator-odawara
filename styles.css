@@ -109,6 +109,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 }
 .sig-r { background: #ff4a3d; color: #ff4a3d; }
 .sig-y { background: #ffc22e; color: #ffc22e; }
+.sig-g { background: #2fd27a; color: #2fd27a; }
 
 /* ---------------- よみこみ ---------------- */
 #screen-loading { background: radial-gradient(120% 90% at 50% 40%, #142028, #0a0f12); z-index: 50; }
@@ -261,10 +262,9 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 #notch-list { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
 
 #drive-head {
-  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
   background: var(--hud-bg); border: 1px solid var(--hud-bd);
   padding: 5px 16px 7px; border-radius: var(--hud-r); letter-spacing: 0.08em;
-  font-weight: 700; font-size: var(--fs-cap); z-index: 5; text-align: center; width: min(560px, 62vw);
+  font-weight: 700; font-size: var(--fs-cap); text-align: center;
 }
 .dh-svc { display: inline-block; padding: 0 8px; margin-right: 8px; border-left: 4px solid var(--svc, var(--ink-2)); font-weight: 900; }
 /* 路線: まえの駅 ─(列車)─ つぎ ── そのつぎ  あと N えき */
@@ -290,7 +290,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 .rs-all { height: 2px; background: rgba(127, 216, 255, 0.14); margin-top: 3px; border-radius: 1px; overflow: hidden; }
 .rs-all i { display: block; height: 100%; width: 100%; background: var(--hi); transform: scaleX(0); transform-origin: left; }
 
-.gl-btns { position: absolute; top: 10px; right: 12px; z-index: 7; display: flex; gap: 8px; }
+.gl-btns { display: flex; gap: 8px; }
 .gl-btn {
   width: 56px; height: 52px; border-radius: var(--hud-r);
   background: var(--hud-bg); color: #dfe8ee;
@@ -329,13 +329,11 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 
 /* 大型HUD(じそく・せいげん・のこりm・あと秒)。数字の列は いつも同じ位置 */
 #bighud {
-  position: absolute; top: 12px; left: 14px; z-index: 6;
   background: var(--hud-bg); border: 1px solid var(--hud-bd);
-  border-radius: 14px; padding: 8px 14px 10px;
+  border-radius: var(--hud-r);
   pointer-events: none;
-  display: grid; grid-template-columns: 6.6em auto auto auto; column-gap: 8px; align-items: baseline;
 }
-.bh-row { display: contents; }
+.bh-row { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
 .bh-cap { font-size: var(--fs-cap); color: #a9becb; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
 #bh-v, #bh-ctx-num { font-family: var(--num); font-weight: 900; font-variant-numeric: tabular-nums; text-align: right; line-height: 1.08; }
 #bh-v { font-size: 2.9rem; color: #eef6fb; min-width: 3.2ch; }
@@ -413,11 +411,14 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
   background: var(--hud-bg); border: 1px solid var(--hud-bd);
   border-radius: 8px; padding: 2px 0; letter-spacing: 0.12em;
 }
-@media (pointer: coarse) {
+/* タッチ端末: マウスと両方ある端末(any-pointer)や iPadの「デスクトップ表示」(main.js が html.touch を つける)も */
+@media (any-pointer: coarse) {
   body.mode-drive #touch-btns { display: flex; }
   #lever { width: 58px; }
   #brake-guide { right: 100px; }
 }
+html.touch body.mode-drive #touch-btns { display: flex; }
+html.touch #brake-guide { right: 100px; }
 
 /* フロントガラスの映り込み・雨滴(運転台視点のときだけ)
  * 上の縁は少し青緑がかった遮光帯、下は計器盤のうすい映り込み。夜は計器の明かりがうっすら映る */
@@ -444,12 +445,6 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   z-index: 6; white-space: nowrap; max-width: 94%; overflow: hidden; text-overflow: ellipsis;
 }
 #msg-center.warn { border-left-color: var(--red); color: #ffb3ac; }
-.modal {
-  position: absolute; top: 34%; left: 50%; transform: translateX(-50%);
-  background: #141a1f; border: 1.5px solid var(--line); border-radius: 10px;
-  padding: 22px 30px; text-align: center; z-index: 30; line-height: 2;
-}
-.modal .btn { margin-top: 12px; }
 
 /* スタンプをもらったときの演出 */
 #stamp-pop {
@@ -916,12 +911,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   .sel-go .btn { box-shadow: 0 6px 20px rgba(0,0,0,0.6); }
   .title-inner { padding: 20px 22px calc(22px + var(--safe-b)); }
   .title-shade { background: linear-gradient(0deg, rgba(6,10,13,0.92) 0%, rgba(6,10,13,0.55) 55%, rgba(6,10,13,0.1) 100%); }
-  #bighud { padding: 6px 12px 8px; }
-  #bh-v { font-size: 2.1rem; }
-  #bh-ctx-num { font-size: 1.5rem; }
   .bh-lim { min-width: 36px; height: 30px; font-size: 1.05rem; }
-  /* 縦長: 大型HUDの下に路線をおく(重ならない) */
-  #drive-head { top: 98px; width: min(560px, calc(100vw - 24px)); }
   #brake-guide { right: 96px; top: 50%; }
   body:not(.cam-cab) #brake-guide { top: 56%; }
   .bg-scale { height: 120px; }
@@ -985,18 +975,13 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   .nt { font-size: 0.5rem; }
   #lever { grid-column: auto; grid-row: auto; width: auto; }
   .lever-grip { height: 28px; font-size: 0.8rem; left: -8px; right: -8px; }
-  /* 背が低い: 路線は 大型HUDと右上ボタンの あいだに */
-  #drive-head { top: 6px; font-size: var(--fs-micro); padding: 3px 12px 4px; left: 258px; right: 116px; width: auto; transform: none; }
+  /* 背が低い: 路線は 大型HUDと右上ボタンの あいだ(上の帯 .hud-top は いちばん下で) */
+  #drive-head { font-size: var(--fs-micro); padding: 3px 12px 4px; }
   #rs-win { height: 22px; }
   .rs-after, .rs-seg2 { display: none; }
   .rs-next span { font-size: var(--fs-cap); }
-  #bighud { top: 6px; left: 8px; padding: 4px 10px 5px; border-radius: 10px; grid-template-columns: 5.4em auto auto auto; }
-  .bh-cap { font-size: var(--fs-micro); }
-  #bh-v { font-size: 1.6rem; }
-  #bh-ctx-num { font-size: 1.2rem; }
   .bh-lim { min-width: 30px; height: 24px; font-size: 0.9rem; border-width: 1.5px; }
-  .gl-btns { top: 6px; right: 8px; gap: 6px; }
-  .gl-btn { width: 46px; height: 44px; border-radius: 10px; }
+  .gl-btn { width: 46px; border-radius: 10px; }
   .gl-ico .ico { width: 18px; height: 18px; }
   #coach { bottom: 6px; font-size: 0.82rem; padding: 6px 14px; max-width: calc(100% - 170px); }
   .skip-btn { bottom: 44px; font-size: 0.82rem; padding: 6px 18px; }
@@ -1024,7 +1009,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } }
 /* 文はことばの区切り(スペース)で折り返す。「ゴ/ール」のような切れ方をしない */
 #coach, #msg-center, .badge .bd-name, .badge .bd-desc, .res-next, .rb-why, .stamps-help, .sc-tip,
-.pause-ctx, .confirm p, .set-note, .route-help, .load-tip, .stamp-cell .sc-cnt, #stamp-pop p, .bg-txt {
+.pause-ctx, .confirm p, .set-note, .route-help, .load-tip, .stamp-cell .sc-cnt, #stamp-pop p, .bg-txt, .rb-l, .ov-card p {
   word-break: keep-all; overflow-wrap: anywhere;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
@@ -1037,8 +1022,6 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 }
 #msg-center.warn { border-left-color: var(--red); }
 #msg-center .ico { color: var(--red); margin-right: 4px; }
-.modal { background: var(--panel); border-radius: 12px; }
-.modal.danger { border-top: 4px solid var(--red); }
 
 /* ---- 停止位置の判定カード ---- */
 #stop-card {
@@ -1178,24 +1161,16 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 .book-prog i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, var(--acc), var(--acc-2)); transform: scaleX(0); transform-origin: left; transition: transform 0.6s cubic-bezier(.2,.8,.2,1); }
 
 /* ---- 画面サイズ別(上書きした部品の分) ---- */
-/* 路線は 大型HUD(左上)と ボタン(右上)の あいだに 中央そろえで おさめる */
-@media (min-width: 861px) and (min-height: 541px) {
-  #drive-head { width: min(560px, calc(100vw - 760px)); }
-}
+/* 路線は 上の帯(.hud-top)の まん中。せまいときは「そのつぎ」を出さない */
 @media (min-width: 861px) and (max-width: 1240px) and (min-height: 541px) {
   .rs-after, .rs-seg2 { display: none; }
 }
-@media (min-width: 861px) and (max-width: 1100px) and (min-height: 541px) {
-  #drive-head { top: 98px; width: min(560px, calc(100vw - 24px)); }
-  .rs-after, .rs-seg2 { display: flex; }
-}
 @media (max-width: 860px) {
-  #stop-card { top: 12%; }
   .res-btns { grid-auto-flow: row; }
 }
 @media (max-height: 540px) and (orientation: landscape) {
-  #msg-center { top: 18%; font-size: 0.82rem; padding: 6px 14px; }
-  #stop-card { top: 62px; width: min(400px, 50%); padding: 6px 12px 8px; }
+  #msg-center { font-size: 0.82rem; padding: 6px 14px; }
+  #stop-card { width: min(400px, 50%); padding: 6px 12px 8px; }
   #sc-sta { font-size: var(--fs-body); }
   .sc-ruler { height: 30px; margin: 4px 0; }
   .sc-8 { top: 2px; height: 18px; width: 16px; margin-left: -8px; line-height: 15px; font-size: 0.7rem; }
@@ -1215,4 +1190,263 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   #screen-title .t-btns .btn { flex: 1 1 100%; }
   /* 左上の せってい と かさならないように */
   .live-cap { left: 96px; }
+}
+
+/* =========================================================
+ * 画面デザイン 第3版: 上の帯・いきすぎパネル・コーチのキー表示・この運転の きろく・
+ * スタンプの台紙・せまい/ひくい画面。(ここより上の古い指定を 上書きする)
+ * ========================================================= */
+:root { --hud-top-h: 74px; }
+
+/* ---- 上の帯: 大型HUD | 路線 | してん・ポーズ。上のはしと高さを 1本に そろえる ---- */
+.hud-top {
+  position: absolute; top: 10px; left: 12px; right: 12px; z-index: 7;
+  display: flex; align-items: stretch; gap: 10px; pointer-events: none;
+}
+.hud-top > * { position: static; transform: none; pointer-events: auto; }
+#bighud { pointer-events: none; height: 64px; display: flex; align-items: center; gap: 10px; padding: 0 14px; flex: none; }
+.bh-ctx { padding-left: 12px; border-left: 1px solid var(--hud-bd); }
+#bh-v { font-size: 2.5rem; min-width: 2.6ch; }
+#bh-ctx-num { font-size: 1.9rem; min-width: 2.2ch; }
+#drive-head {
+  flex: 1 1 auto; min-width: 0; max-width: 620px; height: 64px; margin: 0 auto; width: auto;
+  display: flex; flex-direction: column; justify-content: center; padding: 3px 14px 4px; text-align: left;
+}
+.dh-top { display: flex; align-items: center; gap: 10px; min-width: 0; line-height: 1.25; }
+#drive-head-svc { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#drive-head-svc rt { font-size: 9.5px; }
+#route-strip { margin-top: 1px; }
+#rs-win { height: 24px; }
+.rs-all { margin-top: 2px; }
+.gl-btn { height: 64px; }
+#cam-label { top: calc(var(--hud-top-h) + 8px); }
+#stop-card, #badge-toast { top: calc(var(--hud-top-h) + 12px); }
+#msg-center { top: calc(var(--hud-top-h) + 24px); }
+
+/* この運転の ◎○△×(さいきんの10えき)。あたらしいのが右。はみ出したら ふるいほう(左)から かくれる */
+#rs-marks { flex: 1 1 auto; min-width: 0; display: flex; gap: 4px; justify-content: flex-end; align-items: center; overflow: hidden; }
+#rs-marks:empty { display: none; }
+.gm {
+  flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--g); color: var(--g);
+  font: 900 11px/14px var(--num); text-align: center; font-style: normal; letter-spacing: 0;
+}
+.gm:last-of-type { animation: stampIn 0.45s both; }
+.gm-st { flex: none; font-size: var(--fs-micro); color: var(--gold); font-weight: 700; margin-left: 6px; white-space: nowrap; letter-spacing: 0.04em; }
+
+/* 運転台視点の 広い画面では、制限の板は 運転台の 計器に まかせる(おなじ表示を 2つ出さない) */
+@media (min-width: 861px) and (min-height: 541px) {
+  body.mode-drive.cam-cab #bighud .bh-limw { display: none; }
+  /* スタンプは 判定カードの 右どなりに(カードの下の「はやく しゅっぱつ」と かさねない) */
+  #stamp-pop { top: calc(var(--hud-top-h, 84px) + 8px); left: calc(50% + 232px); width: 170px; transform: none; }
+  #stamp-pop p { max-width: 170px; width: auto; white-space: normal; line-height: 1.45; padding: 5px 12px; font-size: var(--fs-body); }
+}
+@media (min-width: 861px) and (max-width: 1100px) {
+  .rs-prev span { display: none; }
+}
+/* たて長(iPad縦など): 1だんめ = 大型HUD + ボタン、2だんめ = 路線 */
+@media (max-width: 860px) {
+  :root { --hud-top-h: 148px; }
+  .hud-top { flex-wrap: wrap; }
+  #bighud { order: 1; flex: 1 1 auto; gap: 14px; }
+  #bighud > .bh-row { flex: 1 1 0; }   /* じそく | えきまで を はんぶんずつ */
+  #bh-v { font-size: 2.3rem; }
+  #bh-ctx-num { font-size: 1.75rem; }
+  .gl-btns { order: 2; }
+  #drive-head { order: 3; flex: 1 0 100%; max-width: none; }
+}
+/* スマホの たて: 大型HUDは 2だん(じそく / えきまで) */
+@media (max-width: 560px) {
+  :root { --hud-top-h: 164px; }
+  .rs-after, .rs-seg2 { display: none; }
+  #bighud { flex: 1 1 0; min-width: 0; flex-wrap: wrap; height: auto; padding: 6px 12px; row-gap: 2px; align-content: center; }
+  #bighud > .bh-row { flex: 1 0 100%; }
+  .bh-ctx { border: 0; padding: 0; }
+  #bh-v { font-size: 2rem; }
+  #bh-ctx-num { font-size: 1.45rem; }
+  .gl-btn { height: auto; min-height: 64px; }
+}
+/* 背の低い横画面(スマホの横): 帯は 44px。見出しの文字は はぶく */
+@media (max-height: 540px) and (orientation: landscape) {
+  :root { --hud-top-h: 52px; }
+  .hud-top { top: 6px; left: 8px; right: 8px; gap: 6px; flex-wrap: nowrap; }
+  #bighud, #drive-head, .gl-btn { height: 44px; min-height: 0; }
+  #bighud { order: 0; flex: none; padding: 0 10px; gap: 8px; border-radius: 10px; }
+  #bighud > .bh-row { flex: none; }
+  .gl-btns { order: 0; }
+  #drive-head { order: 0; flex: 1 1 auto; max-width: 620px; }
+  .bh-cap, #drive-head-svc, #rs-marks, .dh-top { display: none; }
+  .bh-ctx { padding-left: 8px; }
+  #bh-v { font-size: 1.5rem; }
+  #bh-ctx-num { font-size: 1.15rem; }
+  #drive-head { padding: 2px 12px 3px; }
+  #rs-win { height: 22px; }
+  #brake-guide, body:not(.cam-cab) #brake-guide {
+    top: calc(var(--hud-top-h) + 6px); transform: scale(0.72); transform-origin: top right; animation-name: bgInS;
+  }
+  #stamp-pop { top: calc(var(--hud-top-h) + 6px); }
+}
+
+/* ---- 大きく いきすぎた: 暗い幕 + カード(レバーは うごかない) ---- */
+.ov-scrim {
+  position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+  padding: 12px; background: rgba(6, 10, 13, 0.58);
+}
+.ov-card {
+  background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--red); border-radius: 14px;
+  padding: 20px 28px; text-align: center; max-width: min(440px, 92%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); animation: fadeUp 0.3s both;
+}
+.ov-ico .ico { width: 40px; height: 40px; color: var(--red); }
+.ov-card h3 { font-size: var(--fs-h2); color: #ffb3ac; letter-spacing: 0.2em; }
+.ov-card p { font-size: var(--fs-body); font-weight: 700; line-height: 1.7; margin-bottom: 4px; }
+.ov-card p b { font-family: var(--num), "Zen Kaku Gothic New", sans-serif; font-size: 1.3em; color: #fff; }
+.ov-card .btn { width: 100%; min-height: 54px; }
+.ov-card .btn-big { font-size: 1.05rem; padding: 10px 18px; }
+/* コーチ(やりなおす を タップしてね)だけは 幕の上に */
+body.ov-open #coach { z-index: 31; }
+@media (max-height: 540px) {
+  .ov-card { padding: 10px 18px 12px; gap: 6px; }
+  .ov-ico .ico { width: 26px; height: 26px; }
+  .ov-card h3 { font-size: var(--fs-lead); }
+  .ov-card .btn { min-height: 44px; }
+}
+
+/* ---- コーチ: ボタン/キーの 形で しめす(タッチは すすむ・ブレーキ、キーボードは ↑・↓) ---- */
+.kc {
+  display: inline-flex; align-items: center; gap: 2px; padding: 0 7px; margin: 0 2px;
+  border: 1.5px solid rgba(150, 190, 215, 0.6); border-radius: 7px; background: rgba(255, 255, 255, 0.06);
+  font-size: 0.92em; line-height: 1.5; white-space: nowrap; vertical-align: baseline;
+}
+.kc .ico, #coach .kc .ico { width: 1em; height: 1em; margin: 0; color: var(--hi); stroke-width: 2.6; }
+/* コーチが つかってほしい ボタンを 光らせる(transform/opacity だけ) */
+.tb { position: relative; }
+.tb.want { border-color: var(--hi); }
+.tb.want::after {
+  content: ''; position: absolute; inset: -6px; border: 3px solid var(--hi); border-radius: 18px;
+  pointer-events: none; animation: coachPulse 0.5s ease-in-out infinite alternate;
+}
+
+/* ---- ブレーキめやす: ちかづいたら すっと出る。いきすぎ/てまえ は ラベルを 光らせる ---- */
+#brake-guide { animation: bgIn 0.25s both; }
+@keyframes bgIn { from { opacity: 0; transform: translate(14px, -50%); } }
+@keyframes bgInS { from { opacity: 0; transform: translateX(14px) scale(0.72); } }
+.bg-lbl.act { color: #fff; border-radius: 4px; padding: 0 5px; }
+.bg-lbl-over.act { background: #c8352a; }
+.bg-lbl-short.act { background: #1f7fa8; }
+.bg-txt b { font-size: 1.45em; }
+
+/* ---- 判定カード: ◎ と ことばは 列車が「8」に つくのと いっしょに ポン ---- */
+#stop-card .sc-ring, #stop-card #sc-word { animation: ringPop 0.4s 0.55s cubic-bezier(.2, 1.6, .4, 1) both; }
+@keyframes ringPop { 0% { transform: scale(1.9); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+#stop-card.gold { border-top-width: 4px; box-shadow: 0 0 0 1px rgba(255, 224, 138, 0.35), 0 10px 30px rgba(0, 0, 0, 0.45); }
+
+/* ---- 運転の じゅんび中(0.7秒より ながいときだけ。うごきは transform/opacity) ---- */
+.fade-msg {
+  position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  color: #cfdbe2; font-weight: 700; letter-spacing: 0.2em; font-size: var(--fs-body);
+  opacity: 0; transition: opacity 0.3s;
+}
+#fade.on.slow .fade-msg { opacity: 1; }
+.fm-bar { display: block; position: relative; width: 120px; height: 3px; border-radius: 2px; overflow: hidden; background: rgba(127, 216, 255, 0.18); }
+.fm-bar::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 40%; background: var(--hi); animation: fmRun 1.1s ease-in-out infinite; }
+@keyframes fmRun { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+
+/* ---- 乗務選択: たて画面は「じかん・天気・出発」を 画面の下の パネルに(スクロールしなくても 見える) ---- */
+.btn-sm { white-space: nowrap; }
+@media (max-width: 860px) {
+  .sel-opts {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 3;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    padding: 10px 14px calc(10px + var(--safe-b)); border-radius: 14px 14px 0 0;
+    border: 0; border-top: 1px solid var(--hud-bd); background: rgba(14, 19, 23, 0.97);
+    box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.45);
+  }
+  .sel-opts > .opt-h, .sel-keys { display: none; }
+  .seg-ico + .seg-ico { margin-top: 0; }
+  .seg-ico button { min-height: 44px; flex-direction: row; gap: 6px; padding: 4px; }
+  .seg-ico button small { display: none; }
+  .sel-go { position: static; grid-column: 1 / -1; padding: 0; background: none; margin: 0; }
+  .sel-wrap { padding-bottom: calc(210px + var(--safe-b)); }
+  .route-list { max-height: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
+}
+@media (max-width: 860px) and (max-height: 540px) and (orientation: landscape) {
+  .sel-opts { grid-template-columns: auto auto 1fr; align-items: center; padding-top: 8px; padding-bottom: calc(8px + var(--safe-b)); }
+  .seg-ico button { flex: none; min-width: 64px; padding: 4px 10px; white-space: nowrap; }
+  .sel-go { grid-column: auto; }
+  .sel-go .sel-summary { display: none; }
+  .sel-go .btn { padding-top: 10px; padding-bottom: 10px; }
+  .sel-wrap { padding-bottom: calc(80px + var(--safe-b)); }
+}
+
+/* ---- 成績票: せまい・ひくい画面は ボタンの帯を 下に はりつける ---- */
+@media (max-width: 860px) {
+  .rb-row { grid-template-columns: 11.5em 1fr 56px; }
+}
+@media (max-width: 860px), (max-height: 540px) {
+  .res-btns {
+    position: -webkit-sticky; position: sticky; bottom: 0; z-index: 2; grid-auto-flow: column; margin-top: 12px;
+    padding: 12px 0 calc(10px + var(--safe-b));
+    background: linear-gradient(rgba(7, 11, 14, 0), rgba(7, 11, 14, 0.96) 16px);
+  }
+  .res-btns .btn { min-height: 56px; padding: 6px 8px; }
+}
+
+/* ---- せってい・ポーズ ---- */
+.btn-warn { background: rgba(255, 83, 71, 0.08); border-color: rgba(255, 83, 71, 0.55); color: #ff9a8f; justify-self: start; }
+.btn-warn:hover { background: rgba(255, 83, 71, 0.16); border-color: var(--red); color: #ffb3ac; }
+@media (max-height: 540px) {
+  .pause-card {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 18px;
+    max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); overflow-y: auto;
+  }
+  .pause-card h3, .pause-ctx, #btn-pause-resume { grid-column: 1 / -1; }
+  .pause-card h3 { margin-bottom: 0; }
+  .pause-ctx { margin: 0; padding-bottom: 6px; line-height: 1.7; }
+  .pause-card .btn { min-height: 46px; }
+  .set-card { display: flex; }
+  .set-card .set-list { gap: 8px; }
+  .set-card .set-note { display: none; }
+}
+
+/* ---- えきスタンプちょう: クリーム色の 台紙に おす(23えきが 1画面に おさまる: 8れつ × 3だん) ---- */
+.stamps-wrap { max-width: 1040px; }
+#book-stamps { background: #ece6d6; border-radius: 16px; padding: 14px 14px 18px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5); }
+#book-stamps .book-prog { background: #d3c9b2; }
+#book-stamps .stamps-help { color: #5b5346; }
+.stamp-legend {
+  display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px 20px;
+  margin: 0 0 12px; color: #5b5346; font-size: var(--fs-cap); font-weight: 700;
+}
+.sl-it { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sl-it canvas { flex: none; }
+.sl-it b { color: #2e2a24; font-weight: 900; }
+.stamps-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+.stamp-cell, .stamp-cell.no { background: #f6f2e7; box-shadow: inset 0 0 0 1px rgba(90, 70, 40, 0.18); border-radius: 10px; padding: 8px 4px 7px; }
+.stamp-cell.t3 { box-shadow: inset 0 0 0 2px #c9a43a; }
+.stamp-cell .sc-name { color: #2e2a24; font-size: 0.92rem; }
+.stamp-cell.no .sc-name { color: #7a6f5c; }
+.stamp-cell .sc-cnt { color: #6c6253; }
+.stamp-cell.no .sc-cnt, .stamp-cell.no .sc-no { color: #9a8f7a; }
+.stamp-cell.no .sc-cnt b { color: #8f5210; }
+
+/* ---- スマホの たて・iPadの 1/3 画面 ---- */
+@media (max-width: 560px) {
+  .sel-head { grid-template-columns: auto 1fr auto; gap: 8px; }
+  .sel-title { letter-spacing: 0.12em; font-size: var(--fs-lead); }
+  .sel-route .opt-h { flex-wrap: wrap; }
+  .route-help { flex-basis: 100%; margin: 2px 0 0; }
+  /* 下のパネルは 1れつ(じかん / 天気 / 出発)。ボタンの ことばが 2行に おれない はば */
+  .sel-opts { grid-template-columns: 1fr; }
+  .sel-wrap { padding-bottom: calc(260px + var(--safe-b)); }
+  .res-btns { grid-auto-flow: row; }
+  #btn-res-select { display: none; }
+  .live-cap { max-width: calc(100% - 110px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tb.want::after, #coach.coach-hot::after { animation: none; opacity: 0.85; }
+  #brake-guide, .gm:last-of-type, .ov-card { animation: none; }
+  #stop-card .sc-ring, #stop-card #sc-word { animation: none; }
 }
