@@ -1603,8 +1603,8 @@ const PANTS = [0x2b3550, 0x3a3c40, 0xb5a585, 0x4a6a8e, 0x1c1d20].map((h) => new 
 const v3 = (c) => `vec3( ${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)} )`;
 /* 動く人の数 */
 const FIG_N = 12;
-/* 同じ頂点属性の形(mergeColored の出力)をつなぎ、部品番号 stPart(1から)をつける */
-function concatParts(list) {
+/* 同じ頂点属性の形(mergeColored の出力)をつなぎ、部品番号 stPart(first から)をつける */
+function concatParts(list, first) {
   const names = Object.keys(list[0].attributes);
   const N = list.reduce((a, g) => a + g.attributes.position.count, 0);
   const out = new THREE.BufferGeometry();
@@ -1616,7 +1616,7 @@ function concatParts(list) {
   });
   const part = new Float32Array(N);
   let o = 0;
-  list.forEach((g, k) => { const n = g.attributes.position.count; part.fill(k + 1, o, o + n); o += n; });
+  list.forEach((g, k) => { const n = g.attributes.position.count; part.fill(k + first, o, o + n); o += n; });
   out.setAttribute('stPart', new THREE.BufferAttribute(part, 1));
   return out;
 }
@@ -1692,9 +1692,9 @@ function crowdRes(rs) {
     };
     hip = [0.085, 0.9]; sh = [0.215, 1.4];
   }
-  /* 動く人は 胴と頭・脚・腕 を1つの形にまとめ(stPart 1/2/3)、インスタンス番号の範囲で部品を選ぶ:
-   * 0〜NF-1 = 胴と頭 / NF〜3NF-1 = 脚 / 3NF〜5NF-1 = 腕(描画1回) */
-  fig.all = concatParts([fig.body, fig.leg, fig.arm]);
+  /* 動く人の脚と腕は1つの形にまとめ(stPart 2/3)、インスタンス番号の範囲で部品を選ぶ:
+   * 0〜2NF-1 = 脚 / 2NF〜4NF-1 = 腕(描画1回)。胴と頭は別の1回 */
+  fig.limbs = concatParts([fig.leg, fig.arm], 2);
   /* 頂点の処理: 服の部分だけインスタンス色、ズボン・スカートは5色、かばんは3種、着こなしは5通り */
   const vsPars = '#include <common>\nattribute float stCloth;\nattribute float stBag;\nattribute float stVar;\nattribute float stPants;\nattribute float stPart;';
   const vsBag = `#include <begin_vertex>
@@ -1702,7 +1702,7 @@ function crowdRes(rs) {
   #if __VERSION__ >= 300
     if ( stPart > 0.5 ) {
       float stId = float( gl_InstanceID );
-      float stWant = stId < ${(FIG_N - 0.5).toFixed(1)} ? 1.0 : stId < ${(FIG_N * 3 - 0.5).toFixed(1)} ? 2.0 : 3.0;
+      float stWant = stId < ${(FIG_N * 2 - 0.5).toFixed(1)} ? 2.0 : 3.0;
       if ( abs( stPart - stWant ) > 0.5 ) transformed = vec3( 0.0 );
     }
     if ( stBag > 0.5 && abs( stBag - mod( float( gl_InstanceID ), 3.0 ) ) > 0.5 ) transformed = vec3( 0.0 );
@@ -1883,8 +1883,9 @@ export function buildCrowds(rs) {
       im.setMatrixAt(i, m4.compose(it.p, q, sc));
       col.setHex(it.col); im.setColorAt(i, col);
     });
-    /* 屋根の下(ターミナル)・地下の駅の人は日の影を落とさない(もともと天井の影の中。影の描画をはぶく) */
-    const noSh = isTerm || rs._inTunnel(st.s);
+    /* 待つ人は日の影を落とさない: ほとんどが屋根の下(屋根の影の中)・ターミナル・地下で、影は見えない。
+     * 影の描画(人の数×三角形)をはぶく。動く12人だけは影を落とす */
+    const noSh = true;
     im.castShadow = !noSh;
     im.customDepthMaterial = R.depth;
     im.userData.noSplit = true; im.userData.st = true;
@@ -1938,7 +1939,7 @@ export function buildCrowds(rs) {
   });
 }
 
-/* ---------- 駅の人々(待つ・乗る・降りる)。12人の胴と頭・脚・腕を1つの InstancedMesh で(描画1回) ---------- */
+/* ---------- 駅の人々(待つ・乗る・降りる)。12人の胴と頭で1回、脚と腕で1回の InstancedMesh ---------- */
 export function buildPeople(rs) {
   const R = crowdRes(rs);
   const shirt = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0x2e6e62, 0x714a71, 0x4f6636];
@@ -1950,11 +1951,12 @@ export function buildPeople(rs) {
     im.frustumCulled = false;
     im.userData.noSplit = true; im.userData.st = true; im.userData.dyn = true;   // 歩く人(毎フレーム動く)
     im.castShadow = true;
+    im.customDepthMaterial = R.depth;   // 影も、使わない部品(脚/腕・着こなし)をつぶした形で
     rs.world.add(im);
     return im;
   };
   const P = rs._ppl = {
-    all: mk(R.fig.all, NF * 5),
+    body: mk(R.fig.body, NF), limbs: mk(R.fig.limbs, NF * 4),
     m: new THREE.Matrix4(), m2: new THREE.Matrix4(), m3: new THREE.Matrix4(),
     q: new THREE.Quaternion(), sc: new THREE.Vector3(), pos: new THREE.Vector3(), tmp: new THREE.Vector3(),
     fr: newFrame(), dir: new THREE.Vector3(), any: true, hip: R.hip, sh: R.sh,
@@ -1963,10 +1965,10 @@ export function buildPeople(rs) {
   rs.people = [];
   for (let i = 0; i < NF; i++) {
     col.setHex(shirt[i % shirt.length]);
-    P.all.setColorAt(i, col);      // 服の部分(stCloth=1)だけに効く。頭・首は頂点色のまま
-    P.all.setColorAt(NF * 3 + i * 2, col); P.all.setColorAt(NF * 3 + i * 2 + 1, col);   // 腕(そで)
+    P.body.setColorAt(i, col);      // 服の部分(stCloth=1)だけに効く。頭・首は頂点色のまま
+    P.limbs.setColorAt(NF * 2 + i * 2, col); P.limbs.setColorAt(NF * 2 + i * 2 + 1, col);   // 腕(そで)
     col.setHex(pants[i % pants.length]);
-    P.all.setColorAt(NF + i * 2, col); P.all.setColorAt(NF + i * 2 + 1, col);           // 脚(ズボン)
+    P.limbs.setColorAt(i * 2, col); P.limbs.setColorAt(i * 2 + 1, col);                     // 脚(ズボン)
     rs.people.push({ pos: new THREE.Vector3(), yaw: 0, ph: i * 1.7, legA: 0, armA: 0, bob: 0, vis: false, sc: 0.88 + (i % 5) * 0.05 });
   }
   hideAllPeople(rs);
@@ -1976,7 +1978,7 @@ function hideAllPeople(rs) {
   const P = rs._ppl;
   if (!P || !P.any) return;
   P.any = false;
-  P.all.visible = false;
+  P.body.visible = P.limbs.visible = false;
   for (let i = 0; i < rs.people.length; i++) rs.people[i].vis = false;
 }
 
@@ -2001,35 +2003,35 @@ export function placeFig(rs, fig, pos, dirWorld, dt, speed) {
 
 /* 12人の行列を書く(割り当てなし) */
 function writePeople(rs) {
-  const P = rs._ppl, A = P.all, NF = FIG_N;
+  const P = rs._ppl, A = P.limbs, NF = FIG_N;
   const { m, m2, m3, q, sc, pos } = P;
   for (let i = 0; i < rs.people.length; i++) {
     const fig = rs.people[i];
     if (!fig.vis) {
       m.makeScale(0, 0, 0);
-      A.setMatrixAt(i, m);
-      A.setMatrixAt(NF + i * 2, m); A.setMatrixAt(NF + i * 2 + 1, m);
-      A.setMatrixAt(NF * 3 + i * 2, m); A.setMatrixAt(NF * 3 + i * 2 + 1, m);
+      P.body.setMatrixAt(i, m);
+      A.setMatrixAt(i * 2, m); A.setMatrixAt(i * 2 + 1, m);
+      A.setMatrixAt(NF * 2 + i * 2, m); A.setMatrixAt(NF * 2 + i * 2 + 1, m);
       continue;
     }
     q.setFromAxisAngle(UPV, fig.yaw);
     sc.setScalar(fig.sc);
     pos.copy(fig.pos); pos.y += fig.bob;
     m.compose(pos, q, sc);
-    A.setMatrixAt(i, m);
+    P.body.setMatrixAt(i, m);
     for (let k = 0; k < 2; k++) {
       const sx = k ? 1 : -1;
       m3.makeRotationX(k ? -fig.legA : fig.legA);
       m2.makeTranslation(sx * P.hip[0], P.hip[1], 0).multiply(m3).premultiply(m);
-      A.setMatrixAt(NF + i * 2 + k, m2);
+      A.setMatrixAt(i * 2 + k, m2);
       m3.makeRotationX(k ? -fig.armA : fig.armA);
       m2.makeRotationZ(sx * 0.08).multiply(m3);
       m3.makeTranslation(sx * P.sh[0], P.sh[1], 0).multiply(m2).premultiply(m);
-      A.setMatrixAt(NF * 3 + i * 2 + k, m3);
+      A.setMatrixAt(NF * 2 + i * 2 + k, m3);
     }
   }
-  A.visible = true;
-  A.instanceMatrix.needsUpdate = true;
+  P.body.visible = A.visible = true;
+  P.body.instanceMatrix.needsUpdate = true; A.instanceMatrix.needsUpdate = true;
   P.any = true;
 }
 
