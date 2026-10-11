@@ -1479,9 +1479,13 @@ export class RailScene {
     const r = this.renderer;
     if (!r.shadowMap.enabled || !this.sun || !this.sun.castShadow || typeof r.shadowMap.render !== 'function') return [];
     const lod = new Map(((this._town && this._town.treeCells) || []).map((c) => [c.mesh, c.shadow]));
+    /* 遠いあいだ影を落とさないセル(登録の cs0 = もともと影を落とす)も、近づくと落とすので数に入れる */
+    const cs0 = new Set();
+    const reg = this._cellReg || [];
+    for (let i = 0; i < reg.length; i++) if (reg[i].cs0) cs0.add(reg[i].obj);
     const reps = new Map();
     this.world.traverse((o) => {
-      if (!o.isMesh || !(o.castShadow || lod.get(o))) return;
+      if (!o.isMesh || !(o.castShadow || lod.get(o) || cs0.has(o))) return;
       const m = Array.isArray(o.material) ? o.material[0] : o.material;
       if (!m) return;
       const k = [o.isInstancedMesh, !!o.instanceColor, o.customDepthMaterial ? o.customDepthMaterial.uuid : '',
@@ -3490,8 +3494,17 @@ export class RailScene {
     if (!f) return false;
     const gl = this.renderer.getContext();
     let done = true;
+    const t0 = performance.now();
     try { done = gl.getSyncParameter(f, gl.SYNC_STATUS) === gl.SIGNALED; } catch (e) { done = true; }
     const now = performance.now();
+    /* フェンスをのぞくだけで待たされる環境(問い合わせがGPUとの待ち合わせになる)では、見張りをやめる
+     * (30回のうち半分より多く 2ms 以上かかったら) */
+    this._paceN = (this._paceN || 0) + 1;
+    if (now - t0 > 2) this._paceSlow = (this._paceSlow || 0) + 1;
+    if (this._paceN >= 30) {
+      if ((this._paceSlow || 0) > 15) { this._paceOff = true; this._fences = [null, null]; return false; }
+      this._paceN = 0; this._paceSlow = 0;
+    }
     if (!done) {
       if (!this._skipT0) this._skipT0 = now;
       if (now - this._skipT0 < 2000) {
@@ -3508,6 +3521,7 @@ export class RailScene {
 
   /* 描いたコマの終わりにフェンスを入れる(2つを交互に使う) */
   _paceMark() {
+    if (this._paceOff) return;
     const gl = this.renderer.getContext();
     if (!gl || typeof gl.fenceSync !== 'function') return;
     const i = this._fi;
@@ -3522,8 +3536,9 @@ export class RailScene {
   render(dt) {
     /* 準備中(prewarmAsync・少しずつ作るワールド)・文脈が消えた・ワールドがまだない ときは描かない */
     if (this._warming || this.glLost || !this.frames || !this.sim) return;
-    /* GPUが2コマ前の絵を まだ描き終えていなければ、このコマは描かない(描かなかった時間は次のコマに足す) */
-    if (this._paceSkip(dt)) return;
+    /* GPUが2コマ前の絵を まだ描き終えていなければ、このコマは描かない(描かなかった時間は次のコマに足す)。
+     * dt=0 の1回だけの描きなおし(一時停止・成績票の うしろ・準備のあと)は かならず描く */
+    if (dt > 0 && this._paceSkip(dt)) return;
     if (this._skipDt > 0) { dt += this._skipDt; this._skipDt = 0; }
     this.clockT += dt;
     const sim = this.sim;
