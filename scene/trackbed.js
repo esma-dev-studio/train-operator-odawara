@@ -879,14 +879,58 @@ export function buildTrackBed(rs, o = {}) {
     rs._keep.add(M.groundRoofs); rs._keep.add(tr);
   }
   const gcolR = (i, c, C) => { const v = gcol(i, c, C); return [v[0] * 1.1, v[1] * 1.1, v[2] * 1.1]; };
+  /* 家並みの屋根の帯は三角形が少ない(10mごとに2列)ので、約3kmごと・両側を1つのメッシュにまとめる
+   * (750mごとの帯の結合にかけると、前方の見える範囲だけで4回ほど描くことになる) */
+  const BLK = Math.round(3000 / step);
+  const roofBlocks = new Map();
   segs.forEach(({ mk, rf, i0, i1 }) => {
     [1, -1].forEach((side) => {
       const sh = side > 0 ? e1 : null;
       if (!rf) { add(groundStrip(F, FS, i0, i1, side, { step, shift: sh, vcol: gcol }), gm[mk]); return; }
       add(groundStrip(F, FS, i0, i1, side, { step, shift: sh, vcol: gcol, cols: [0, 5] }), gm[mk]);
-      add(groundStrip(F, FS, i0, i1, side, { step, shift: sh, vcol: gcolR, cols: [5, 7] }), M.groundRoofs);
+      for (let a = i0; a < i1;) {
+        const b = Math.min(i1, (Math.floor(a / BLK) + 1) * BLK);
+        if (b - a >= 2) {
+          const k = Math.floor(a / BLK);
+          if (!roofBlocks.has(k)) roofBlocks.set(k, []);
+          roofBlocks.get(k).push(groundStrip(F, FS, a, b, side, { step, shift: sh, vcol: gcolR, cols: [5, 7] }));
+        }
+        a = b;
+      }
     });
   });
+  roofBlocks.forEach((list) => {
+    const g = mergeIndexed(list);
+    g.userData.noMerge = true;
+    const m = add(g, M.groundRoofs);
+    m.userData.cullCell = true;
+  });
+}
+
+/* 添字つきの形(同じ属性)を1つにまとめる(家並みの屋根の帯用) */
+function mergeIndexed(list) {
+  const names = Object.keys(list[0].attributes);
+  let nv = 0, ni = 0;
+  list.forEach((g) => { nv += g.attributes.position.count; ni += g.index.count; });
+  const out = new THREE.BufferGeometry();
+  names.forEach((nm) => {
+    const it = list[0].attributes[nm].itemSize;
+    const arr = new Float32Array(nv * it);
+    let o = 0;
+    list.forEach((g) => { arr.set(g.attributes[nm].array, o); o += g.attributes[nm].array.length; });
+    out.setAttribute(nm, new THREE.BufferAttribute(arr, it));
+  });
+  const idx = new Uint32Array(ni);
+  let k = 0, base = 0;
+  list.forEach((g) => {
+    const src = g.index.array;
+    for (let i = 0; i < src.length; i++) idx[k++] = src[i] + base;
+    base += g.attributes.position.count;
+    g.dispose();
+  });
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  out.computeBoundingSphere();
+  return out;
 }
 
 /* ---------------- 小さな部材を1つの形にまとめる道具 ---------------- */

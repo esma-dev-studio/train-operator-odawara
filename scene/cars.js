@@ -160,8 +160,8 @@ export function geoCar(type) {
   });
   /* 前照灯・尾灯(車体の前後の面に貼る) */
   [-1, 1].forEach((sd) => {
-    parts.push({ g: lampQuad(L + 0.006, S.head, sd * (hw - 0.22), 0.3, 0.12, 1), col: COL_HEAD });
-    parts.push({ g: lampQuad(-0.006, S.tail, sd * (hw - 0.16), 0.22, 0.16, -1), col: COL_TAIL });
+    parts.push({ g: lampQuad(L + 0.006, S.head, sd * (hw - 0.24), 0.34, 0.16, 1), col: COL_HEAD });
+    parts.push({ g: lampQuad(-0.006, S.tail, sd * (hw - 0.17), 0.24, 0.18, -1), col: COL_TAIL });
   });
   const g = merge(parts);
   /* 長さ方向(x)を +z に、中心を原点へ */

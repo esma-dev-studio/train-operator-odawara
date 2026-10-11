@@ -995,8 +995,9 @@ function buildStreets(rs, T) {
       const ym = yg + 0.03, dl = side * (W - 0.15), dr = side * 0.12;
       const o0 = a + 3.6;
       quad(b, P(o0, ym, dl), P(o0, ym, dr), P(o0 + 0.45, ym, dl), P(o0 + 0.45, ym, dr), RU.white[0], RU.white[1], RU.white[2], RU.white[3]);
-      const o1 = o0 + 1.2;
-      quad(b, P(o1, ym, dl), P(o1, ym, dr), P(o1 + 5.2, ym, dl), P(o1 + 5.2, ym, dr), RU.tomare[0], RU.tomare[1], RU.tomare[3], RU.tomare[2]);
+      /* 文字の板は外側線にかからない幅で(線が途切れて見えないように) */
+      const o1 = o0 + 1.2, dg = side * (W - 0.6);
+      quad(b, P(o1, ym, dg), P(o1, ym, dr), P(o1 + 5.2, ym, dg), P(o1 + 5.2, ym, dr), RU.tomare[0], RU.tomare[1], RU.tomare[3], RU.tomare[2]);
     }
     rs._crossStreets.push({ s: ss, side, a, b: bEnd, cross: st.cross });
     stampBand(rs, ss - 3.3, ss + 3.3, side * a, side * bEnd, HARD);
@@ -1073,8 +1074,19 @@ function buildPlazas(rs, T) {
     sampleFrame(F, step, sc, fr);
     const lat = -39, R = 12.5;
     const cx = fr.x + fr.lx * lat, cz = fr.z + fr.lz * lat, y = fr.y - 0.41;
-    stampBand(rs, sc - 16, sc + 16, -25, -53, HARD);
+    /* 広場は手前(線路の向きで手前)に広く空ける(上から見下ろすカメラから見えるように)。舗装は土間の色 */
+    stampBand(rs, sc - 46, sc + 19, -24, -57, HARD);
     const b = T.rb(sc);
+    const fq = FR();
+    const CU = ROAD_UV.concrete;
+    for (let k = 0; k < 3; k++) {
+      const s0 = sc - 45 + k * 21, s1 = s0 + 21;
+      sampleFrame(F, step, s0, fq);
+      const a0 = [fq.x + fq.lx * -25, fq.y - 0.43, fq.z + fq.lz * -25], a1 = [fq.x + fq.lx * -56, fq.y - 0.43, fq.z + fq.lz * -56];
+      sampleFrame(F, step, s1, fq);
+      const b0 = [fq.x + fq.lx * -25, fq.y - 0.43, fq.z + fq.lz * -25], b1 = [fq.x + fq.lx * -56, fq.y - 0.43, fq.z + fq.lz * -56];
+      T.quad(b, a0, a1, b0, b1, CU[0], CU[1], CU[2], CU[3]);
+    }
     T.disc(b, cx, y, cz, R, 24);
     /* 外への道(幅6m・60m) */
     const P = (o, dt, yy) => [fr.x + fr.lx * o + fr.tx * dt, yy, fr.z + fr.lz * o + fr.tz * dt];
@@ -1406,7 +1418,7 @@ function buildHouses(rs, T) {
   const rng = makeRng(9753);
   const occ = rs._occ;
   const gable = [], flat = [], roofs = [];
-  const porch = [];
+  const porch = [], farHouses = [];
   const boxes = T.boxes, aos = T.aos;
   const fr = FR(), fr2 = FR();
   const qk = T.q;
@@ -1538,8 +1550,9 @@ function buildHouses(rs, T) {
           stamps.push([kx, kz, axx, axz, azx, azz, CAR_LEN[carType] / 2 + 0.75, CAR_WID[carType] / 2 + 0.75]);
         }
         const three = !farRow && rng() < 0.12;
-        /* 奥の列は陸屋根(ろくやね)を多めに(三角形の数をおさえる。手前からはほとんど見えない) */
-        const isGable = farRow ? rng() < 0.5 : !three && rng() < (lat > 75 ? 0.42 : 0.6) / 0.88;
+        /* 奥の列は陸屋根(ろくやね)を多めに(三角形の数をおさえる。手前からはほとんど見えない)。
+         * 9列目から先は軒のない切妻(壁の形の斜めの面がそのまま屋根: 14三角形・外壁の材質だけで1回の描画) */
+        const isGable = farRow ? true : !three && rng() < (lat > 75 ? 0.42 : 0.6) / 0.88;
         const eave = three ? 8.6 : 5.6 + rng() * 0.6;
         const base0 = fr.y - 0.5 - 0.6;
         const sh = !farRow && lat < 45;
@@ -1550,8 +1563,8 @@ function buildHouses(rs, T) {
         const hy = turn ? yawH + Math.PI / 2 : yawH, hsx = turn ? w : d, hsz = turn ? d : w;
         const it = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: isGable ? (eave + 0.6) / EAVE : eave + 0.6 + 0.5, s: sMid, sh };
         paint(it, pick(WALLS, rng), 0.04, rng);
-        (isGable ? gable : flat).push(it);
-        if (isGable) {
+        (farRow ? farHouses : isGable ? gable : flat).push(it);
+        if (isGable && !farRow) {
           const rf = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: it.sy, s: sMid, sh };
           paint(rf, pick(ROOFS, rng), 0.08, rng);
           roofs.push(rf);
@@ -1617,8 +1630,9 @@ function buildHouses(rs, T) {
   if (gable.length) emitInstanced(g, geoGable(), M.house, gable, 500, { shadow: true, cull: true });
   if (flat.length) emitInstanced(g, geoUnitBoxOpen(), M.house, flat, 500, { shadow: true, cull: true });
   if (roofs.length) emitInstanced(g, geoGableRoof(), M.roof, roofs, 500, { shadow: true, cull: true });
-  /* 奥の列(9列目から)も同じかたまりに入れる(描画の回数を増やさない)。影は落とさない(sh=false で並べ替えの後ろ) */
+  /* 奥の列(9列目から): 別のかたまり(1000m)・900mより遠ければ描かない。影は落とさない */
   const tag = (k) => (m) => { m.userData.p1 = k; return m; };
+  if (farHouses.length) emitInstanced(g, geoGable(), M.house, farHouses, 1000, { shadow: false }).map(tag('far')).forEach((m) => nearOnly(T, m, 900));
   /* 玄関の光だまり(夜だけ材質を見せる。300mまで) */
   if (porch.length) emitInstanced(g, geoFlat(), M.porchPool, porch, 700, { colors: false, receive: false }).map(tag('porch')).forEach((m) => { m.renderOrder = 2; nearOnly(T, m, 300); });
   /* 屋上の小物・塀・アンテナ(建物ぶんもまとめて)と接地影 */
@@ -1628,7 +1642,7 @@ function buildHouses(rs, T) {
     const ag = new THREE.PlaneGeometry(1, 1); ag.rotateX(-Math.PI / 2);
     emitInstanced(T.groups.town, ag, M.ao, aos, 1000, { colors: false, receive: false, cull: true });
   }
-  T.houseCount = gable.length + flat.length;
+  T.houseCount = gable.length + flat.length + farHouses.length;
   T.boxes = T.aos = null;   // 小物と接地影の表は作るときだけ使う(メモリを返す)
 }
 
@@ -1943,7 +1957,8 @@ export function plantTreesP1(rs, list, rng) {
   rs.world.add(g);
   /* 広葉樹は「かたまりごと」にA/Bの形を交互に使う(1かたまり2コール: 広葉樹+針葉樹) */
   const fr = FR();
-  const keyNum = (s, band) => (band === 0 ? Math.floor(s / 350) : band === 1 ? Math.floor(s / 600) : Math.floor(s / 1200));
+  /* 線路から200mより外(丘の稜線の木など。いつも軽い形)は大きなかたまりで(描画の回数をおさえる) */
+  const keyNum = (s, band) => (band === 0 ? Math.floor(s / 350) : band === 1 ? Math.floor(s / 600) : Math.floor(s / 2400));
   const bandKey = (it) => ['a', 'b', 'c'][it.band] + keyNum(it.s, it.band);
   const groups = [[], [], []];
   list.forEach((t) => {
@@ -2156,7 +2171,7 @@ function applyLook(rs, T, L) {
   M.porchPool.visible = !!L.night;
   M.porchPool.opacity = 0.42 * (L.wet ? 1.3 : 1);
   /* 走る車・踏切待ちの車の前照灯・尾灯 */
-  uCarLamp.value = L.night ? 2.2 : L.eve ? 1.0 : 0;
+  uCarLamp.value = L.night ? 3.0 : L.eve ? 1.2 : 0;
   /* 店の看板(表だけ光る) */
   M.sign.emissiveIntensity = L.night ? 1.1 : L.eve ? 0.45 : 0;
   if (M.ringCity) {
