@@ -14,13 +14,13 @@ import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/addons/OutputPass.js';
 import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
-import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle } from './stations.js';
+import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle, concourseUnderside, buildCrossingAt, CROSS_LAMP } from './stations.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree, addCars } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
-import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper, STAIR } from './trackbed.js';
+import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper, STAIR, updateWireRes, buildTurnouts } from './trackbed.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -1610,6 +1610,8 @@ export class RailScene {
     this._qi = quadInfo(this.line);
     this._exitGlow = null; this._brkCells = null; this._gHidden = null; this._gHideKey = undefined;   // 前の路線の分は使わない
     buildTrackBed(this, { aniso: QUALITY[this.quality].aniso });
+    /* 急行線が分かれる・合わさるところの分岐器(長い枕木・トングレール・クロッシング・転てつ機) */
+    buildTurnouts(this);
   }
 
   /* ---------- 枕木(自列車近傍のみ実体を置くムービングウィンドウ) ----------
@@ -1650,7 +1652,7 @@ export class RailScene {
     /* 毎フレームの更新で new しないための作業用 */
     this._slpTmp = {
       f: newFrame(), m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: new THREE.Vector3(),
-      one: new THREE.Vector3(1, 1, 1), zero: new THREE.Matrix4().makeScale(0, 0, 0), X: new THREE.Vector3(1, 0, 0),
+      one: new THREE.Vector3(1, 1, 1), zero: new THREE.Matrix4().makeScale(0, 0, 0), X: new THREE.Vector3(1, 0, 0), sc: new THREE.Vector3(1, 1, 1),
     };
     this._slpBase = -1e9;
     this._updateSleepers(0);
@@ -1666,6 +1668,12 @@ export class RailScene {
     }
     updateExitGlow(this);
     updateCatenaryLod(this);
+    /* 架線の線(メートルの太さ)に描画バッファの大きさを教える(変わったときだけ。数の比べっこだけ) */
+    const cv = this.renderer && this.renderer.domElement;
+    if (cv && (cv.width !== this._wireW || cv.height !== this._wireH)) {
+      this._wireW = cv.width; this._wireH = cv.height;
+      updateWireRes(this, cv.width, cv.height, this.renderer.getPixelRatio());
+    }
     if (Math.abs(s - this._slpBase) < 12) return;
     this._slpBase = s;
     const T = this._slpTmp, f = T.f, m = T.m, q = T.q, p = T.p;
@@ -1682,11 +1690,18 @@ export class RailScene {
         /* 急行線: となりの線路から十分はなれたところだけ(分岐の手前は本線の枕木が受け持つ) */
         if (ok && sp.zone) { ok = quadSep(ss, sp.k, qi) >= 2.0; off = quadOffAt(ss, sp.k, qi); }
         if (!ok) continue;   // 範囲外は描かない(描く数を詰める)
+        /* 分岐器の下: もとの線路の枕木を、分かれていく線路の下までのばす(長さ 2+間隔、中心を間隔/2 だけ左へ) */
+        let sx = 1;
+        const kk = sp.zone ? (sp.k === 0 ? 1 : -1) : sp.off === 0 ? 0 : -1;
+        if (kk >= 0) {
+          const sep = quadSep(ss, kk, qi);
+          if (sep >= 0.15 && sep < 2.0) { sx = (2 + sep) / 2; off += sep / 2; }
+        }
         frameInto(this.frames, this.step, ss, f);
         p.copy(f.p).addScaledVector(f.left, off);
         p.y -= 0.01;
         q.setFromUnitVectors(T.X, f.left);
-        m.compose(p, q, T.one);
+        m.compose(p, q, sx === 1 ? T.one : T.sc.set(sx, 1, 1));
         im.setMatrixAt(n, m);
         let br = false;
         for (let r = 0; r < rivers.length; r++) if (ss >= rivers[r].from && ss <= rivers[r].to) br = true;
@@ -2231,84 +2246,20 @@ export class RailScene {
     buildFurniture(this);
   }
 
-  /* ---------- 踏切(遮断機・警報灯つき) ---------- */
+  /* ---------- 踏切(遮断機・警報灯つき) ----------
+   * 道路・白線・とまる線・「とまれ」・柱・警報機・踏切警標は線路わきの標識と1つの形に(scene/stations.js)。
+   * 踏切ごとの描画は 警報灯2組+腕2本 の4回 */
   _buildCrossings() {
     const F = this.frames;
-    const roadMat = new THREE.MeshStandardMaterial({ color: 0x3f4245, roughness: 0.95 });
-    const lineMat = new THREE.MeshBasicMaterial({ color: 0xcfcfc8 });
-    const stripeTex = canvasTex(64, 16, (c) => {
-      c.fillStyle = '#e8e13a'; c.fillRect(0, 0, 64, 16);
-      c.fillStyle = '#16161a';
-      for (let x = 0; x < 64; x += 16) c.fillRect(x, 0, 8, 16);
-    });
-    const armMat = new THREE.MeshStandardMaterial({ map: stripeTex, roughness: 0.6 });
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x565e63, roughness: 0.6, metalness: 0.4 });
-    const boxMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.7 });
     this.crossings = [];
     /* 踏切待ちの車は全踏切ぶんを集めて、種類ごとのインスタンスで1回ずつ描く(scene/cars.js) */
     this._crossCarSpots = [];
     this.crossSpots.forEach((s) => {
       const f = frameAt(F, this.step, s);
-      /* 道路(線路を横切る) */
-      const road = new THREE.Group();
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(56, 0.08, 5.2), roadMat);
-      slab.material = new THREE.MeshStandardMaterial({ color: 0x54585c, roughness: 0.95 });
-      slab.receiveShadow = true;
-      road.add(slab);
-      [-2.35, 2.35].forEach((dz) => {
-        const ln = new THREE.Mesh(new THREE.BoxGeometry(56, 0.02, 0.22), lineMat);
-        ln.position.set(0, 0.05, dz);
-        road.add(ln);
-      });
-      road.position.copy(f.p).addScaledVector(f.left, -1.9);
-      road.position.y += 0.1;
-      road.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.left);
-      this.world.add(road);
-      /* 遮断機(両側)。腕は列車接近で下りる */
-      const arms = [], lamps = [];
-      [[7.6, 3.4], [-11.2, -3.4]].forEach(([off, roadSide]) => {
-        const g = new THREE.Group();
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 3.0, 8), poleMat);
-        pole.position.y = 1.5;
-        pole.castShadow = true;
-        g.add(pole);
-        const head = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.5, 0.2), boxMat);
-        head.position.y = 2.6;
-        g.add(head);
-        /* 踏切警標(×印) */
-        const buckMat = new THREE.MeshStandardMaterial({ map: stripeTex, roughness: 0.7 });
-        [-0.6, 0.6].forEach((rot) => {
-          const buck = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.2, 0.06), buckMat);
-          buck.position.set(0, 3.25, 0);
-          buck.rotation.z = rot;
-          g.add(buck);
-        });
-        /* 警報灯2つ(交互点滅) */
-        const lampGeo = new THREE.CircleGeometry(0.15, 10);
-        const la = new THREE.Mesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0x33110e }));
-        const lb = new THREE.Mesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0x33110e }));
-        la.position.set(-0.2, 2.6, 0.11);
-        lb.position.set(0.2, 2.6, 0.11);
-        g.add(la, lb);
-        lamps.push(la, lb);
-        /* 腕(根元を軸に回転) */
-        const armGeo = new THREE.BoxGeometry(5.6, 0.2, 0.2);
-        armGeo.translate(2.8, 0, 0);
-        const arm = new THREE.Mesh(armGeo, armMat);
-        arm.position.y = 1.05;
-        arm.rotation.z = 1.25;
-        arm.userData.dyn = true;   // 毎フレーム動く(行列の更新を止めない)
-        arms.push(arm);
-        g.add(arm);
-        const p = f.p.clone().addScaledVector(f.left, off).addScaledVector(f.t, roadSide);
-        g.position.copy(p);
-        /* 腕が道路をふさぐ向き(=線路と平行)に置く */
-        g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), f.t.clone().multiplyScalar(off > 0 ? 1 : -1));
-        this.world.add(g);
-      });
+      const cr = buildCrossingAt(this, f, s);
       /* 踏切待ちの車(両側に1〜3台) */
       this._crossCars(f, s);
-      this.crossings.push({ s, arms, lamps });
+      this.crossings.push({ s, arms: cr.arms, lamps: cr.lamps });
     });
     addCars(this, this._crossCarSpots);
     this._crossCarSpots = null;
@@ -2329,8 +2280,9 @@ export class RailScene {
       const blink = closed && (this.clockT * 2.4) % 1 < 0.5;
       const blink2 = closed && !blink;
       cr.lamps.forEach((l, i) => {
+        if (!l) return;
         const on = i % 2 === 0 ? blink : blink2;
-        l.material.color.setHex(on ? 0xff3b30 : 0x33110e);
+        l.material.color.copy(on ? CROSS_LAMP.on : CROSS_LAMP.off);
       });
     });
   }
@@ -2406,6 +2358,8 @@ export class RailScene {
         const sz = over ? 12 : 3.4, sy = over ? 4.4 : 3.0;
         const p = f.p.clone().addScaledVector(f.left, (a + b) / 2);
         bodies.push({ x: p.x, y: f.p.y + 7.9, z: p.z, yaw: Math.atan2(f.t.x, f.t.z), sx: b - a, sy, sz });
+        /* 下の面: 天井のパネルと照明の帯・下がり梁(駅の形に焼きこむ。白い板に見えない) */
+        concourseUnderside(this, si, sc, a, b, sz);
         /* 駅名の看板: 入ってくる運転台のほうの面(線路の真上) */
         const fs = frameAt(F, this.step, sc - sz / 2 - 0.06);
         const sw = over ? 10 : 8;
