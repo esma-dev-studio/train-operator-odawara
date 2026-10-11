@@ -337,7 +337,9 @@ const App = {
         if (this.direction === b.dataset.dir) return;
         this.direction = b.dataset.dir;
         $('#dir-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-        this.line = prepareLine(this.rawLine, this.direction);
+        /* いまの 3Dの 路線と おなじ むきに もどしたときは それを つかう(出発で ワールドを 作りなおさない) */
+        const SL = this.scene && this.scene.line;
+        this.line = SL && SL.meta && SL.meta.direction === this.direction ? SL : prepareLine(this.rawLine, this.direction);
         /* むきを かえたら、区間の長さは そのままで はじめから */
         const span = this.endIdx == null ? null : this.endIdx - this.startIdx;
         this.startIdx = 0; this.endIdx = span; this._pick = 'start';
