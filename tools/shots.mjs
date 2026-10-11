@@ -8,7 +8,7 @@
  * 環境変数: BASE(既定 http://localhost:8123) / Q=high|mid|low(既定mid) / GPU=1(実GPU)
  * 場面ごとの描画負荷(draw call・三角形・シェーダー数)を <出力フォルダ>/calls.json に書く。
  * 場面の項目: setup / advance / approach / notch / cam / finish / arrive(停車するまで自動運転) /
- *            vp(画面サイズ) / touch / dpr(画素密度) / wait
+ *            overrun(「8」を m すぎて止まる) / vp(画面サイズ) / touch / dpr(画素密度) / wait
  * ========================================================= */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -55,6 +55,10 @@ const SCENES = [
   { name: '27_tunnel_portal', setup: { start: 4 }, advance: 26, cam: 'cab' },
   { name: '28_drone_tunnel', setup: { start: 4 }, advance: 30, cam: 'drone' },
   { name: '29_night_chase_suburb', setup: { start: 18, daytime: 'night' }, advance: 70, cam: 'chase' },
+  /* 「8」を 15m すぎて 止まった: いきすぎパネル(暗い幕・やりなおす/このまま つぎの駅へ) */
+  { name: '30_overrun', setup: { start: 9, end: 11 }, approach: 120, overrun: 15.2, cam: 'cab', wait: 1500 },
+  /* iPadの たて: 列車えらび(じかん・天気・出発が 下のパネルに 見えているか) */
+  { name: '31_select_portrait', screen: 'select', vp: [768, 1024], touch: true, dpr: 2 },
 ];
 
 const pick = filters.length ? SCENES.filter((s) => filters.some((f) => s.name.includes(f))) : SCENES;
@@ -96,6 +100,15 @@ for (const sc of pick) {
     if (sc.approach) await page.evaluate((m) => __test.approach(m), sc.approach);
     if (sc.notch != null) await page.evaluate((n) => __test.app.sim.setNotch(n), sc.notch);
     if (sc.cam) await page.evaluate((m) => __test.cam(m), sc.cam);
+    if (sc.overrun) {
+      const r = await page.evaluate((m) => (__test.overrun ? __test.overrun(m) : null), sc.overrun);
+      if (!r || !r.overrun) errors.push(`${sc.name}: いきすぎパネルが出なかった`);
+      /* パネルの登場アニメが おわるまで待つ(ソフト描画では CSSアニメの時計が おくれる) */
+      await page.waitForFunction(() => {
+        const el = document.querySelector('.ov-card');
+        return !el || !el.getAnimations || el.getAnimations().every((x) => x.playState === 'finished');
+      }, null, { timeout: 60000, polling: 250 }).catch(() => errors.push(`${sc.name}: いきすぎパネルの表示待ちが時間切れ`));
+    }
     if (sc.arrive) {
       /* 自動運転で「8」に止めて、停止位置の判定カードを出す。
        * ソフト描画では1コマが遅く、実時間の自動運転では なかなか止まらないので、描画を待たずに進める */
@@ -136,17 +149,25 @@ for (const sc of pick) {
     return !f || parseFloat(getComputedStyle(f).opacity) < 0.01;
   }, null, { timeout: 30000, polling: 200 }).catch(() => errors.push(`${sc.name}: 暗転が明けない`));
   await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
-  /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える */
+  /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える。
+   * メニューの うしろは 3フレームに1回しか描かないので、3Dを描いた回数(__test.renders)で わる */
   const info = await page.evaluate(() => new Promise((resolve) => {
     const r = __test.app.scene && __test.app.scene.renderer;
     if (!r) { resolve(null); return; }
+    const cnt = () => (__test.renders ? __test.renders() : 0);
     requestAnimationFrame(() => {
       r.info.autoReset = false; r.info.reset();
-      requestAnimationFrame(() => {
-        const o = { calls: r.info.render.calls, triangles: r.info.render.triangles, programs: r.info.programs ? r.info.programs.length : null };
+      const r0 = cnt();
+      let k = 0;
+      const wait = () => {
+        const n = cnt() - r0;
+        if (__test.renders && n < 1 && k++ < 30) { requestAnimationFrame(wait); return; }
+        const d = Math.max(1, n);
+        const o = { calls: Math.round(r.info.render.calls / d), triangles: Math.round(r.info.render.triangles / d), programs: r.info.programs ? r.info.programs.length : null };
         r.info.autoReset = true;
         resolve(o);
-      });
+      };
+      requestAnimationFrame(wait);
     });
   })).catch(() => null);
   if (info) perf[sc.name] = info;

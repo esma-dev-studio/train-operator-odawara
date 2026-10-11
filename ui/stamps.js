@@ -175,7 +175,7 @@ function motif(c, kind) {
 }
 
 /* スタンプ1つを描く。
- * tier: 0=まだ(点線の丸だけ) 1=くろ(±1m・すみ色) 2=いろ(±35cm・駅の色) 3=きん(±10cm・金色+内側の輪)
+ * tier: 0=まだ(点線の丸と うすい図柄) 1=くろ(±1m・すみ色) 2=いろ(±35cm・駅の色) 3=きん(±10cm・金色+内側の輪)
  * (前の呼び方 got:true/false も使える: true→2, false→0) */
 export function drawStamp(cv, name, { tier = null, got = true, size = 160, seed = 0 } = {}) {
   if (tier == null) tier = got ? 2 : 0;
@@ -189,25 +189,41 @@ export function drawStamp(cv, name, { tier = null, got = true, size = 160, seed 
   const R = size / 2;
   c.save();
   c.translate(R, R);
-  /* まだ: 点線の丸だけ(しずかな目標) */
+  /* まだ: 点線の丸と、うすい図柄の「かげ」(なにが もらえるか わかる しずかな目標。台紙は クリーム色) */
   if (tier <= 0) {
-    c.globalAlpha = 0.28;
-    c.strokeStyle = '#c4ced4';
+    c.globalAlpha = 0.55;
+    c.strokeStyle = '#a89a7e';
     c.setLineDash([size * 0.035, size * 0.03]);
     c.lineWidth = size * 0.02;
     c.beginPath(); c.arc(0, 0, R * 0.9, 0, Math.PI * 2); c.stroke();
+    c.setLineDash([]);
+    c.globalAlpha = 0.22;
+    c.strokeStyle = c.fillStyle = '#8a7a5a';
+    c.save();
+    c.translate(0, -R * 0.2);
+    c.scale(R * 0.36, R * 0.36);
+    c.lineWidth = 0.06;
+    c.lineJoin = 'round'; c.lineCap = 'round';
+    motif(c, kind);
+    c.restore();
     c.restore();
     return;
   }
   c.rotate(((seed % 7) - 3) * 0.025);
+  /* きん: クリーム色の 台紙の上でも しずまない こい金色の グラデーション(輪と図柄) */
   const gold = (a, b) => {
     const g = c.createLinearGradient(-a, -a, b, b);
-    g.addColorStop(0, '#7a5a10'); g.addColorStop(0.5, '#e9c75a'); g.addColorStop(1, '#8a6a14');
+    g.addColorStop(0, '#5a3f06'); g.addColorStop(0.5, '#b8901f'); g.addColorStop(1, '#6b4c08');
     return g;
   };
   let ink = col;
   if (tier === 1) { ink = '#2e2e2e'; c.globalAlpha = 0.85; }
-  if (tier >= 3) ink = gold(R, R);
+  if (tier >= 3) {
+    /* 内側に うすい金の 地色 */
+    c.fillStyle = 'rgba(233, 199, 90, 0.20)';
+    c.beginPath(); c.arc(0, 0, R * 0.82, 0, Math.PI * 2); c.fill();
+    ink = gold(R, R);
+  }
   c.strokeStyle = ink; c.fillStyle = ink;
   /* 外枠(二重丸。きんは さらに内側にもう1本) */
   c.lineWidth = size * 0.035;
@@ -223,6 +239,12 @@ export function drawStamp(cv, name, { tier = null, got = true, size = 160, seed 
     const w = c.measureText(text).width;
     if (w > maxW) c.font = `${weight} ${px * (maxW / w)}px "Zen Kaku Gothic New", "Hiragino Sans", sans-serif`;
   };
+  /* きんの 文字は さらに こい金(いちばん明るい所でも 台紙と 5:1 いじょう) */
+  if (tier >= 3) {
+    const gt = c.createLinearGradient(-R, -R, R, R);
+    gt.addColorStop(0, '#4a3304'); gt.addColorStop(0.5, '#7a5a0e'); gt.addColorStop(1, '#56390a');
+    c.fillStyle = gt;
+  }
   fit(name, 900, size * 0.185, R * 1.36);
   c.fillText(name, 0, R * 0.40);
   const kana = STATION_KANA[name] || '';
