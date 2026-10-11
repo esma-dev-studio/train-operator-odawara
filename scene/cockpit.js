@@ -44,6 +44,8 @@ const lin = (k) => Math.pow(Math.max(0, k), 2.2);
 /* 内装(FRPの化粧板)の明るさの比率: 上ほど20%暗い(見た目の比率) */
 const trimK = (yNdc) => 1 - 0.2 * Math.min(1, Math.max(0, (yNdc + 1) / 2));
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+/* ±m におさめる(数でないときは 0) */
+const clampM = (v, m) => (v > m ? m : v < -m ? -m : (v || 0));
 
 /* 角を丸めた多角形の点列(平面の単位)。各角は2次ベジェ(手前の辺を r もどった点 → 角 → つぎの辺を r すすんだ点) */
 function roundedPoly(pts, rad, seg) {
@@ -111,20 +113,30 @@ function bufGeo(buf) {
   return g;
 }
 
-/* 同じ材質の小さな部品(箱・円柱)を1つのジオメトリにまとめる(描画回数を減らす) */
+/* 同じ材質の小さな部品(箱・円柱)を1つのジオメトリにまとめる(描画回数を減らす)。
+ * k: [下, 上] を渡すと、部品の下の面から上の面へ明るさの比(見た目の比率)を頂点色でつける */
 function mergeParts(parts) {
-  const pos = [], idx = [];
+  const pos = [], idx = [], col = [];
   const v = new THREE.Vector3();
-  parts.forEach(({ geo, m }) => {
+  const useCol = parts.some((pt) => pt.k);
+  parts.forEach(({ geo, m, k }) => {
     const base = pos.length / 3;
     const p = geo.attributes.position;
-    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(m); pos.push(v.x, v.y, v.z); }
+    if (useCol && !geo.boundingBox) geo.computeBoundingBox();
+    const y0 = useCol ? geo.boundingBox.min.y : 0, yh = useCol ? Math.max(1e-6, geo.boundingBox.max.y - y0) : 1;
+    const kk = k || [1, 1];
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i);
+      if (useCol) { const c = lin(kk[0] + (kk[1] - kk[0]) * ((v.y - y0) / yh)); col.push(c, c, c); }
+      v.applyMatrix4(m); pos.push(v.x, v.y, v.z);
+    }
     const ix = geo.index;
     for (let i = 0; i < ix.count; i++) idx.push(base + ix.getX(i));
     geo.dispose();
   });
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  if (useCol) g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setIndex(idx);
   return g;
 }
@@ -224,7 +236,7 @@ export class Cockpit {
     this.matDash = basic({ map: dashTexture(), vertexColors: true });
     this.matDashEdge = basic({});
     /* ワイパー: 黒い腕・ブレード / ゴム / 根元のメッキ */
-    this.matWiper = basic({});
+    this.matWiper = basic({ vertexColors: true, side: THREE.DoubleSide });   // 枠と同じシェーダ(頂点色・両面)
     this.matRubber = basic({});
     this.matChrome = basic({});
     /* 雪の日の窓の下のふちの雪(雪のときだけ、だんだん積もる) */
@@ -250,8 +262,7 @@ export class Cockpit {
 
   /* 頭の位置のずれ(m)と傾き(rad)。運転台が画面の中で少しだけ動き、車体に固定された物に見える */
   setHeadOffset(dx, dy, pitch, roll) {
-    const cl = (v, m) => (v > m ? m : v < -m ? -m : (v || 0));
-    dx = cl(dx, 0.004); dy = cl(dy, 0.004); pitch = cl(pitch, 0.003); roll = cl(roll, 0.003);
+    dx = clampM(dx, 0.004); dy = clampM(dy, 0.004); pitch = clampM(pitch, 0.003); roll = clampM(roll, 0.003);
     const o = this._offV;
     if (o[0] === dx && o[1] === dy && o[2] === pitch && o[3] === roll) return;
     o[0] = dx; o[1] = dy; o[2] = pitch; o[3] = roll;
@@ -446,11 +457,12 @@ export class Cockpit {
     this.wiper = new THREE.Group();
     this.wiper.position.set(pivotNdc[0] * hwW, pivotNdc[1] * hhW, zw);
     const armLen = hhW * 1.2;
-    /* 腕(黒い板)とブレードの背骨は同じ材質なので1つに */
+    /* 腕(黒い板)とブレードの背骨は同じ材質なので1つに。光の当たらない材質なので、
+     * 腕は上のふちほど少し明るく、背骨はもう一段明るくして 平らな黒い棒に見えないように */
     const armGeo = mergeParts([
-      { geo: new THREE.BoxGeometry(armLen * 0.95, 0.016, 0.01), m: mat4(-armLen * 0.475, 0, 0) },
-      { geo: new THREE.BoxGeometry(armLen * 0.8, 0.008, 0.012), m: mat4(-armLen * 0.52, 0.011, -0.004) },
-      { geo: new THREE.CylinderGeometry(0.022, 0.024, 0.02, 12), m: mat4(0, 0, 0, Math.PI / 2) },
+      { geo: new THREE.BoxGeometry(armLen * 0.95, 0.016, 0.01), m: mat4(-armLen * 0.475, 0, 0), k: [0.9, 1.9] },
+      { geo: new THREE.BoxGeometry(armLen * 0.8, 0.008, 0.012), m: mat4(-armLen * 0.52, 0.011, -0.004), k: [2.0, 2.5] },
+      { geo: new THREE.CylinderGeometry(0.022, 0.024, 0.02, 12), m: mat4(0, 0, 0, Math.PI / 2), k: [1.4, 1.4] },
     ]);
     const arm = new THREE.Mesh(armGeo, this.matWiper);
     /* ブレードのゴム(窓に当たる黒い帯) */
@@ -498,16 +510,20 @@ export class Cockpit {
   }
 
   /* 明るさが変わったときだけ、各部の色を計器盤と同じ式で決めなおす */
+  _shadeMat(m, col) {
+    const s = shade(col, this.light, this._tmpS);
+    m.color.setRGB(s[0], s[1], s[2], THREE.SRGBColorSpace);
+  }
+
   _applyShade() {
     const l = this.light, s = this._tmpS, c = this._tmpC;
-    const set = (m, col) => { shade(col, l, s); m.color.setRGB(s[0], s[1], s[2], THREE.SRGBColorSpace); };
-    set(this.matFrame, COL.frame);
-    set(this.matSeal, COL.seal);
-    set(this.matDashEdge, COL.dashEdge);
-    set(this.matWiper, COL.wiper);
-    set(this.matRubber, COL.rubber);
-    set(this.matChrome, COL.chrome);
-    set(this.matSill, COL.snow);
+    this._shadeMat(this.matFrame, COL.frame);
+    this._shadeMat(this.matSeal, COL.seal);
+    this._shadeMat(this.matDashEdge, COL.dashEdge);
+    this._shadeMat(this.matWiper, COL.wiper);
+    this._shadeMat(this.matRubber, COL.rubber);
+    this._shadeMat(this.matChrome, COL.chrome);
+    this._shadeMat(this.matSill, COL.snow);
     /* 天板: テクスチャの地(#2a2e31)が shade('#2c3237') になる倍率(リニア) */
     shade(COL.dash, l, s);
     const b = COL.dashBase;

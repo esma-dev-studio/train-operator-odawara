@@ -38,6 +38,7 @@ const A0 = Math.PI * 0.75, A1 = Math.PI * 2.25, VMAX = 120;
 const angOf = (v) => A0 + (A1 - A0) * (v / VMAX);
 /* 帯は 2.5km/h ごとの区切り(49こ)。1つの区切りは目盛りを中心に 1.8km/h ぶん光る */
 const SEG_N = 48, SEG_HALF = 0.9;
+const NO_DASH = [];
 
 export class Cab {
   constructor(sim) {
@@ -449,37 +450,21 @@ export class Cab {
     const gI = Math.min(limI, Math.floor(Math.min(lim, pat) / 2.5));
     c.lineWidth = R * 0.07;
     c.lineCap = 'butt';
-    c.setLineDash([rr * seg * 0.72, rr * seg * 0.28]);
-    const arc = (i0, i1, col) => {
-      if (i1 < i0) return;
-      c.strokeStyle = col;
-      c.beginPath();
-      c.arc(R, R, rr, angOf(i0 * 2.5 - SEG_HALF), angOf(i1 * 2.5 + SEG_HALF));
-      c.stroke();
-    };
-    arc(0, SEG_N, '#241514');
+    /* 破線の長さは大きさが変わったときだけ作りなおす(毎回の配列を作らない) */
+    if (!this._dash || this._dashW !== W) { this._dash = [rr * seg * 0.72, rr * seg * 0.28]; this._dashW = W; }
+    c.setLineDash(this._dash);
+    this._segArc(c, R, rr, 0, SEG_N, '#241514');
     if (lamp === 'brake') {
-      if (!blink) arc(0, limI, '#ff4a3d');
+      if (!blink) this._segArc(c, R, rr, 0, limI, '#ff4a3d');
     } else {
-      arc(0, gI, '#1fa85a');
-      arc(gI + 1, limI, warn && !(lamp === 'pattern' && blink) ? '#ffb32e' : '#4a3812');
+      this._segArc(c, R, rr, 0, gI, '#1fa85a');
+      this._segArc(c, R, rr, gI + 1, limI, warn && !(lamp === 'pattern' && blink) ? '#ffb32e' : '#4a3812');
     }
-    c.setLineDash([]);
+    c.setLineDash(NO_DASH);
 
     /* 制限の三角(あか)と、このさきの目標(小さいきいろ)。中心をさす三角で、ふちは黒 */
-    const wedge = (sp, hw, col) => {
-      const an = angOf(Math.min(VMAX, sp)), ca = Math.cos(an), sa = Math.sin(an);
-      const r0 = R * 0.80, r1 = R * 0.95, w = R * hw;
-      c.beginPath();
-      c.moveTo(R + ca * r0, R + sa * r0);
-      c.lineTo(R + ca * r1 - sa * w, R + sa * r1 + ca * w);
-      c.lineTo(R + ca * r1 + sa * w, R + sa * r1 - ca * w);
-      c.closePath();
-      c.fillStyle = col; c.fill();
-      c.lineWidth = px; c.lineJoin = 'round'; c.strokeStyle = '#000'; c.stroke();
-    };
-    if (tgtI >= 0) wedge(tgtI * 2.5, 0.04, '#ffb32e');
-    wedge(lim, 0.065, '#ff4a3d');
+    if (tgtI >= 0) this._wedge(c, R, px, tgtI * 2.5, 0.04, '#ffb32e');
+    this._wedge(c, R, px, lim, 0.065, '#ff4a3d');
 
     /* 液晶: 速度(切り捨て)。小さい速度計では ATS の状態も出す */
     const lcd = this._lcdBox(R, small);
@@ -517,6 +502,28 @@ export class Cab {
     c.beginPath(); c.arc(R - R * 0.03, R - R * 0.03, R * 0.018, 0, TAU); c.fill();
     c.fillStyle = g.glass;
     c.beginPath(); c.arc(R, R, R * 0.915, 0, TAU); c.fill();
+  }
+
+  /* 区切りの帯の i0〜i1 番目(2.5km/hごと)を1本の破線の弧で */
+  _segArc(c, R, rr, i0, i1, col) {
+    if (i1 < i0) return;
+    c.strokeStyle = col;
+    c.beginPath();
+    c.arc(R, R, rr, angOf(i0 * 2.5 - SEG_HALF), angOf(i1 * 2.5 + SEG_HALF));
+    c.stroke();
+  }
+
+  /* 目盛りの外がわの三角(先が中心をさす)。sp: km/h、hw: 半分の幅(R に対する比) */
+  _wedge(c, R, px, sp, hw, col) {
+    const an = angOf(Math.min(VMAX, sp)), ca = Math.cos(an), sa = Math.sin(an);
+    const r0 = R * 0.80, r1 = R * 0.95, w = R * hw;
+    c.beginPath();
+    c.moveTo(R + ca * r0, R + sa * r0);
+    c.lineTo(R + ca * r1 - sa * w, R + sa * r1 + ca * w);
+    c.lineTo(R + ca * r1 + sa * w, R + sa * r1 - ca * w);
+    c.closePath();
+    c.fillStyle = col; c.fill();
+    c.lineWidth = px; c.lineJoin = 'round'; c.strokeStyle = '#000'; c.stroke();
   }
 
   _lcdBox(R, small) {
