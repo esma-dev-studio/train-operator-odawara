@@ -2345,8 +2345,7 @@ const App = {
         if (c.weather) this.weather = c.weather;
         if (c.daytime) this.daytime = c.daytime;
         if (c.dir) this.direction = c.dir;
-        /* おなじ むきなら いまの 3Dの 路線を つかう(ゲームの 出発と おなじ。ワールドを 作りなおさない) */
-        this._useLine(this.direction);
+        this.line = prepareLine(this.rawLine, this.direction);
         this.endIdx = c.end != null ? c.end : null;
         this.startIdx = c.start || 0;
         await this.startDrive(true);
