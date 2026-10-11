@@ -1354,7 +1354,7 @@ body.ov-open #coach { z-index: 31; }
 @keyframes fmRun { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 
 /* ---- 乗務選択: たて画面は「じかん・天気・出発」を 画面の下の パネルに(スクロールしなくても 見える) ---- */
-.btn-sm { white-space: nowrap; }
+.btn-sm, .pill { white-space: nowrap; }
 @media (max-width: 860px) {
   .sel-opts {
     position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 3;
@@ -1442,6 +1442,11 @@ body.ov-open #coach { z-index: 31; }
   .sel-wrap { padding-bottom: calc(260px + var(--safe-b)); }
   .res-btns { grid-auto-flow: row; }
   #btn-res-select { display: none; }
+  /* スタンプちょう: タブは アイコンを はぶいて 1行に、台紙は 3れつ */
+  .stamps-wrap { padding-left: 12px; padding-right: 12px; }
+  #book-stamps { padding: 10px 10px 14px; }
+  .book-tabs button { font-size: 0.86rem; gap: 4px; padding: 6px 4px; }
+  .book-tabs .icw { display: none; }
   .live-cap { max-width: calc(100% - 110px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 

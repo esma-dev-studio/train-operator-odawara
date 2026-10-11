@@ -149,17 +149,25 @@ for (const sc of pick) {
     return !f || parseFloat(getComputedStyle(f).opacity) < 0.01;
   }, null, { timeout: 30000, polling: 200 }).catch(() => errors.push(`${sc.name}: 暗転が明けない`));
   await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
-  /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える */
+  /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える。
+   * メニューの うしろは 3フレームに1回しか描かないので、3Dを描いた回数(__test.renders)で わる */
   const info = await page.evaluate(() => new Promise((resolve) => {
     const r = __test.app.scene && __test.app.scene.renderer;
     if (!r) { resolve(null); return; }
+    const cnt = () => (__test.renders ? __test.renders() : 0);
     requestAnimationFrame(() => {
       r.info.autoReset = false; r.info.reset();
-      requestAnimationFrame(() => {
-        const o = { calls: r.info.render.calls, triangles: r.info.render.triangles, programs: r.info.programs ? r.info.programs.length : null };
+      const r0 = cnt();
+      let k = 0;
+      const wait = () => {
+        const n = cnt() - r0;
+        if (__test.renders && n < 1 && k++ < 30) { requestAnimationFrame(wait); return; }
+        const d = Math.max(1, n);
+        const o = { calls: Math.round(r.info.render.calls / d), triangles: Math.round(r.info.render.triangles / d), programs: r.info.programs ? r.info.programs.length : null };
         r.info.autoReset = true;
         resolve(o);
-      });
+      };
+      requestAnimationFrame(wait);
     });
   })).catch(() => null);
   if (info) perf[sc.name] = info;
