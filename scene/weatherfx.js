@@ -6,14 +6,17 @@ import * as THREE from '../vendor/three.module.min.js';
 
 const BOX = { x: 34, y: 22, z: 70 };   // 幅・高さ・奥行き(カメラ前方へ)
 
+/* 雪の粒: 中心は白く、ふちは少し灰色の玉(明るいくもり空の前では灰色の点、家や木の前では白い点に見える。
+ * 真っ白なぼかしの点だと、白い空にとけて見えなくなる) */
 function flakeTex() {
   const cv = document.createElement('canvas');
   cv.width = cv.height = 32;
   const c = cv.getContext('2d');
   const g = c.createRadialGradient(16, 16, 0, 16, 16, 15);
   g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.45, 'rgba(255,255,255,0.75)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
+  g.addColorStop(0.35, 'rgba(200,205,214,1)');
+  g.addColorStop(0.65, 'rgba(128,134,146,0.85)');
+  g.addColorStop(1, 'rgba(128,134,146,0)');
   c.fillStyle = g; c.fillRect(0, 0, 32, 32);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -38,14 +41,14 @@ export class WeatherFx {
     this.rain.frustumCulled = false;
     this.rain.visible = false;
     scene.add(this.rain);
-    /* 雪: 点スプライト */
-    this.nSnow = 2200;
+    /* 雪: 点スプライト(手前に多めに置く=大きく見える粒をふやす。白い空でも見えるよう少し灰色) */
+    this.nSnow = 3000;
     this.snowP = new Float32Array(this.nSnow * 3);
     this.snowPh = new Float32Array(this.nSnow);
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.nSnow * 3), 3).setUsage(THREE.DynamicDrawUsage));
     this.snowMat = new THREE.PointsMaterial({
-      map: flakeTex(), size: 0.11, sizeAttenuation: true, transparent: true, opacity: 0.95,
+      map: flakeTex(), size: 0.15, sizeAttenuation: true, transparent: true, opacity: 1,
       depthWrite: false, color: 0xffffff,
     });
     this.snow = new THREE.Points(sg, this.snowMat);
@@ -53,7 +56,7 @@ export class WeatherFx {
     this.snow.visible = false;
     scene.add(this.snow);
     for (let i = 0; i < this.nRain; i++) this._seed(this.rainP, i, true);
-    for (let i = 0; i < this.nSnow; i++) { this._seed(this.snowP, i, true); this.snowPh[i] = this._r() * 6.28; }
+    for (let i = 0; i < this.nSnow; i++) { this._seed(this.snowP, i, true, true); this.snowPh[i] = this._r() * 6.28; }
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._up = new THREE.Vector3(0, 1, 0);
@@ -61,11 +64,12 @@ export class WeatherFx {
 
   _r() { this.rnd = (this.rnd * 16807) % 2147483647; return this.rnd / 2147483647; }
 
-  /* 粒をカメラ座標(右・上・前)の箱に置く。anyY=falseなら上端から */
-  _seed(arr, i, anyY) {
+  /* 粒をカメラ座標(右・上・前)の箱に置く。anyY=falseなら上端から。
+   * near=true(雪)は奥行きを手前に寄せる(遠くの粒は1〜2画素で見えないので、近くを多く) */
+  _seed(arr, i, anyY, near) {
     arr[i * 3] = (this._r() - 0.5) * BOX.x;
     arr[i * 3 + 1] = anyY ? (this._r() - 0.3) * BOX.y : BOX.y * 0.7;
-    arr[i * 3 + 2] = 1 + this._r() * BOX.z;
+    arr[i * 3 + 2] = 1 + (near ? Math.pow(this._r(), 1.8) : this._r()) * BOX.z;
   }
 
   set(weather, tod) {
@@ -74,7 +78,8 @@ export class WeatherFx {
     this.snow.visible = weather === 'snow';
     const dark = tod === 'night' ? 0.45 : tod === 'evening' ? 0.75 : 1;
     this.rainMat.color.setRGB(0.62 * dark, 0.67 * dark, 0.72 * dark);
-    this.snowMat.color.setScalar(tod === 'night' ? 0.62 : 1);
+    /* 雪の粒は真っ白にしない(明るいくもり空の前でも見え、家や木の前では明るく見える) */
+    this.snowMat.color.setHex(tod === 'night' ? 0xb4bcc8 : 0xd0d6de);
   }
 
   setVisible(v) {
@@ -115,8 +120,8 @@ export class WeatherFx {
       const t = performance.now() / 1000;
       for (let i = 0; i < this.nSnow; i++) {
         let y = P[i * 3 + 1], z = P[i * 3 + 2];
-        y -= 1.25 * dt; z -= v * dt;
-        if (y < -4 || z < 0.3) { this._seed(P, i, false); y = P[i * 3 + 1]; z = P[i * 3 + 2]; if (z < 0.3) z += BOX.z; }
+        y -= 1.0 * dt; z -= v * dt;
+        if (y < -4 || z < 0.3) { this._seed(P, i, false, true); y = P[i * 3 + 1]; z = P[i * 3 + 2]; if (z < 0.3) z += BOX.z; }
         if (z > BOX.z + 1) z -= BOX.z;
         P[i * 3 + 1] = y; P[i * 3 + 2] = z;
         const sway = Math.sin(t * 1.3 + this.snowPh[i]) * 0.35;
