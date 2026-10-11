@@ -25,7 +25,18 @@
   <div id="gl-wrap"><canvas id="gl"></canvas>
     <canvas id="rain-glass"></canvas>
     <div id="glass-sheen"></div>
-    <div id="fade"><div class="fade-msg"><i class="fm-bar"></i>じゅんび<ruby>中<rt>ちゅう</rt></ruby></div></div>
+    <!-- 暗転。しゅっぱつの ときだけ「しゅっぱつカード」(.card)。ほかの 長い暗転は「じゅんび中」(.slow) -->
+    <div id="fade">
+      <div class="fade-msg"><i class="fm-bar"></i>じゅんび<ruby>中<rt>ちゅう</rt></ruby></div>
+      <div class="fade-card" id="fade-card">
+        <i class="fc-band"></i>
+        <p class="fc-svc" id="fc-svc"></p>
+        <p class="fc-route" id="fc-route"></p>
+        <p class="fc-meta" id="fc-meta"></p>
+        <p class="fc-goal" id="fc-goal"></p>
+        <i class="fm-bar"></i>
+      </div>
+    </div>
 
     <!-- 運転中のHUD -->
     <div class="hud">
@@ -37,12 +48,8 @@
           <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small></div>
         </div>
         <div id="drive-head">
-          <div class="dh-top">
-            <span id="drive-head-svc">各駅停車　新百合ヶ丘 行</span>
-            <!-- この運転の ◎○△× (さいきんの10えき) と れんぞく -->
-            <div id="rs-marks" aria-hidden="true"></div>
-          </div>
-          <!-- 路線: いま(まえの駅) → つぎ → そのつぎ と のこりの駅数 -->
+          <!-- 路線: いま(まえの駅) → つぎ → そのつぎ と のこりの駅数・れんぞく。
+               下の目もり(#rs-ticks)は この運転の 駅間 1つずつ(おわった駅間は ◎○△× の色) -->
           <div id="route-strip">
             <div id="rs-win">
               <div class="rs-node rs-prev"><i></i><span></span></div>
@@ -51,8 +58,9 @@
               <div class="rs-seg rs-seg2"></div>
               <div class="rs-node rs-after"><i></i><span></span></div>
               <div class="rs-left"></div>
+              <div class="rs-streak hidden"></div>
             </div>
-            <div class="rs-all"><i id="rs-all-fill"></i></div>
+            <div class="rs-all" id="rs-ticks" aria-hidden="true"></div>
           </div>
         </div>
         <div class="gl-btns">
@@ -61,17 +69,23 @@
         </div>
       </div>
       <div id="cam-label" class="hidden"></div>
-      <button id="btn-skip" class="skip-btn hidden"><i data-ico="play"></i>はやく しゅっぱつ する</button>
-      <div id="coach" class="hidden"></div>
-      <!-- ブレーキめやす(このままのブレーキで止まる位置) -->
+      <!-- いまやること(コーチ)。駅で とまっている あいだは「はやく しゅっぱつ」ボタンも この中に -->
+      <div id="coach" class="hidden"><span id="coach-txt"></span><button id="btn-skip" class="skip-btn hidden"><i data-ico="play"></i>はやく しゅっぱつ</button></div>
+      <!-- ブレーキめやす(このままのブレーキで止まる位置)。
+           駅より手前の 低い制限に あわせるときは「スピードを おとす」(.mode-lim: 制限の板と スピードの棒) -->
       <div id="brake-guide" class="hidden">
-        <div class="bg-cap">ブレーキ<br>めやす</div>
+        <div class="bg-cap" id="bg-cap">ブレーキ<br>めやす</div>
         <div class="bg-scale">
           <div class="bg-zone"></div>
           <div class="bg-target"><span>8</span></div>
           <div id="bg-pred" class="bg-pred"></div>
           <span class="bg-lbl bg-lbl-over">いきすぎ</span>
           <span class="bg-lbl bg-lbl-short">てまえ</span>
+        </div>
+        <div class="bg-lim">
+          <span class="bh-lim" id="bg-lim-plate">55</span>
+          <div class="bg-limbar"><i id="bg-limbar-i"></i></div>
+          <span class="bg-limv" id="bg-limv"></span>
         </div>
         <div id="bg-txt" class="bg-txt">—</div>
       </div>
@@ -81,8 +95,7 @@
         <button id="tb-dn" class="tb"><i data-ico="chevron-down"></i><span>ブレーキ</span></button>
         <button id="tb-horn" class="tb tb-horn"><i data-ico="horn"></i><span>けいてき</span></button>
       </div>
-      <div id="msg-center" class="hidden"></div>
-      <!-- 停止位置の判定カード(「8」のものさし・cm・ひょうか) -->
+      <!-- 停止位置の判定カード(「8」のものさし・cm・ひょうか・もらった スタンプ) -->
       <div id="stop-card" class="hidden">
         <div class="sc-head"><span id="sc-sta"></span><span id="sc-streak"></span></div>
         <div class="sc-ruler">
@@ -91,22 +104,26 @@
           <div id="sc-nose"><i></i></div>
           <span class="sc-l">てまえ</span><span class="sc-r">いきすぎ</span>
         </div>
+        <p id="sc-tally" class="sc-tally hidden"></p>
         <div class="sc-row">
           <span id="sc-grade" class="sc-ring"></span>
           <span class="sc-mid"><b id="sc-cm"></b><span id="sc-word"></span></span>
           <span id="sc-time"></span>
+          <div id="sc-stamp" class="sc-stamp hidden"><canvas id="sc-stamp-cv"></canvas><span id="sc-stamp-txt"></span></div>
         </div>
         <p id="sc-tip" class="sc-tip hidden"></p>
       </div>
+      <!-- お知らせ: ふだんは コーチの すぐ上(よむ場所を 1つに)。判定カードが 出ているときは カードの下 -->
+      <div id="msg-center" class="hidden"></div>
       <div id="badge-toast" class="hidden"><span class="bt-ico"></span><span class="bt-txt"></span></div>
       <div id="stamp-pop" class="hidden"><canvas id="stamp-pop-cv"></canvas><p id="stamp-pop-txt"></p></div>
-      <!-- 大きく いきすぎた: 画面を暗くして「やりなおす / このまま つぎの駅へ」をえらぶ(レバーは うごかない) -->
+      <!-- 大きく いきすぎた: 画面を暗くして「もういちど とめる(すこし もどる) / このまま つぎの駅へ」をえらぶ(レバーは うごかない) -->
       <div id="overrun-modal" class="ov-scrim hidden">
         <div class="ov-card">
           <span class="ov-ico" data-ico="warn"></span>
           <h3>いきすぎ！</h3>
           <p id="ov-txt"></p>
-          <button id="btn-overrun-retry" class="btn btn-primary btn-big"><i data-ico="retry"></i>まえの<ruby>駅<rt>えき</rt></ruby>から やりなおす</button>
+          <button id="btn-overrun-retry" class="btn btn-primary btn-big"><i data-ico="retry"></i>もういちど とめる<small>（すこし もどる）</small></button>
           <button id="btn-overrun-go" class="btn btn-ghost">このまま つぎの<ruby>駅<rt>えき</rt></ruby>へ</button>
         </div>
       </div>
@@ -155,6 +172,8 @@
   <div class="load-inner">
     <p class="t-eyebrow">REALISTIC TRAIN DRIVING SIMULATOR</p>
     <h1 class="t-logo">TRAIN<span>OPERATOR</span></h1>
+    <!-- 路線の帯(ui/loadroute.js が あるときだけ 中身が入る。ないときは 下の 細い棒) -->
+    <div id="load-route"></div>
     <div class="load-bar"><i id="load-fill"></i></div>
     <p id="load-txt" class="load-txt">せんろを よみこみ中…</p>
     <p id="load-tip" class="load-tip">レバーを したに うごかすと ブレーキ</p>
@@ -175,6 +194,8 @@
       きみが<ruby>運転士<rt>うんてんし</rt></ruby>。レバーでスピードをあやつって、<ruby>駅<rt>えき</rt></ruby>にぴったりとめよう。
     </p>
     <div class="t-btns">
+      <!-- 前回と おなじ 列車で すぐ しゅっぱつ(前回の きろくが あるときだけ) -->
+      <button id="btn-quick" class="btn btn-primary btn-big hidden"><span class="q-main"><ruby>前回<rt>ぜんかい</rt></ruby>の つづき</span><small id="quick-sub"></small></button>
       <button id="btn-to-select" class="btn btn-primary btn-big"><ruby>運転<rt>うんてん</rt></ruby>をはじめる</button>
       <button id="btn-to-stamps" class="btn btn-ghost"><i data-ico="stamp"></i>えきスタンプ <span id="stamp-count" class="pill">0/23</span></button>
     </div>
@@ -193,15 +214,23 @@
       <h2 class="sel-title"><ruby>列車<rt>れっしゃ</rt></ruby>を えらぶ</h2>
       <span></span>
     </header>
+    <!-- 広い画面: 1だんめ = ①むき ②種別 / 2だんめ = ③駅(よこ長の路線図) / 3だんめ = ④じかん・天気 と 出発。
+         たて画面: 上から じゅんばんに ならび、④と出発は 画面の下の パネル -->
     <div class="sel-grid">
       <div class="sel-col sel-route">
-        <h3 class="opt-h"><span class="step">1</span>むき</h3>
-        <div class="seg seg-dir" id="dir-seg">
-          <button data-dir="down" class="on">くだり<small><ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby></small></button>
-          <button data-dir="up">のぼり<small><ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby> → <ruby>新宿<rt>しんじゅく</rt></ruby></small></button>
+        <div class="sr-dir">
+          <h3 class="opt-h"><span class="step">1</span>むき</h3>
+          <div class="seg seg-dir" id="dir-seg">
+            <button data-dir="down" class="on">くだり<small><ruby>新宿<rt>しんじゅく</rt></ruby> → <ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby></small></button>
+            <button data-dir="up">のぼり<small><ruby>新百合ヶ丘<rt>しんゆりがおか</rt></ruby> → <ruby>新宿<rt>しんじゅく</rt></ruby></small></button>
+          </div>
         </div>
-        <h3 class="opt-h"><span class="step">2</span><ruby>種別<rt>しゅべつ</rt></ruby></h3>
-        <div id="svc-list" class="svc-list"></div>
+        <div class="sr-svc">
+          <h3 class="opt-h"><span class="step">2</span><ruby>種別<rt>しゅべつ</rt></ruby></h3>
+          <div id="svc-list" class="svc-list"></div>
+        </div>
+      </div>
+      <div class="sel-col sel-map">
         <h3 class="opt-h"><span class="step">3</span><ruby>駅<rt>えき</rt></ruby><span class="route-help" id="route-help">スタートの<ruby>駅<rt>えき</rt></ruby>を タップ → ゴールの<ruby>駅<rt>えき</rt></ruby>を タップ</span></h3>
         <div class="route-quick">
           <button id="rq-short" class="chip">みじかく(2えき)</button>
@@ -228,8 +257,8 @@
         </div>
         <details class="sel-keys">
           <summary>そうさの しかた</summary>
-          <span class="key-item">↑ = すすむ</span><span class="key-item">↓ = ブレーキ</span><span class="key-item">スペース = きんきゅうブレーキ</span><span class="key-item">H = けいてき</span><span class="key-item">C = してん</span><span class="key-item">P = ポーズ</span><br>
-          iPadは、みぎはしの<b>レバー</b>をゆびで上下にうごかしてね（<b>▲すすむ／▼ブレーキ</b>ボタンでも1だんずつ うごくよ）
+          <span class="key-item">↑ = すすむ・ゆるめる</span><span class="key-item">↓ = ブレーキ</span><span class="key-item">スペース = ひじょうブレーキ</span><span class="key-item">H = けいてき</span><span class="key-item">C = してん</span><span class="key-item">P = ポーズ</span><br>
+          iPadは、みぎはしの<b>レバー</b>をゆびで上下にうごかしてね（みぎの <b>うえ／した</b> ボタンでも 1だんずつ。おしたままだと つづけて うごくよ）
         </details>
       </div>
     </div>
@@ -279,14 +308,14 @@
             </div>
           </div>
           <div id="res-breakdown" class="res-breakdown res-reveal"></div>
-        </div>
-        <div class="res-col">
-          <p id="res-next" class="res-next res-reveal hidden"></p>
-          <div id="res-stamps" class="res-stamps res-reveal hidden"></div>
-          <div id="res-badges" class="res-badges res-reveal hidden"></div>
           <div class="res-table-wrap res-reveal">
             <table id="res-stops"></table>
           </div>
+        </div>
+        <div class="res-col">
+          <div id="res-next" class="res-next res-reveal hidden"></div>
+          <div id="res-stamps" class="res-stamps res-reveal hidden"></div>
+          <div id="res-badges" class="res-badges res-reveal hidden"></div>
         </div>
       </div>
     </div>
