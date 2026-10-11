@@ -1438,6 +1438,11 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   #msg-center { top: auto; bottom: 116px; left: calc(50% - 44px); max-width: calc(100% - 200px); }
   #stop-card:not(.hidden) ~ #msg-center { top: calc(var(--hud-top-y) + 230px); bottom: auto; }
 }
+/* iPadの たて・Split View: うえ/した ボタンは コーチより 上なので、コーチは 天板の あいている 帯
+ * (左の 時刻表差しと 右の 時計の あいだ = 画面の はば 約16〜79%)の まん中に。678px でも 時刻表に かからない */
+@media (min-width: 561px) and (max-width: 860px) and (orientation: portrait) {
+  #coach, #msg-center { left: calc(50% - 16px); max-width: 62%; }
+}
 @keyframes bgInP { from { opacity: 0; transform: translateX(14px); } }
 /* スマホの たて: 大型HUDは 2だん(じそく / えきまで) */
 @media (max-width: 560px) {
