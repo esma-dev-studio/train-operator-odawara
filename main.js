@@ -640,7 +640,7 @@ const App = {
     if (!row || !sc || !sc.classList.contains('active')) return;
     /* 広い画面の よこ長の 路線図(grid)は ぜんぶ 見えているので うごかさない */
     if (getComputedStyle(ol).display === 'grid') return;
-    const own =ol.scrollHeight > ol.clientHeight + 2 && getComputedStyle(ol).overflowY !== 'visible';
+    const own = ol.scrollHeight > ol.clientHeight + 2 && getComputedStyle(ol).overflowY !== 'visible';
     /* 画面ごと うごかすときは、スタートが いちばん上の駅なら うごかさない(見出しと ①むき から 見てもらう) */
     if (!own && this.startIdx === 0) return;
     const box = own ? ol : sc;
@@ -1162,6 +1162,8 @@ const App = {
       if (heavy) fade.classList.add('slow');
       else this._slowT = setTimeout(() => { if (this._starting) fade.classList.add('slow'); }, 700);
       await wait(380);
+      /* 先に 運転画面に する(メニューの 画面を けして カードを 見せる。運転は beginRun まで はじまらない) */
+      this.go('drive');
       /* むきが かわる(ワールドの 作りなおし)ときは、少しずつ 作る(暗転の中で。beginRun の setWorld は 軽い道すじになる) */
       if (S0 && S0.line !== this.line && typeof S0.setWorldAsync === 'function') {
         try {
@@ -1170,7 +1172,6 @@ const App = {
           await S0.setWorldAsync(this.line, pre);
         } catch (e) { /* beginRun の setWorld で 作る */ }
       }
-      this.go('drive');
       await nextFrame();
       this.beginRun(this.startIdx);
       /* シェーダーの先読み: 少しずつ作れるなら(prewarmAsync) 待つ。ないときは いっきに。
@@ -1529,7 +1530,7 @@ const App = {
         this._cue('stampPress', 0.5);
         clearTimeout(this._stampT);
         this._stampT = setTimeout(() => pop.classList.add('hidden'), 2500);
-      }, 2600);
+      }, this._finalSeq ? 3600 : 2600);   // ゴールでは カード(4.5秒)が きえてから そらからの 景色へ
     }
     /* くんしょう(スタンプのあとに順番に出る) */
     if (tier >= 2) {

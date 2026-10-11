@@ -1710,6 +1710,6 @@ body.ov-open #coach { z-index: 31; }
 
 @media (prefers-reduced-motion: reduce) {
   .tb.want::after, #coach.coach-hot::after { animation: none; opacity: 0.85; }
-  #brake-guide, .gm:last-of-type, .ov-card { animation: none; }
+  #brake-guide, .ov-card, .sc-stamp.go, #cam-label.lower3, .rs-all i.cur { animation: none; }
   #stop-card .sc-ring, #stop-card #sc-word { animation: none; }
 }
