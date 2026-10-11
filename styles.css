@@ -1295,7 +1295,8 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   #res-stamps { margin-top: auto; margin-bottom: auto; }
   .res-main { justify-content: flex-start; margin-left: 6px; }
   .res-breakdown { max-width: none; margin-bottom: 12px; }
-  .res-next { margin-top: 0; }
+  /* 右の列(flex)の中では 左右 auto だと 字の はばに ちぢむ(「あと 7てんで ランクA！」が 小さな箱に)。列の はばいっぱいに */
+  .res-next { margin-top: 0; margin-left: 0; margin-right: 0; max-width: none; }
   .res-btns { max-width: 760px; margin-left: auto; margin-right: auto; }
   /* 駅ごとの表は 左の列に。ながい 運転でも ボタンが 画面の そとに 出ない 高さまで */
   .res-table-wrap { max-height: max(160px, calc(100vh - 600px)); max-height: max(160px, calc(100dvh - 600px)); }
