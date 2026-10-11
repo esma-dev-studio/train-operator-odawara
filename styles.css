@@ -686,6 +686,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   transition: transform 90ms cubic-bezier(.25, 1.5, .5, 1);
   pointer-events: none;
 }
+.lever-grip.lg-jump { transition: none; }
 @media (prefers-reduced-motion: reduce) {
   .lever-grip { transition: none; }
   .nt.tgt::before { animation: none; }

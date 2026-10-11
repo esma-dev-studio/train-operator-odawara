@@ -378,7 +378,7 @@ export class Cab {
     this._delayK = null;
     this._clockM = null;
     this._arrM = null;
-    this._atSta = false;
+    this._atSta = null;   // 最初のフレームでかならず「つぎは」「ただいま」を書く
     this._atCur = null;
     this._lastNotch = null;
     this._vs = null;
@@ -387,6 +387,8 @@ export class Cab {
   _renderNotch(n) {
     this._lastNotch = n;
     const idx = notchIdx(n);
+    /* 1段ずつ動かしたときだけ 90ms でカチッと動く(CSS)。目盛りを遠くまでタップしたときなどは すぐその段へ */
+    this._cls(this.els.leverGrip, 'lg-jump', !(this._onIdx >= 0 && Math.abs(idx - this._onIdx) === 1));
     if (this._onIdx >= 0 && this._nt[this._onIdx]) this._nt[this._onIdx].classList.remove('on');
     if (this._nt[idx]) this._nt[idx].classList.add('on');
     this._onIdx = idx;
