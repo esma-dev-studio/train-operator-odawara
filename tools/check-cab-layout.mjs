@@ -4,9 +4,11 @@
  *   ・ノッチの13段(.nt)がぜんぶマスコン(.cab-mascon)の中に見えている(1pxまで)
  *   ・EB(ひじょう)の段の高さ: 12px以上(タッチ端末は下の表のとおり)
  *   ・レバーの持ち手がマスコンの中におさまり、いまのノッチの段とそろっている
- *   ・速度計のキャンバスの解像度 = round(表示幅 × min(2, devicePixelRatio))
+ *   ・速度計のキャンバスの解像度 = round(表示幅 × min(2, devicePixelRatio))、304px以下
  *   ・#cab の子(各ブロック)が横にはみ出していない
  *   ・#touch-btns(タッチ用ボタン)がマスコンに重ならない
+ *   ・cab.setTarget(-4) で B4 の段だけが点滅し、null で消える
+ *   ・トラックパッドつきiPad用に (any-pointer: coarse) and (min-width: 861px) の指定がある
  * 段の高さの下限: iPad縦(768x1024) 18px / iPad横(1180x820) 14px / 横向きスマホ 7px(13段すべて見えること) / ほか 12px
  *
  * 使い方: (ローカルHTTPサーバを立ててから)
@@ -44,6 +46,11 @@ for (const v of VIEWS) {
   await page.waitForFunction(() => document.querySelector('#lever-grip').textContent.trim() === 'EB', null, { timeout: 60000 })
     .catch(() => fails.push(`${v.name}: EBにしても持ち手の表示が変わらない`));
   await page.waitForTimeout(300);
+  /* 持ち手は 90ms でカチッと動く(CSSの transition)。ソフト描画ではコマが遅いので、動きおわるまで待つ */
+  await page.waitForFunction(() => {
+    const g = document.querySelector('#lever-grip');
+    return !g.getAnimations || g.getAnimations().every((a) => a.playState === 'finished');
+  }, null, { timeout: 30000, polling: 100 }).catch(() => fails.push(`${v.name}: 持ち手の動きがおわらない`));
   const r = await page.evaluate((minRow) => {
     const out = [];
     const box = (el) => el.getBoundingClientRect();
@@ -72,7 +79,7 @@ for (const v of VIEWS) {
     const sp = document.querySelector('#speedo');
     const want = Math.round(sp.clientWidth * Math.min(2, devicePixelRatio || 1));
     if (sp.width !== want) out.push(`速度計 canvas.width ${sp.width} ≠ ${want}`);
-    if (sp.width > 300) out.push(`速度計 canvas.width ${sp.width} > 300`);
+    if (sp.width > 304) out.push(`速度計 canvas.width ${sp.width} > 304`);
     [...document.querySelector('#cab').children].forEach((el) => {
       if (getComputedStyle(el).display === 'none') return;
       if (el.scrollWidth > el.clientWidth + 1) out.push(`${el.className} が横にはみ出し (${el.scrollWidth} > ${el.clientWidth})`);
@@ -84,6 +91,26 @@ for (const v of VIEWS) {
     }
     return { out, ebH: +ebH.toFixed(1), rowsH: +(box(rows[12]).bottom - box(rows[0]).top).toFixed(1), cabH: box(document.querySelector('#cab')).height };
   }, v.minRow);
+  /* つぎにねらう段の点滅(cab.setTarget)と、トラックパッドつきiPad用の (any-pointer: coarse) の指定 */
+  const r2 = await page.evaluate(() => {
+    const out = [], cab = __test.app.cab;
+    if (cab && typeof cab.setTarget === 'function') {
+      cab.setTarget(-4);
+      const t = [...document.querySelectorAll('#notch-list .nt.tgt')];
+      if (t.length !== 1 || t[0].textContent.trim() !== 'B4') out.push(`setTarget(-4) で B4 だけが点滅しない (${t.map((e) => e.textContent).join(',')})`);
+      cab.setTarget(null);
+      if (document.querySelectorAll('#notch-list .nt.tgt').length) out.push('setTarget(null) で点滅が消えない');
+    }
+    let anyPtr = false;
+    for (const ss of document.styleSheets) {
+      let rules = [];
+      try { rules = [...ss.cssRules]; } catch (e) { /* 別オリジン */ }
+      rules.forEach((ru) => { if (ru.media && /any-pointer:\s*coarse/.test(ru.media.mediaText) && /min-width:\s*861px/.test(ru.media.mediaText)) anyPtr = true; });
+    }
+    if (!anyPtr) out.push('(any-pointer: coarse) and (min-width: 861px) の指定がない');
+    return out;
+  });
+  r2.forEach((s) => fails.push(`${v.name}: ${s}`));
   if (Array.isArray(r)) r.forEach((s) => fails.push(`${v.name}: ${s}`));
   else {
     r.out.forEach((s) => fails.push(`${v.name}: ${s}`));

@@ -420,22 +420,28 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
 }
 
 /* フロントガラスの映り込み・雨滴(運転台視点のときだけ)
- * 上の縁は少し青緑がかった遮光帯、下は計器盤のうすい映り込み。夜は計器の明かりがうっすら映る */
+ * 上の縁は少し青緑がかった遮光帯、下は計器盤のうすい映り込み。夜は計器の明かりがうっすら映る。
+ * 上の枠(上から約7%)と3Dの天板(下から約9%)には かけない(枠・天板の色は計器盤と同じ式で決めてあるので) */
 #glass-sheen {
   position: absolute; inset: 0; pointer-events: none; display: none;
   background:
-    linear-gradient(180deg, rgba(40, 95, 100, 0.20) 0, rgba(40, 95, 100, 0.07) 7%, rgba(40, 95, 100, 0) 13%),
-    linear-gradient(0deg, rgba(185, 195, 205, 0.06) 0, rgba(185, 195, 205, 0) 16%),
+    linear-gradient(180deg, rgba(40, 95, 100, 0) 0 6.8%, rgba(40, 95, 100, 0.17) 7.2%, rgba(40, 95, 100, 0.06) 11%, rgba(40, 95, 100, 0) 16%),
+    linear-gradient(0deg, rgba(185, 195, 205, 0) 0 9.2%, rgba(185, 195, 205, 0.06) 9.6%, rgba(185, 195, 205, 0) 22%),
     radial-gradient(120% 90% at 82% -12%, rgba(255,255,255,0.07), rgba(255,255,255,0) 55%),
     linear-gradient(115deg, rgba(255,255,255,0) 42%, rgba(255,255,255,0.035) 47%, rgba(255,255,255,0) 53%);
 }
+/* 夜・トンネル: 計器の明かり(モニタの青・速度計のだいだい)が 窓の下のほうにうっすら映る。
+ * 位置は cab.js が計器の位置をはかって --rf-tx / --rf-tw / --rf-sx に入れる(天板の奥の縁 約91% より上) */
 body.cab-dark #glass-sheen {
   background:
-    linear-gradient(180deg, rgba(20, 50, 56, 0.25) 0, rgba(20, 50, 56, 0) 12%),
-    linear-gradient(0deg, rgba(80, 170, 230, 0.07) 0, rgba(80, 170, 230, 0) 14%);
+    radial-gradient(var(--rf-tw, 22%) 6% at var(--rf-tx, 42%) 86%, rgba(70, 160, 230, 0.13), rgba(70, 160, 230, 0) 70%),
+    radial-gradient(5% 5% at var(--rf-sx, 8%) 87%, rgba(255, 200, 120, 0.10), rgba(255, 200, 120, 0) 70%),
+    linear-gradient(180deg, rgba(20, 50, 56, 0) 0 6.8%, rgba(20, 50, 56, 0.22) 7.2%, rgba(20, 50, 56, 0) 15%),
+    linear-gradient(0deg, rgba(80, 170, 230, 0) 0 9.2%, rgba(80, 170, 230, 0.07) 9.6%, rgba(80, 170, 230, 0) 20%);
 }
 body.mode-drive.cam-cab #glass-sheen { display: block; }
-#rain-glass { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+/* 雨・雪の水滴: 大きさと位置は ui/rainglass.js が窓の範囲(外接する四角)に合わせる */
+#rain-glass { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
 
 #msg-center {
   position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
@@ -549,7 +555,7 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 #tims-delay.late { color: var(--red); }
 .tims-prog { height: 6px; flex: none; background: #0d2a3c; border-radius: 3px; overflow: hidden; margin-top: 2px; }
 .tims-prog i { display: block; height: 100%; background: linear-gradient(90deg, #2f9dc4, #56c2e8); transform-origin: left center; transform: scaleX(0); }
-.tims-list { list-style: none; display: flex; flex-direction: column; justify-content: center; min-width: 0; overflow: hidden; }
+.tims-list { list-style: none; display: flex; flex-direction: column; justify-content: flex-start; min-width: 0; overflow: hidden; }
 .tims-list li { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(120, 190, 230, 0.15); font-size: 0.86rem; font-weight: 700; color: #c6dbe6; white-space: nowrap; }
 .tims-list li:last-child { border-bottom: 0; }
 .tims-list li rt { font-size: 0.6rem; color: #7fa9bf; }
@@ -557,6 +563,11 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .tims-list li.next rt { color: #c9a940; }
 .tl-n { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tl-t { font-family: var(--cab-num); font-variant-numeric: tabular-nums; flex: none; font-size: 0.8rem; }
+/* 終点(この運転のゴール): 黄色いわくの小さな札 */
+.tl-goal { flex: none; margin-right: auto; align-self: center; padding: 0 4px; border: 1px solid #ffd54a; border-radius: 3px; color: #ffd54a; font-size: 0.66rem; font-weight: 700; line-height: 1.45; }
+/* 駅でドアが開いているあいだ: 「つぎは ○○」を小さく */
+#tims-dist.tims-dist-small, body #cab #tims-dist.tims-dist-small { font-family: inherit; font-size: 0.9rem; color: #a9c3d2; text-shadow: none; letter-spacing: 0.04em; }
+#tims-dist.tims-dist-small rt { font-size: 0.5rem; color: #7fa9bf; }
 
 /* --- 制限スピード(線路わきの黄色い標識と同じ見た目) --- */
 .cab-limit { text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 6px 6px; }
@@ -572,6 +583,8 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   position: relative; z-index: 2;
 }
 #lim-now.l3 { font-size: 1.95rem; letter-spacing: -0.05em; }
+/* 制限がかわったとき 0.6秒 白いふち */
+#lim-now.flash { outline-color: #fff; box-shadow: 0 3px 0 2px rgba(0, 0, 0, 0.55), 0 0 14px 3px rgba(255, 255, 255, 0.45); }
 #lim-next { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; color: #ffcf6a; font-size: 0.72rem; font-weight: 700; line-height: 1.15; white-space: nowrap; }
 .ln-l1, .ln-l2 { display: flex; align-items: center; justify-content: center; gap: 4px; }
 .ln-board { display: inline-block; min-width: 26px; height: 20px; padding: 0 2px; border-radius: 2px; background: #e6bd1d; color: #111; border: 2px solid #111; outline: 1px solid #e6bd1d; font-family: var(--cab-num); font-size: 0.8rem; font-weight: 900; line-height: 16px; font-variant-numeric: tabular-nums; }
@@ -588,23 +601,26 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 .gr-dn { background: linear-gradient(to top right, transparent calc(50% - 1px), #56c2e8 calc(50% - 1px), #56c2e8 calc(50% + 1px), transparent calc(50% + 1px)); }
 
 /* --- 表示灯(色つきのレンズ。消えていても何色かわかる) --- */
-.cab-lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-content: center; padding: 9px; }
+.cab-lamps { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr 1fr; gap: 9px; align-content: stretch; padding: 8px 10px 10px; }
+.lamps-cap { grid-column: 1 / 3; text-align: center; font-size: 0.72rem; font-weight: 700; color: #8d99a2; letter-spacing: 0.04em; line-height: 1; }
+/* レンズのまわりは メッキのふち(黒 → 金属 → 黒) */
 .lamp {
-  position: relative; border: 0; border-radius: 7px; padding: 8px 2px; text-align: center;
-  font-size: 0.78rem; font-weight: 700; line-height: 1.25; white-space: nowrap;
+  position: relative; border: 0; border-radius: 7px; padding: 6px 2px; text-align: center;
+  display: flex; align-items: center; justify-content: center; min-height: 0;
+  font-size: 0.86rem; font-weight: 700; line-height: 1.2; white-space: nowrap;
   color: var(--lens-ink, #55616a);
   background: radial-gradient(ellipse at 50% 28%, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0) 60%), var(--lens-off, #12171b);
-  box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, inset 0 -3px 6px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 0 2px #050607, 0 0 0 4px #474e54, 0 0 0 5px #15191c, inset 0 -3px 6px rgba(0, 0, 0, 0.6);
 }
-/* --lens-ink-dim は 暗いとき用(lens-ink の 70%)。color-mix() は 古いiPad(〜16.1)で
- * 白っぽい文字に なってしまうので、さきに 計算した色を おいておく */
-.lamp-amber { --lens-off: #2b2210; --lens-ink: #7f6632; --lens-ink-dim: #594723; }
-.lamp-red { --lens-off: #2a1311; --lens-ink: #84403a; --lens-ink-dim: #5c2d29; }
-.lamp-green { --lens-off: #0f2419; --lens-ink: #33704f; --lens-ink-dim: #244e37; }
+/* 消えていても読める(レンズの地に対して 約4:1)。--lens-ink-dim は 暗いとき用(lens-ink の 70%)。
+ * color-mix() は 古いiPad(〜16.1)で 白っぽい文字に なってしまうので、さきに 計算した色を おいておく */
+.lamp-amber { --lens-off: #2b2210; --lens-ink: #a88a4c; --lens-ink-dim: #766135; }
+.lamp-red { --lens-off: #2a1311; --lens-ink: #b5655d; --lens-ink-dim: #7f4741; }
+.lamp-green { --lens-off: #0f2419; --lens-ink: #5aa57d; --lens-ink-dim: #3f7458; }
 .lamp.on { z-index: 2; }
-.lamp.on.lamp-amber { background: radial-gradient(ellipse at 50% 35%, #fff3c4 0, #ffc443 38%, #d98a00); color: #3a2500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 180, 40, 0.55); }
-.lamp.on.lamp-red { background: radial-gradient(ellipse at 50% 35%, #ffd0c8 0, #ff5347 38%, #a1160c); color: #3a0500; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(255, 83, 71, 0.6); animation: blink 0.6s steps(2) infinite; }
-.lamp.on.lamp-green { background: radial-gradient(ellipse at 50% 35%, #d9ffe9 0, #34d07c 38%, #0d7a43); color: #04301a; box-shadow: 0 0 0 2px #050607, 0 0 0 3px #2d3338, 0 0 16px 2px rgba(52, 208, 124, 0.5); }
+.lamp.on.lamp-amber { background: radial-gradient(ellipse at 50% 35%, #fff3c4 0, #ffc443 38%, #d98a00); color: #3a2500; box-shadow: 0 0 0 2px #050607, 0 0 0 4px #474e54, 0 0 0 5px #15191c, 0 0 16px 4px rgba(255, 180, 40, 0.55); }
+.lamp.on.lamp-red { background: radial-gradient(ellipse at 50% 35%, #ffd0c8 0, #ff5347 38%, #a1160c); color: #3a0500; box-shadow: 0 0 0 2px #050607, 0 0 0 4px #474e54, 0 0 0 5px #15191c, 0 0 16px 4px rgba(255, 83, 71, 0.6); animation: blink 0.6s steps(2) infinite; }
+.lamp.on.lamp-green { background: radial-gradient(ellipse at 50% 35%, #d9ffe9 0, #34d07c 38%, #0d7a43); color: #04301a; box-shadow: 0 0 0 2px #050607, 0 0 0 4px #474e54, 0 0 0 5px #15191c, 0 0 16px 4px rgba(52, 208, 124, 0.5); }
 @keyframes blink { 50% { opacity: 0.45; } }
 
 /* --- マスコン: 13段の目盛り(#notch-list) + レバー(#lever)。目盛りの行とレバーの止まる位置はそろっている --- */
@@ -621,15 +637,24 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 }
 /* 刻み線: レバーのみぞを指す */
 .nt::after { content: ''; position: absolute; right: -8px; top: 50%; width: 8px; height: 1px; background: currentColor; opacity: 0.6; }
-.nt-p { color: #4f8095; background: rgba(47, 157, 196, 0.10); --zc: #2f9dc4; }
+.nt-p { color: #4f8095; background: rgba(47, 157, 196, 0.10); --zc: #2f9dc4; box-shadow: inset 3px 0 0 #1f6f8c; }
 .nt-n { color: #b8c4cc; --zc: #8a969e; }
-.nt-b { color: #8a7350; background: rgba(217, 144, 63, 0.10); --zc: #d9903f; }
-.nt-eb { color: #c77; background: rgba(214, 69, 69, 0.25); --zc: #d64545; letter-spacing: -0.02em; }
+.nt-b { color: #8a7350; background: rgba(217, 144, 63, 0.10); --zc: #d9903f; box-shadow: inset 3px 0 0 #8a5a22; }
+/* ひじょう: 赤のしましま */
+.nt-eb { color: #e7a19b; background: repeating-linear-gradient(135deg, rgba(214, 69, 69, 0.38) 0 4px, rgba(80, 18, 16, 0.38) 4px 8px); --zc: #d64545; letter-spacing: -0.02em; }
 .nt.on { font-weight: 900; z-index: 2; box-shadow: inset 3px 0 0 #fff; border-radius: 2px; }
 .nt.on.nt-p { background: #2f9dc4; color: #04222e; }
 .nt.on.nt-n { background: #4a555d; color: #fff; }
 .nt.on.nt-b { background: #d9903f; color: #2a1800; }
 .nt.on.nt-eb { background: #d64545; color: #fff; }
+/* つぎにねらう段(cab.setTarget): 水色の枠が点滅。いまの段になったら みどりで止まる */
+.nt.tgt::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -2px; right: -2px; z-index: 3;
+  border: 2px solid var(--hi); border-radius: 3px; pointer-events: none;
+  animation: tgtBlink 0.6s ease-in-out infinite alternate;
+}
+.nt.tgt.on::before { border-color: var(--green); animation: none; }
+@keyframes tgtBlink { from { opacity: 1; } to { opacity: 0.25; } }
 .nt-cap {
   grid-column: 1; pointer-events: none; overflow: hidden;
   display: flex; align-items: center; justify-content: center;
@@ -638,14 +663,17 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
 }
 .nt-cap-p { color: #4f8095; }
 .nt-cap-b { color: #8a7350; }
-.nt-cap-eb { margin: 2px 3px; border-radius: 2px; background: #a33a34; }
 
 #lever { position: relative; background: none; border: 0; box-shadow: none; touch-action: none; cursor: grab; min-height: 0; }
+/* レバーのみぞ: 目盛りの13段と同じ高さ。すすむ(青)・N(灰)・ブレーキ(だいだい)・ひじょう(赤)の色と、段ごとの刻み */
 .lever-slot {
-  position: absolute; left: 50%; top: 4px; bottom: 4px; width: 12px; margin-left: -6px; border-radius: 6px; pointer-events: none;
-  background: #040506; box-shadow: inset 0 2px 4px #000, 0 1px 0 rgba(255, 255, 255, 0.08);
+  position: absolute; left: 50%; top: 0; bottom: 0; width: 14px; margin-left: -7px; border-radius: 3px; pointer-events: none;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 calc(100% / 13 - 1px), rgba(0, 0, 0, 0.85) calc(100% / 13 - 1px) calc(100% / 13)),
+    linear-gradient(180deg, #17485c 0 30.77%, #2b3237 30.77% 38.46%, #5a3d14 38.46% 92.31%, #6a1a16 92.31%);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.9), inset 0 0 0 1px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.08);
 }
-/* T字の持ち手(上下は transform だけで動かす。ノッチは段ごとにカチッと止まるので動きのアニメはつけない) */
+/* T字の持ち手(上下は transform だけで動かす。段から段へ 90ms で カチッと止まる) */
 .lever-grip {
   position: absolute; left: -4px; right: -4px; top: 0; height: 30px; z-index: 2;
   border-radius: 8px;
@@ -655,7 +683,12 @@ body.mode-drive.cam-cab #glass-sheen { display: block; }
   font-family: var(--cab-num); font-size: 0.9rem; font-weight: 900; color: #eef4f8; line-height: 1;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
   will-change: transform;
+  transition: transform 90ms cubic-bezier(.25, 1.5, .5, 1);
   pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lever-grip { transition: none; }
+  .nt.tgt::before { animation: none; }
 }
 .lever-grip::before, .lever-grip::after {
   content: ''; position: absolute; top: 3px; bottom: 3px; width: 8px;
@@ -686,10 +719,16 @@ html:root { --cab-h: 196px; }
 body #cab .cab-mascon #lever { grid-column: auto; grid-row: auto; width: auto; }
 body #cab .lever-grip { left: -4px; right: -4px; }
 
-/* iPad(横): すこし高くして1段14px以上 */
-@media (pointer: coarse) and (min-width: 861px) {
+/* iPad(横): すこし高くして1段14px以上。トラックパッドをつないだiPad(主の入力が細かい)でも同じに */
+@media (any-pointer: coarse) and (min-width: 861px) {
   html:root { --cab-h: calc(214px + var(--safe-b)); }
   body #cab { grid-template-columns: 230px minmax(0, 1fr) 136px 150px 150px; }
+}
+/* 横幅が広いとき: つく時刻は右の「そのさきの駅」に出ているので左には出さず、のこり距離を大きく */
+@media (min-width: 1101px) {
+  body #cab #tims-sch { display: none; }
+  body #cab #tims-dist { font-size: 1.5rem; }
+  body #cab #tims-dist.tims-dist-small { font-size: 0.9rem; }
 }
 /* デスクトップでも横幅がせまいときは、そのさきの駅を出さない */
 @media (max-width: 1100px) {
@@ -716,10 +755,11 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body #cab #tims-next { font-size: 1.5rem; }
   body #cab #tims-dist { font-size: 1.1rem; }
   body #cab .cab-lamps {
-    display: grid; grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px; padding: 5px 6px; align-content: stretch;
+    display: grid; grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr);
+    gap: 8px; padding: 6px 8px; align-content: stretch;
   }
-  body #cab .lamp { padding: 2px 1px; display: flex; align-items: center; justify-content: center; line-height: 1.05; }
+  body #cab .lamps-cap { display: none; }
+  body #cab .lamp { padding: 2px 1px; display: flex; align-items: center; justify-content: center; line-height: 1.05; font-size: 0.78rem; }
   body #cab .cab-limit { grid-column: 3; grid-row: 1 / 3; padding: 6px 4px; }
   body #cab #lim-now { width: 54px; height: 54px; line-height: 46px; font-size: 1.7rem; border-width: 4px; margin: 3px auto; }
   body #cab #lim-now.l3 { font-size: 1.35rem; }
@@ -731,6 +771,13 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 /* iPad(縦): パネルを高くして1段およそ19px(指でさわれる大きさ) */
 @media (orientation: portrait) and (min-height: 900px) {
   html:root { --cab-h: calc(272px + var(--safe-b)); }
+  /* 速度計を大きく(主役の計器)。制限の列はせまくして、標識は大きく */
+  body #cab { grid-template-columns: 168px minmax(0, 1fr) 92px 132px; }
+  body #cab #speedo { width: 152px; height: 152px; }
+  body #cab .bc-leds i { width: 12px; height: 12px; }
+  body #cab #lim-now { width: 62px; height: 62px; line-height: 54px; font-size: 1.9rem; }
+  body #cab #lim-now.l3 { font-size: 1.55rem; }
+  body #cab .lim-cap { letter-spacing: 0; }
   body #cab #tims-next { font-size: 1.9rem; }
   body #cab #tims-dist { font-size: 1.3rem; }
   body #cab .tims-main { gap: 6px; }
@@ -776,6 +823,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body #cab #tims-dist { font-size: 0.95rem; }
   body #cab .tims-prog { height: 4px; }
   body #cab .cab-lamps { display: none; }
+  body #cab .lamps-cap { display: none; }
   body #cab .cab-limit { grid-column: 3; grid-row: 1; padding: 4px 2px; gap: 1px; }
   body #cab .lim-cap, body #cab #grade-ind { display: none; }
   body #cab #lim-now { width: 44px; height: 44px; line-height: 38px; font-size: 1.3rem; border-width: 3px; margin: 2px auto; }
