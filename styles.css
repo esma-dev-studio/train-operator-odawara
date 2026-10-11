@@ -522,17 +522,17 @@ body.ov-open #cab { opacity: 0.45; }
 
 /* --- 速度計(丸い縁+ひさし) + ブレーキの強さ(8つのLED。小さな板の上) --- */
 .cab-speedo { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px; background: none; box-shadow: none; overflow: visible; }
-.cab-speedo::before {
-  content: ''; position: absolute; left: 8px; right: 8px; top: 0; height: 16px; z-index: 3; pointer-events: none;
-  border-radius: 0 0 50% 50% / 0 0 100% 100%;
-  background: linear-gradient(180deg, #0b0d0f, rgba(11, 13, 15, 0));
-}
 /* 丸い縁(くぼんだ金属の輪)は外の箱に。回る針のキャンバスは この丸でくりぬく(はみ出さない) */
 .speedo-wrap {
   position: relative; flex: none; line-height: 0; border-radius: 50%; overflow: hidden;
   box-shadow: 0 0 0 3px #0a0c0e, 0 0 0 6px #3d454b, 0 0 0 7px #0b0d0f, 0 8px 14px rgba(0, 0, 0, 0.6);
 }
 #speedo { width: 150px; height: 150px; flex: none; border-radius: 50%; position: relative; z-index: 2; display: block; }
+/* ひさし: 文字盤の上のふちに落ちる かげ(針より上。暗くしない側の高さ) */
+.speedo-wrap::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; z-index: 3; pointer-events: none;
+  box-shadow: inset 0 16px 12px -8px rgba(0, 0, 0, 0.72), inset 0 -2px 3px rgba(255, 255, 255, 0.05);
+}
 /* 針だけのキャンバス(cab.js が CSS の回転だけで動かす。速度計と同じ高さで、暗くしない) */
 .speedo-needle { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; transform-origin: 50% 50%; will-change: transform; }
 .bc-wrap {
@@ -825,7 +825,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
     gap: 7px; padding: 8px 8px calc(8px + var(--safe-b));
   }
   body #cab .cab-speedo { grid-column: 1; grid-row: 1 / 3; flex-direction: column; gap: 10px; padding: 6px; }
-  body #cab .cab-speedo::before { display: none; }
+  body #cab .speedo-wrap::after { box-shadow: inset 0 10px 9px -6px rgba(0, 0, 0, 0.6); }
   body #cab #speedo { width: 116px; height: 116px; }
   body #cab .speedo-wrap { box-shadow: 0 0 0 2px #0a0c0e, 0 0 0 4px #3d454b, 0 0 0 5px #0b0d0f, 0 6px 10px rgba(0, 0, 0, 0.6); }
   body #cab .bc-wrap { display: flex; flex-direction: column; gap: 4px; padding: 5px 6px; }
@@ -914,7 +914,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body #cab { grid-template-columns: 104px minmax(0, 1fr) 84px; grid-template-rows: minmax(0, 1fr) 40px; gap: 6px; padding: 6px 8px calc(6px + var(--safe-b)); }
   body #cab::before { top: -6px; height: 6px; }
   body #cab .cab-speedo { grid-column: 1; grid-row: 1 / 3; padding: 3px; }
-  body #cab .cab-speedo::before { display: none; }
+  body #cab .speedo-wrap::after { box-shadow: none; }
   body #cab #speedo { width: 96px; height: 96px; }
   body #cab .speedo-wrap { box-shadow: 0 0 0 2px #0a0c0e, 0 0 0 4px #3d454b, 0 0 0 5px #0b0d0f; }
   body #cab .bc-wrap { display: none; }

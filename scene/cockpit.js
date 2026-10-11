@@ -710,8 +710,9 @@ export class Cockpit {
     this.wiper.position.set(pivotNdc[0] * hwW, pivotNdc[1] * hhW, zw);
     const armLen = hhW * 1.2;
     /* 腕: 根元 0.012 → 0.55 のところで 0.007 まで細くなる板(先は同じ太さ)。
-     * ブレード: 腕の上(窓がわ z -0.008)に べつの背骨(上のふちが明るい)・腕とつなぐ金具2つ・ゴム。
-     * 光の当たらない材質なので、頂点色で上のふちほど明るくして 平らな黒い棒に見えないように */
+     * ブレード: 腕の上(窓がわ z -0.008)に べつの背骨(上のふちが明るい)・腕とつなぐ金具2つ・背骨の上のゴム。
+     * 光の当たらない材質なので、頂点色で上のふちほど明るくして 平らな黒い棒に見えないように。
+     * ゴムも同じ材質(頂点色で #050506 の暗さ)にまとめて 1回で描く(細いゴムだけの箱は ふちが点線のようにちらつく) */
     const armBox = new THREE.BoxGeometry(armLen * 0.95, 0.012, 0.01);
     armBox.translate(-armLen * 0.475, 0, 0);
     {
@@ -722,22 +723,21 @@ export class Cockpit {
       }
     }
     const bladeX = -armLen * 0.55, bladeL = armLen * 0.85, bY = 0.0125;
+    const kR = Math.pow(s2l(COL.rubber[0]) / s2l(COL.wiper[0]), 1 / 2.2);   // ゴムの暗さ(見た目の比率)
     const armGeo = mergeParts([
       { geo: armBox, m: I4, k: [1.3, 2.4] },
       { geo: new THREE.CylinderGeometry(0.022, 0.024, 0.02, 12), m: mat4(0, 0, 0, Math.PI / 2), k: [1.4, 1.4] },
       { geo: new THREE.BoxGeometry(bladeL, 0.010, 0.006), m: mat4(bladeX, bY, -0.008), k: [2.0, 4.2] },
       { geo: new THREE.BoxGeometry(0.03, 0.012, 0.006), m: mat4(bladeX - bladeL * 0.2, bY * 0.55, -0.004), k: [1.6, 3.0] },
       { geo: new THREE.BoxGeometry(0.03, 0.012, 0.006), m: mat4(bladeX + bladeL * 0.2, bY * 0.55, -0.004), k: [1.6, 3.0] },
+      { geo: new THREE.BoxGeometry(bladeL * 0.98, 0.0045, 0.005), m: mat4(bladeX, bY + 0.00725, -0.0085), k: [kR, kR] },
     ]);
     const arm = new THREE.Mesh(armGeo, this.matWiper);
-    /* ブレードのゴム(窓に当たる黒い帯。背骨の上のふち) */
-    const rubber = new THREE.Mesh(new THREE.BoxGeometry(bladeL, 0.003, 0.004), this.matRubber);
-    rubber.position.set(bladeX, bY + 0.0065, -0.010);
     /* 根元のメッキのキャップ */
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.03, 12), this.matChrome);
     cap.rotation.x = Math.PI / 2;
     cap.position.z = 0.006;
-    this.wiper.add(arm, rubber, cap);
+    this.wiper.add(arm, cap);
     this.wiper.traverse((o) => { o.renderOrder = 13; });
     this.wiper.rotation.z = -this.wiperAng;
     this.root.add(this.wiper);
@@ -770,7 +770,7 @@ export class Cockpit {
     }
     /* ブレードの上のふち(ゴムの上) */
     {
-      const base = b.pos.length / 3, yT = this._bladeY + 0.008, xa = this._bladeX - this._bladeL / 2, xb = this._bladeX + this._bladeL / 2;
+      const base = b.pos.length / 3, yT = this._bladeY + 0.0095, xa = this._bladeX - this._bladeL / 2, xb = this._bladeX + this._bladeL / 2;
       b.pos.push(xa, yT, -0.002, xb, yT, -0.002, xb, yT + w, -0.002, xa, yT + w, -0.002);
       b.uv.push(0, 1, 0, 1, 0, 0, 0, 0);
       /* ゴム(#050506)の色: ワイパーの色(#0c0d0f)に対するリニアの比 */
@@ -821,7 +821,7 @@ export class Cockpit {
     o.len = (this._wiperLen / TAN) / 2;   // ndcでの腕の長さ(縦基準)
     o.ang = this.wiperAng;
     o.b0 = -0.0075 / TAN / 2;
-    o.b1 = (this._bladeY + 0.0095) / TAN / 2;
+    o.b1 = (this._bladeY + 0.011) / TAN / 2;
     return o;
   }
 

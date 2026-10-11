@@ -53,21 +53,27 @@ function makeSprites() {
   return cv;
 }
 
-/* 水の膜のもよう 256x256: こまかい水滴 約1800こ(0.6〜1.6px。暗いふち + 明るい点)。一度だけ作る */
-function makeFilm() {
+/* 水の膜のもよう 256x256: こまかい水滴 約1800こ(0.6〜1.6px。暗いふち + 明るい点)。
+ * 雪(snow)は 白いしもの もよう(白っぽい くもり + 白い つぶ)。どちらも一度だけ作る */
+function makeFilm(snow) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = 256;
   const c = cv.getContext('2d');
-  let seed = 5;
+  let seed = snow ? 9 : 5;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  /* ぬれたガラスは光をちらすので、全体を うすく白っぽく */
-  c.fillStyle = 'rgba(200,212,222,0.10)';
+  /* ぬれたガラスは光をちらすので、全体を 白っぽく(雪は もっと白く) */
+  c.fillStyle = snow ? 'rgba(236,242,248,0.34)' : 'rgba(200,212,222,0.17)';
   c.fillRect(0, 0, 256, 256);
   for (let i = 0; i < 1800; i++) {
-    const x = rnd() * 256, y = rnd() * 256, r = 0.6 + rnd() * 1.0;
-    c.fillStyle = 'rgba(12,20,28,0.35)';
+    const x = rnd() * 256, y = rnd() * 256, r = (snow ? 0.8 : 0.6) + rnd() * (snow ? 1.4 : 1.0);
+    if (snow) {
+      c.fillStyle = 'rgba(255,255,255,0.55)';
+      c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill();
+      continue;
+    }
+    c.fillStyle = 'rgba(12,20,28,0.42)';
     c.beginPath(); c.arc(x, y + r * 0.2, r, 0, TAU); c.fill();
-    c.fillStyle = 'rgba(255,255,255,0.35)';
+    c.fillStyle = 'rgba(255,255,255,0.42)';
     c.beginPath(); c.arc(x - r * 0.3, y - r * 0.35, r * 0.45, 0, TAU); c.fill();
   }
   return cv;
@@ -110,7 +116,7 @@ export class RainGlass {
     /* 水の膜: 窓ごとの ぬれぐあい(0..1)と、ワイパーの扇形の区切りごとの ふいた時刻 */
     this.wet = [0, 0];
     this._fanT = new Float32Array(FAN_N).fill(-99);
-    this._filmT = 0; this._filmW = -1; this._filmClean = true; this._filmPat = null;
+    this._filmT = 0; this._filmW = -1; this._filmClean = true; this._filmPat = null; this._filmSnow = false;
     /* ワイパーがないときの窓(画面いっぱい) */
     this._full = [{ x0: 0, x1: 1, y0: 0, y1: 1, rTop: 0, rBot: 0 }];
     /* 窓ごとの範囲(キャンバスの座標)。作りなおしのときだけ書きかえる */
@@ -126,7 +132,11 @@ export class RainGlass {
     this._dirty = true;
   }
 
-  setMode(m) { this.mode = m === 'snow' ? 'snow' : 'rain'; }
+  setMode(m) {
+    const mm = m === 'snow' ? 'snow' : 'rain';
+    if (mm !== this.mode) { this.wet[0] = this.wet[1] = 0; this._filmW = -1; }
+    this.mode = mm;
+  }
 
   setActive(on) {
     this.active = !!on;
@@ -140,9 +150,13 @@ export class RainGlass {
       this._fanT.fill(-99);
       if (this.fc && this.fv.width) this.fc.clearRect(0, 0, this.fv.width, this.fv.height);
       this._filmClean = true; this._filmW = -1;
-    } else if (this.mode === 'rain') {
-      /* 雨の中を走りはじめるときは、ガラスは もう ぬれている */
-      this.wet[0] = Math.max(this.wet[0], 0.7); this.wet[1] = Math.max(this.wet[1], 0.7);
+    } else {
+      /* 雨・雪の中を走りはじめるときは、ガラスは もう ぬれている(しもが ついている) */
+      const w0 = this.mode === 'snow' ? 0.6 : 0.7;
+      this.wet[0] = Math.max(this.wet[0], w0); this.wet[1] = Math.max(this.wet[1], w0);
+      /* ワイパーは さっき ふいたところ(扇形は きれいな状態から) */
+      this._fanT.fill(this.tw);
+      this._filmW = -1;
     }
   }
 
@@ -212,11 +226,18 @@ export class RainGlass {
     d.tn = 0; d.ti = 0; d.tt = 0;
   }
 
-  /* 水の膜(1秒に10回まで): 窓ごとに もようを ぬれぐあいの濃さで。運転士窓は ワイパーが ふいた扇形を うすく */
+  /* 水の膜(1秒に10回まで): 窓ごとに もようを ぬれぐあいの濃さで。運転士窓は ワイパーが ふいた扇形を うすく。
+   * 雪のときは しも(ワイパーが ふいたあと 6秒で もどる。間をあけて ふくので 扇形は ほぼ きれい) */
   _drawFilm(wpx, wpy, wl, rest) {
     const c = this.fc;
     if (!c) return;
-    if (!this._filmPat) this._filmPat = c.createPattern(this._filmCv || (this._filmCv = makeFilm()), 'repeat');
+    const snow = this.mode === 'snow';
+    if (!this._filmPat || this._filmSnow !== snow) {
+      this._filmSnow = snow;
+      const key = snow ? '_frostCv' : '_filmCv';
+      this._filmPat = c.createPattern(this[key] || (this[key] = makeFilm(snow)), 'repeat');
+    }
+    const regrow = snow ? 6 : 1.4;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.globalCompositeOperation = 'source-over';
     c.globalAlpha = 1;
@@ -229,7 +250,7 @@ export class RainGlass {
       const R = this._R[i];
       c.save();
       c.beginPath(); this._rr(c, R); c.clip();
-      c.globalAlpha = Math.min(1, w * 0.55);
+      c.globalAlpha = Math.min(1, w * (snow ? 0.8 : 0.65));
       c.fillStyle = this._filmPat;
       c.fillRect(R.x0, R.y0, R.x1 - R.x0, R.y1 - R.y0);
       c.restore();
@@ -240,8 +261,8 @@ export class RainGlass {
       const da = WIPE_SWEEP / FAN_N, r0 = wl * 0.12, r1 = wl * 0.99;
       for (let k = 0; k < FAN_N; k++) {
         const age = this.tw - this._fanT[k];
-        if (!(age < 1.4)) continue;
-        c.globalAlpha = 1 - age / 1.4;
+        if (!(age < regrow)) continue;
+        c.globalAlpha = 1 - age / regrow;
         const t0 = Math.PI + rest + k * da - 0.01, t1 = t0 + da + 0.02;
         c.beginPath();
         c.arc(wpx, wpy, r1, t0, t1);
@@ -276,11 +297,12 @@ export class RainGlass {
       this.acc += (snowMode ? 15 + v * 0.3 : 40 + v * 1.2) * this._areaK * dt;
       while (this.acc >= 1) { this.acc -= 1; this._spawn(snowMode, cap); }
     } else this.acc = 0;
-    /* 水の膜の ぬれぐあい: 雨の中では (0.06 + 速さ×0.002)/秒 で ぬれ、トンネルでは その3倍の速さで かわく */
+    /* 水の膜の ぬれぐあい: 雨の中では (0.06 + 速さ×0.002)/秒 で ぬれ、トンネルでは 0.18/秒 で かわく。
+     * 雪の しもは ゆっくり(0.03/秒)つく */
     if (dt > 0) {
-      const up = 0.06 + v * 0.002;
+      const up = snowMode ? 0.03 : 0.06 + v * 0.002;
       for (let i = 0; i < 2; i++) {
-        if (!snowMode && !dry) this.wet[i] = Math.min(1, this.wet[i] + up * dt);
+        if (!dry) this.wet[i] = Math.min(1, this.wet[i] + up * dt);
         else this.wet[i] = Math.max(0, this.wet[i] - 0.18 * dt);
       }
     }
@@ -307,7 +329,8 @@ export class RainGlass {
     this._filmT += dt;
     if (this.fc && this._filmT >= 0.1) {
       let fanBusy = false;
-      for (let k = 0; k < FAN_N; k++) if (this.tw - this._fanT[k] < 1.5) { fanBusy = true; break; }
+      const rg = snowMode ? 6.1 : 1.5;
+      for (let k = 0; k < FAN_N; k++) if (this.tw - this._fanT[k] < rg) { fanBusy = true; break; }
       const wq = Math.round((this.wet[0] + this.wet[1]) * 50);
       if (wq !== this._filmW || fanBusy) {
         this._filmT = 0;
@@ -404,7 +427,7 @@ export class RainGlass {
         const off = p === 0 ? 1.8 * sc : p === 2 ? -1.2 * sc : 0;
         c.strokeStyle = p === 0 ? `rgba(110,122,134,${(0.45 * sill).toFixed(3)})`
           : p === 1 ? `rgba(246,249,252,${(0.85 * sill).toFixed(3)})` : `rgba(255,255,255,${(0.9 * sill).toFixed(3)})`;
-        const wr = (p === 0 ? 11 : p === 1 ? 9 : 2.5) * sc, wa = (p === 0 ? 9 : p === 1 ? 7 : 2) * sc;
+        const wr = (p === 0 ? 11 : p === 1 ? 9 : 2.5) * sc, wa = (p === 0 ? 6 : p === 1 ? 4 : 1.2) * sc;
         /* 振りきったはし(たての山) */
         c.lineWidth = wr;
         c.beginPath();
