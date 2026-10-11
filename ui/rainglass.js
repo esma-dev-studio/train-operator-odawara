@@ -32,13 +32,16 @@ function makeSprites() {
   /* 左上の光の点 */
   c.fillStyle = 'rgba(255,255,255,0.85)';
   c.beginPath(); c.arc(cx - 0.32 * r, cy - 0.36 * r, 0.16 * r, 0, TAU); c.fill();
-  /* 雪のつぶ: やわらかい白 */
-  const f = c.createRadialGradient(96, 32, 0, 96, 32, 30);
-  f.addColorStop(0, 'rgba(255,255,255,0.95)');
-  f.addColorStop(0.5, 'rgba(255,255,255,0.6)');
-  f.addColorStop(1, 'rgba(255,255,255,0)');
-  c.fillStyle = f;
-  c.beginPath(); c.arc(96, 32, 30, 0, TAU); c.fill();
+  /* 雪のつぶ: やわらかい白。ふちは少し灰色(白い景色の前でも見える)。丸くなりすぎないよう小さなかたまりを2つ足す */
+  [[96, 32, 26], [84, 26, 13], [106, 40, 11]].forEach(([x, y, rr]) => {
+    const f = c.createRadialGradient(x, y, 0, x, y, rr);
+    f.addColorStop(0, 'rgba(255,255,255,0.95)');
+    f.addColorStop(0.5, 'rgba(250,252,255,0.7)');
+    f.addColorStop(0.8, 'rgba(150,162,175,0.32)');
+    f.addColorStop(1, 'rgba(150,162,175,0)');
+    c.fillStyle = f;
+    c.beginPath(); c.arc(x, y, rr, 0, TAU); c.fill();
+  });
   return cv;
 }
 
@@ -142,7 +145,7 @@ export class RainGlass {
     d.y = R.y0 + Math.random() * (R.y1 - R.y0);
     d.wi = wi;
     d.snow = snow;
-    d.r = snow ? 1.3 + 2.8 * Math.pow(Math.random(), 1.6) : 1.1 + 3.9 * Math.pow(Math.random(), 1.8);
+    d.r = snow ? 2.0 + 3.5 * Math.pow(Math.random(), 1.4) : 1.1 + 3.9 * Math.pow(Math.random(), 1.8);
     d.vx = 0; d.vy = 0;
     d.life = snow ? 2.5 + Math.random() * 2.5 : 4 + Math.random() * 5;
     d.tn = 0; d.ti = 0; d.tt = 0;

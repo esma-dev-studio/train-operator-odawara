@@ -228,7 +228,7 @@ export class Cockpit {
     this.matRubber = basic({});
     this.matChrome = basic({});
     /* 雪の日の窓の下のふちの雪(雪のときだけ、だんだん積もる) */
-    this.matSill = basic({ transparent: true, opacity: 0, depthWrite: false });
+    this.matSill = basic({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
     this._tmpS = [0, 0, 0];
     this._tmpC = new THREE.Color();
     this.light = 1;          // 室内の明るさ(昼1・夜/トンネル小)
@@ -277,6 +277,10 @@ export class Cockpit {
       this.root.updateMatrix();
       this.scene.add(this.root);
       this.root.matrixAutoUpdate = false;
+      /* 本体のシーン用に作られていたシェーダは もう使わないので手放す(材質ごとに作りおきされて残るため)。
+       * 次に描くときに上描き用だけが作られる */
+      [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill]
+        .forEach((m) => m.dispose());
     }
     if (!this.root.visible) return;
     this.root.matrix.multiplyMatrices(camera.matrixWorld, this._off);
@@ -393,10 +397,11 @@ export class Cockpit {
         for (let i = 0; i <= N; i++) {
           const t = i / N, x = x0 + (x1 - x0) * t;
           const corner = Math.max(0, 1 - Math.min(t, 1 - t) / 0.12);
-          const h = 0.012 + 0.02 * corner * corner + (rnd() - 0.5) * 0.012;
-          const pb = P(x, yG - 0.004), pt = P(x, yG + Math.max(0.004, h));
+          const h = 0.014 + 0.026 * corner * corner + (rnd() - 0.5) * 0.012;
+          const pb = P(x, yG - 0.004), pt = P(x, yG + Math.max(0.005, h));
           sb.pos.push(pb[0], pb[1], z + 0.0015, pt[0], pt[1], z + 0.0015);
-          sb.col.push(1, 1, 1, 1, 1, 1);
+          /* 下(ゴムぎわ)は影で灰色、上の縁は白(白い景色の前でも形がわかる) */
+          sb.col.push(0.5, 0.53, 0.58, 1, 1, 1);
           if (i < N) { const a = base + i * 2; sb.idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
         }
       });
