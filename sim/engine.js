@@ -32,8 +32,12 @@ export const ADHESION = { clear: 4.4, rain: 3.3, snow: 2.9 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /* 手前すぎ(2〜12m)で止まったときの待ち時間(秒)。このあいだに少し進めば止めなおせる。
+ * 小2が コーチを読んで ボタンを何回か押すあいだに 時間切れにならないよう 8秒。
+ * レバーを ゆるめる(ノッチを上げる)たびに 待ち時間は はじめから(tick の _settleNotch)。
  * 自動運転は±2m以内に止まるので、この猶予は使わない(ダイヤの校正には影響しない) */
-const SHORT_GRACE = 4;
+const SHORT_GRACE = 8;
+/* 「もういちど とめる」(retryApproach)で やりなおした駅の 停止位置の点の上限(1=ぴったりの満点) */
+const RETRY_CAP = 0.6;
 
 export class TrainSim {
   /* line: data/line.json の内容 / opts: {service:'local'|'exp'|'rapid', weather:'clear'|'rain'} */
@@ -134,6 +138,8 @@ export class TrainSim {
     this._left = false;
     this._pastWarn = -1;
     this._settleAt = null;                    // 手前で止まって待っている(猶予の始まり)
+    this._settleNotch = 0;                    // 前のコマのノッチ(上げたら猶予をはじめから)
+    this._retryStop = false;                  // いまの駅は「もういちど とめる」で やりなおし中
     this._eventCb = null;
   }
 
@@ -292,8 +298,8 @@ export class TrainSim {
   setNotch(n) {
     n = clamp(Math.round(n), -8, 4);
     if (this.notch === n) return;
-    /* 停車中でドアが開いていたら力行は入らない */
-    if (n > 0 && this.doorOpen) return;
+    /* ドアが開いているあいだも すすむ(力行)を えらんでおける。力が出るのはドアが閉まってから
+     * (tick の wantA が !doorOpen で止める。実物の戸閉め連動と同じ)。立ち上がりは tractionRise で なめらか */
     this.notch = n;
     /* 非常ブレーキの減点は「走っているとき」だけ。停車中・ドア開きでレバーを
      * いじっただけ(子どもがよくやる)では減点しない。音は鳴らす(moving で強さを変える) */
@@ -427,12 +433,15 @@ export class TrainSim {
     /* --- 停車判定 --- */
     const target = this.stops[this.stopIdx] ? this.stops[this.stopIdx].stopAt : null;
     if (this.v > 0.5) { this._left = true; this._settleAt = null; }   // 一度動き出してから停まったら「到着」扱いにする
+    /* ノッチを上げた(ブレーキをゆるめた・すすむを入れた)コマ。手前で止まった待ち時間を はじめからにする */
+    const notchUp = this.notch > this._settleNotch;
+    this._settleNotch = this.notch;
     if (target != null && this._left && this.stoppedAt == null && this.v < 0.05) {
       const err = this.pos - target;
       if (err < -2 && err >= -12) {
         /* 手前で止まった: SHORT_GRACE 秒だけ待つ(そのあいだに▲で少し進めば、止まりなおせる) */
-        /* ▲を入れている間は待つ(動き出す前に時間切れでドアが開かないように) */
-        if (this._settleAt == null || this.notch > 0) this._settleAt = this.t;
+        /* ▲を入れている間・ノッチを上げたときは待ちなおす(B4→B3→…と押しているうちに時間切れでドアが開かないように) */
+        if (this._settleAt == null || this.notch > 0 || notchUp) this._settleAt = this.t;
         if (this.t - this._settleAt >= SHORT_GRACE) {
           this._settleAt = null;
           this._arrive(err);
@@ -471,6 +480,7 @@ export class TrainSim {
   _arrive(err) {
     this.stoppedAt = this.t;
     this._settleAt = null;
+    this._settleNotch = this.notch;
     const sch = this.timetable[this.stopIdx];
     const late = Math.max(0, this.t - sch.arr);
     const early = Math.max(0, sch.arr - this.t);
@@ -479,7 +489,9 @@ export class TrainSim {
       err: Math.round(err * 100) / 100,
       late: Math.round(late),
       early: Math.round(early),
+      retry: !!this._retryStop,   // 「もういちど とめる」で やりなおした駅(点は RETRY_CAP まで)
     });
+    this._retryStop = false;
     this.score.lateSum += late;
     this._emit('arrived', { name: this.stops[this.stopIdx].name, err, late });
 
@@ -515,16 +527,57 @@ export class TrainSim {
     return true;
   }
 
-  /* 停車スキップ: 4秒後にドアを閉める。
-   * ただしダイヤより120秒以上の早発はしない(先行列車の閉塞に追いつかないための保護) */
-  skipDwell() {
+  /* 大きく行きすぎて止まった(overrun-stop)駅を、「8」の back m 手前から もういちど止めなおす。
+   * それまでの駅の点数・時計(t)は そのまま(もどった時間が そのまま遅れになる)。
+   * この駅の停止位置の点は RETRY_CAP まで(result)。ドアは閉まったまま、ノッチは切(0)から。
+   * 戻り値: やりなおせたら true */
+  retryApproach(back = 180) {
+    const st = this.stops[this.stopIdx];
+    if (!st || this.finished || this.ended || this.doorOpen) return false;
+    /* 前の駅のホームより うしろには もどさない(駅のあいだが みじかいとき) */
+    const prev = this.stops[this.stopIdx - 1];
+    let pos = st.stopAt - Math.max(0, back);
+    if (prev) pos = Math.max(pos, prev.stopAt + 20);
+    this.pos = Math.max(2, pos);
+    this.v = 0;
+    this.notch = 0;
+    this.accelCur = 0;
+    this.brakeCur = 0;
+    this.slipping = false;
+    this.stoppedAt = null;
+    this._settleAt = null;
+    this._settleNotch = 0;
+    this._left = false;
+    this._pastWarn = -1;
+    this._approachDone = this.stopIdx;   // 「まもなく」は もう言わない
+    this.atsLamp = 'normal';
+    this.atsBrakeUntil = 0;
+    this.atsInfo = null;
+    this.doorOpen = false;
+    this._doorPhase = 'ready';
+    this._departDone = true;             // 「つぎは」も もう言わない
+    this._lastA = 0;
+    this._lastAtsOn = false;
+    this._lastSlip = false;
+    this._retryStop = true;
+    this._emit('retry-approach', { name: st.name, back: st.stopAt - this.pos });
+    return true;
+  }
+
+  /* 停車スキップ: 数秒後にドアを閉める。
+   * ただしダイヤより120秒以上の早発はしない(先行列車の閉塞に追いつかないための保護)。
+   * opts.keepMelody: 発車メロディが まだなら いま鳴らし、鳴りおわってからドアチャイム
+   * (メロディ4.6秒 → ふだんの停車と おなじ dep-16 の間合い。子どもは メロディが すき) */
+  skipDwell(opts = {}) {
     if (!this.doorOpen || this.finished) return false;
     const schedDep = this.timetable[Math.max(0, this.stopIdx - 1)].dep;
+    const keep = !!(opts && opts.keepMelody) && !this._melodyDone;
     /* 6秒後: ドアチャイム(dep-10)と「しまった」音(dep-4)が同じ瞬間に重ならないように */
-    const target = Math.max(this.t + 6, schedDep - 120);
+    const target = Math.max(this.t + (keep ? 16 : 6), schedDep - 120);
     if (target < this._departTime - 0.5) {
       this._departTime = target;
-      this._melodyDone = true;   // メロディは省略（すぐドアチャイム）
+      if (keep) this._melodyAt = this.t;   // つぎのコマで メロディ
+      else this._melodyDone = true;        // メロディは省略（すぐドアチャイム）
       return true;
     }
     return false;
@@ -537,7 +590,8 @@ export class TrainSim {
     let stopPts = 0;
     S.stops.forEach((st) => {
       const e = Math.abs(st.err);
-      stopPts += e <= 0.35 ? 1 : e <= 1 ? 0.85 : e <= 2 ? 0.6 : e <= 5 ? 0.35 : 0;
+      const pts = e <= 0.35 ? 1 : e <= 1 ? 0.85 : e <= 2 ? 0.6 : e <= 5 ? 0.35 : 0;
+      stopPts += st.retry ? Math.min(pts, RETRY_CAP) : pts;
     });
     stopPts = S.stops.length ? (stopPts / S.stops.length) * 30 : 0;
     /* 定時 30点（駅平均遅延: 晴れ5秒以内満点、そこから55秒で0）。

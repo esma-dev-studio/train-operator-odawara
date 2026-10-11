@@ -438,7 +438,7 @@ export class CabAudio {
     const names = ['notch', 'notchEB', 'tick', 'stampPress',
       'joint0', 'joint1', 'joint2', 'hissShort', 'hissLong', 'doorThud', 'doorSlide',
       'doorChime', 'atsChime', 'horn', 'atsBell', 'beep', 'beepLow', 'buzzer', 'ebHiss', 'pressure', 'ir', 'cross', 'rain',
-      'stopPerfect', 'stopGood', 'stopNg',
+      'stopPerfect', 'stopGood', 'stopNg', 'stopGold', 'goal', 'coachPing',
       ...MELODIES.map((m, i) => 'mel' + i)];
     const ctx = this.ctx;
     if (this._startSynth(ctx, names)) return;
@@ -591,7 +591,8 @@ export class CabAudio {
       case 'arrived': {
         /* 停止位置の判定チャイム(ドアの音と重ならないよう少しおくらせる) */
         const e = Math.abs(Number(d.err));
-        const name = !Number.isFinite(e) ? null : e <= 0.35 ? 'stopPerfect' : e <= 1 ? 'stopGood' : 'stopNg';
+        /* ±10cm以内(金)は いちばん高い4音 'stopGold' */
+        const name = !Number.isFinite(e) ? null : e <= 0.10 ? 'stopGold' : e <= 0.35 ? 'stopPerfect' : e <= 1 ? 'stopGood' : 'stopNg';
         /* 判定カードの輪が出る(約0.55秒)のと同じ瞬間に鳴らす */
         if (name) this._play(name, this.uiBus, 0.34, { delay: 0.55 });
         break;
