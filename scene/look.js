@@ -366,8 +366,10 @@ export function makeWeatherUniforms() {
 export function installWeather(m, U) {
   if (!m || !m.isMeshStandardMaterial || m.userData.wx || m.userData.noWeather) return false;
   /* 古い作り方の U(この部品より前の makeWeatherUniforms)でも動くよう、足りない値は足しておく */
-  const D = makeWeatherUniforms();
-  Object.keys(D).forEach((k) => { if (!U[k]) U[k] = D[k]; });
+  if (!U.uFogSun || !U.uSunDirW || !U.uNightDs) {
+    const D = makeWeatherUniforms();
+    Object.keys(D).forEach((k) => { if (!U[k]) U[k] = D[k]; });
+  }
   const macro = !!(m.userData.wxMacro && m.map && U.uWxMacro.value);
   const prev = m.onBeforeCompile, base = m.customProgramCacheKey();
   if (!m.userData.wxPudU) m.userData.wxPudU = { value: m.userData.puddle ? 1 : 0 };
@@ -425,11 +427,12 @@ export function makeDuskSky(geometry) {
       void main() {
         vec3 d = normalize( vDir );
         float h = d.y, mu = dot( d, uSun ), hh = clamp( h, 0.0, 1.0 );
-        /* 地平線のだいだい → 低い空のばら色 → 上の青紫(運転台から見える高さ25°までに3色が入るよう低めで変える) */
-        vec3 c = mix( uHor, uMid, smoothstep( 0.0, 0.1, hh ) );
-        c = mix( c, uZen, smoothstep( 0.06, 0.4, hh ) );
-        /* 太陽の側の輝き(低い所ほど強い) */
-        c = mix( c, uSunCol, pow( max( mu, 0.0 ), 3.0 ) * ( 1.0 - smoothstep( 0.0, 0.45, hh ) ) * 0.85 );
+        /* 地平線のだいだい → 低い空のばら色(高さ2〜6°の帯) → 上の青(運転台から見える高さ15°あたりで青になる。
+         * ばら色が上まで広がると、空も、空の光で照らされる壁も全部ピンクになる) */
+        vec3 c = mix( uHor, uMid, smoothstep( 0.0, 0.08, hh ) );
+        c = mix( c, uZen, smoothstep( 0.04, 0.3, hh ) );
+        /* 太陽の側の輝き(低い所ほど強い。高さ15°より上は青い空のまま: 太陽の方を向く運転台でも上は青) */
+        c = mix( c, uSunCol, pow( max( mu, 0.0 ), 3.0 ) * ( 1.0 - smoothstep( 0.0, 0.28, hh ) ) * 0.85 );
         /* 反対側の地平線の少し上のピンクの帯(ビーナスの帯) */
         c = mix( c, uAnti, pow( max( -mu, 0.0 ), 2.0 ) * smoothstep( 0.02, 0.08, hh ) * ( 1.0 - smoothstep( 0.12, 0.3, hh ) ) * 0.6 );
         /* 太陽の円盤とまわりのにじみ */
