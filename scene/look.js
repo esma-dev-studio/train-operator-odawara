@@ -240,7 +240,7 @@ export function makeMacroTex() {
 }
 
 /* ---------- ぬれ・雪(全部の標準材質に足す共通シェーダ部品) ----------
- * U = { uSnow, uWet, uSnowCol, uWxMacro, uFogSun, uSunDirW } を全プログラムで共有するので、
+ * U = { uSnow, uWet, uSnowCol, uWxMacro, uFogSun, uSunDirW, uFogAnti, uFogDir, uNightDs, uDsLo, uDsHi } を全プログラムで共有するので、
  * 天気を変えても値を書きかえるだけ(作り直し=コンパイルが起きない)。
  * 他の部品の色の加工(color_fragment の後)より後、roughnessmap_fragment の直前に入れる。
  * 霧(fog_fragment)も ここで置きかえ、夕方は太陽の側の霧を明るくする(霧の照り返し)。
@@ -326,7 +326,7 @@ const WX_GENERIC = `
       /* 模様のある面(砂利など): ぬれた石は明るい石ほど暗くなり、全体が濃い一様な色になる(白黒のごま塩にしない)。
        * 光るのは明るい石の上だけ。全体を鏡のようにすると、空が映って乾いた時より白っぽい板に見えてしまう */
       float wxG = smoothstep( 0.08, 0.32, dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );
-      diffuseColor.rgb *= 1.0 - wxWet * ( 0.2 + 0.28 * wxG );
+      diffuseColor.rgb *= 1.0 - wxWet * ( 0.16 + 0.26 * wxG );
       /* つやは明るい石の上だけ・弱く(くもり空の映りこみで、ぬれた砂利が乾いた時より白っぽくならないように) */
       wxWet *= 0.14 + 0.40 * wxG;
     #endif` + WX_PUD + `
