@@ -412,7 +412,9 @@ export class Cab {
       this._lum = lum;
       this.root.style.setProperty('--cab-lum', lum.toFixed(2));
     }
-    const dark = lum < 0.45;
+    /* 夜(.16)・トンネル(.3)は 夜の計器(文字盤の明かり)。夜のホーム(.46)でも夜のまま
+     * (駅に とまるたびに 文字盤が 昼の色に かわらないように)。夕方(.55)・地下のホーム(.5)は 昼の計器 */
+    const dark = lum < 0.5;
     const b = document.body;
     if (b.classList.contains('cab-dark') !== dark) b.classList.toggle('cab-dark', dark);
     if (dark !== this._night) { this._night = dark; this._k.night = -1; }

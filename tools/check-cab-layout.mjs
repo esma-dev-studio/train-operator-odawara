@@ -103,6 +103,13 @@ for (const v of VIEWS) {
       const fs = parseFloat(getComputedStyle(el).fontSize);
       if (fs < 12.5 - 0.01) out.push(`見出し「${el.textContent}」 ${fs}px < 12.5px`);
     });
+    /* 表示灯の文字: 12.5px 以上で、灯の はばに おさまる(見えているときだけ) */
+    document.querySelectorAll('#cab .lamp').forEach((el) => {
+      if (!shown(el)) return;
+      const fs = parseFloat(getComputedStyle(el).fontSize), t = el.querySelector('.lamp-t') || el;
+      if (fs < 12.5 - 0.01) out.push(`表示灯「${el.textContent}」の文字 ${fs}px < 12.5px`);
+      if (t.getBoundingClientRect().width > box(el).width + 0.5) out.push(`表示灯「${el.textContent}」の文字が はみ出す`);
+    });
     /* 表示灯: 1枚の表示盤に4つ。ドアの灯は「ドア しまった」 */
     const lg = document.querySelector('#cab .lamps-grid');
     if (!lg || lg.querySelectorAll('.lamp').length !== 4) out.push('表示灯が1枚の表示盤(.lamps-grid に4つ)になっていない');
@@ -143,6 +150,18 @@ for (const v of VIEWS) {
     return out;
   });
   r2.forEach((s) => fails.push(`${v.name}: ${s}`));
+  /* iPad横: 目盛りの上(天板)の 見えない さわれる所(56px)が 本当に目盛りに とどく(台で切られていない)。
+   * 横向きスマホ: 横一列の目盛りの上(モニタ)は 目盛りにならない */
+  if (v.touch && (v.strip || v.w >= 861)) {
+    const r4 = await page.evaluate((strip) => {
+      const list = document.querySelector('#notch-list'), b = list.getBoundingClientRect();
+      const el = document.elementFromPoint(b.left + b.width / 2, b.top - 24);
+      const hit = !!el && (el === list || list.contains(el));
+      if (strip) return hit ? ['横一列の目盛りの上(モニタ)を さわると目盛りになる'] : [];
+      return hit ? [] : [`目盛りの上 24px が目盛りに とどかない (${el ? el.id || el.className || el.tagName : 'なし'})`];
+    }, !!v.strip);
+    r4.forEach((s) => fails.push(`${v.name}: ${s}`));
+  }
   /* タッチの段の動き(ドアが開いて止まっているので ブレーキの段で): 合成の PointerEvent を目盛りに送る */
   if (v.touch) {
     const r3 = await page.evaluate(async (strip) => {

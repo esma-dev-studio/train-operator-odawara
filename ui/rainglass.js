@@ -19,6 +19,7 @@ const TRAIL = 6;            // 筋の点の数(50msごと)
 const TAU = Math.PI * 2;
 const FAN_N = 24;           // ワイパーの扇形を区切る数(ふいた時刻を区切りごとに覚える)
 const WIPE_SWEEP = 1.55;    // ワイパーの振れ幅(rad。cockpit.js と同じ)
+const RIDGE_ARC = 96, RIDGE_END = 44;   // 雪の山の かたまりの数(扇形の そとのふち / 振りきったはし)
 
 /* 粒の絵(64x64 を2コマ): 0 = 水滴、1 = 雪のつぶ。一度だけ作る */
 function makeSprites() {
@@ -77,6 +78,22 @@ function makeFilm(snow) {
     c.beginPath(); c.arc(x - r * 0.3, y - r * 0.35, r * 0.45, 0, TAU); c.fill();
   }
   return cv;
+}
+
+/* 雪の山の かたまり(位置の割合 t・ふちからの ずれ j・大きさ sz)。決まった乱数で一度だけ */
+function makeRidge() {
+  const n = RIDGE_ARC + RIDGE_END, B = new Float32Array(n * 3);
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < n; i++) {
+    const arc = i < RIDGE_ARC, k = arc ? i / (RIDGE_ARC - 1) : (i - RIDGE_ARC) / (RIDGE_END - 1);
+    B[i * 3] = Math.min(1, Math.max(0, k + (rnd() - 0.5) * 0.02));
+    B[i * 3 + 1] = rnd();
+    /* はしほど小さく(山の すそ) */
+    const edge = arc ? Math.min(1, Math.min(k, 1 - k) * 6) : Math.min(1, (1 - k) * 4) * Math.min(1, k * 8 + 0.3);
+    B[i * 3 + 2] = (5.5 + 6 * rnd()) * (0.4 + 0.6 * edge);
+  }
+  return B;
 }
 
 function newDrop() {
@@ -228,7 +245,7 @@ export class RainGlass {
 
   /* 水の膜(1秒に10回まで): 窓ごとに もようを ぬれぐあいの濃さで。運転士窓は ワイパーが ふいた扇形を うすく。
    * 雪のときは しも(ワイパーが ふいたあと 6秒で もどる。間をあけて ふくので 扇形は ほぼ きれい) */
-  _drawFilm(wpx, wpy, wl, rest) {
+  _drawFilm(wpx, wpy, wl, rest, sill) {
     const c = this.fc;
     if (!c) return;
     const snow = this.mode === 'snow';
@@ -272,6 +289,39 @@ export class RainGlass {
       }
       c.globalCompositeOperation = 'source-over';
       c.globalAlpha = 1;
+    }
+    /* 雪: ワイパーが おしやった雪の山(扇形の そとのふちと、振りきったはし)。窓の下のふちの雪と同じ量。
+     * 細い線だと ガラスのひびに見えるので、雪のつぶの絵を ならべた やわらかい かたまりで */
+    if (snow && sill >= 0.05 && wl > 0 && this.spr && this._nR > 0) {
+      const B = this._ridge || (this._ridge = makeRidge());
+      const sc = this.scale, tA = Math.PI + rest + 0.02, tE = Math.PI + rest + WIPE_SWEEP + 0.03;
+      const k = Math.min(1, sill), grow = 0.55 + 0.45 * k;
+      c.save();
+      c.beginPath(); this._rr(c, this._R[0]); c.clip();
+      /* 下地: 少し下に灰色の かげ(白い景色の前でも形が見える) → 白の帯(かたまりの すきまを うめる) */
+      c.lineCap = 'round';
+      const ce = Math.cos(tE + 0.02), se = Math.sin(tE + 0.02);
+      for (let p = 0; p < 2; p++) {
+        const oy = p ? 0 : 2.2 * sc;
+        c.globalAlpha = (p ? 0.5 : 0.3) * k;
+        c.strokeStyle = p ? '#eef2f6' : '#7d8994';
+        c.lineWidth = (p ? 9 : 10) * sc * grow;
+        c.beginPath(); c.arc(wpx, wpy + oy, wl * 1.015, tA, tE); c.stroke();
+        c.beginPath();
+        c.moveTo(wpx + ce * wl * 0.16, wpy + se * wl * 0.16 + oy);
+        c.lineTo(wpx + ce * wl * 0.97, wpy + se * wl * 0.97 + oy);
+        c.stroke();
+      }
+      c.globalAlpha = 0.95 * k;
+      for (let i = 0; i < RIDGE_ARC + RIDGE_END; i++) {
+        const t = B[i * 3], j = B[i * 3 + 1], r = B[i * 3 + 2] * sc * grow;
+        let a, d;
+        if (i < RIDGE_ARC) { a = tA + (tE - tA) * t; d = wl * (1.005 + j * 0.03); }
+        else { a = tE + 0.012 + j * 0.03; d = wl * (0.16 + 0.81 * t); }
+        c.drawImage(this.spr, 64, 0, 64, 64, wpx + Math.cos(a) * d - r, wpy + Math.sin(a) * d - r, r * 2, r * 2);
+      }
+      c.restore();
+      any = true;
     }
     this._filmClean = !any;
   }
@@ -325,17 +375,20 @@ export class RainGlass {
         }
       }
     }
-    /* 水の膜は 1秒に10回まで(ぬれぐあいが変わったとき・扇形が ぬれもどる間だけ) */
+    /* 雪の日: 窓の下のふちの雪の量(ワイパーが おしやった雪の山も 同じ量。水の膜のキャンバスに描く) */
+    const sill = snowMode && wp && cockpit.sillLevel ? cockpit.sillLevel() : 0;
+    /* 水の膜は 1秒に10回まで(ぬれぐあい・雪の量が変わったとき・扇形が ぬれもどる間だけ) */
     this._filmT += dt;
     if (this.fc && this._filmT >= 0.1) {
       let fanBusy = false;
       const rg = snowMode ? 6.1 : 1.5;
       for (let k = 0; k < FAN_N; k++) if (this.tw - this._fanT[k] < rg) { fanBusy = true; break; }
-      const wq = Math.round((this.wet[0] + this.wet[1]) * 50);
-      if (wq !== this._filmW || fanBusy) {
+      const wq = Math.round((this.wet[0] + this.wet[1]) * 50), sq = sill >= 0.05 ? Math.round(sill * 20) : 0;
+      const fq = wq * 32 + sq;
+      if (fq !== this._filmW || fanBusy) {
         this._filmT = 0;
-        this._filmW = wq;
-        if (wq === 0 && this._filmClean) { /* 乾いている */ } else this._drawFilm(wpx, wpy, wl, rest);
+        this._filmW = fq;
+        if (fq === 0 && this._filmClean) { /* 乾いている */ } else this._drawFilm(wpx, wpy, wl, rest, sill);
       }
     }
     /* 動き: 20km/hより速いと 風で上と外へ。遅いと 大きい粒だけ下へ垂れる。雪は40km/hまでくっついたまま */
@@ -375,9 +428,7 @@ export class RainGlass {
       if (keep) { if (w !== i) { P[i] = P[w]; P[w] = d; } w++; }
     }
     this.n = w;
-    /* 雪: ワイパーが おしやった雪の山(扇形の そとのふちと、振りきったはし)。窓の下のふちの雪と同じ量 */
-    const sill = snowMode && wp && cockpit.sillLevel ? cockpit.sillLevel() : 0;
-    if (this.n === 0 && !wiping && sill < 0.05) {
+    if (this.n === 0 && !wiping) {
       if (!this._clean) { c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, this.bw, this.bh); this._clean = true; }
       return;
     }
@@ -417,29 +468,6 @@ export class RainGlass {
       if (fade < 1) c.globalAlpha = fade;
       c.drawImage(spr, d.snow ? 64 : 0, 0, 64, 64, d.x - s, d.y - s, s * 2, s * 2);
       if (fade < 1) c.globalAlpha = 1;
-    }
-    if (sill >= 0.05 && wl > 0) {
-      /* 白い景色の前でも形が見えるよう: 下に灰色の影(少し下へずらす) → 白い山 → 上のふちの明るい線 */
-      const tEnd = Math.PI + rest + WIPE_SWEEP + 0.03, tA = Math.PI + rest + 0.04;
-      const ce = Math.cos(tEnd), se = Math.sin(tEnd);
-      c.lineCap = 'round';
-      for (let p = 0; p < 3; p++) {
-        const off = p === 0 ? 1.8 * sc : p === 2 ? -1.2 * sc : 0;
-        c.strokeStyle = p === 0 ? `rgba(110,122,134,${(0.45 * sill).toFixed(3)})`
-          : p === 1 ? `rgba(246,249,252,${(0.85 * sill).toFixed(3)})` : `rgba(255,255,255,${(0.9 * sill).toFixed(3)})`;
-        const wr = (p === 0 ? 11 : p === 1 ? 9 : 2.5) * sc, wa = (p === 0 ? 6 : p === 1 ? 4 : 1.2) * sc;
-        /* 振りきったはし(たての山) */
-        c.lineWidth = wr;
-        c.beginPath();
-        c.moveTo(wpx + ce * wl * 0.15 + off * 0.6, wpy + se * wl * 0.15 + off);
-        c.lineTo(wpx + ce * wl * 0.97 + off * 0.6, wpy + se * wl * 0.97 + off);
-        c.stroke();
-        /* 扇形の そとのふち(ブレードの先が おしやった雪) */
-        c.lineWidth = wa;
-        c.beginPath();
-        c.arc(wpx, wpy + off, wl * 1.0, tA, tEnd);
-        c.stroke();
-      }
     }
     /* ワイパーのあとに残る うすい水の膜 */
     if (wiping && wp && !snowMode) {
