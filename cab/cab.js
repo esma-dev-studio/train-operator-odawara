@@ -1,12 +1,13 @@
 /* =========================================================
  * cab/cab.js — 運転台の計器盤（DOM+Canvas 2D）
- * 速度計(区切りの帯・制限の三角・液晶) / ブレーキの強さ / マスコン(13段) /
- * 表示灯 / 運転モニタ / 制限スピード板
+ * 速度計(区切りの帯・制限の三角・液晶。針は べつのキャンバスを回すだけ) / ブレーキの強さ / マスコン(13段) /
+ * 表示灯(1枚の表示盤。ドアの灯は「ドアが しまった」で つく) / 運転モニタ / 制限スピード板
  *
  * index.html の #cab をコンストラクタで組みかえる(要素は移動するだけ。idとリスナーはそのまま)。
  * 毎フレームの書き込みは「値が変わったときだけ」(_set)。止まっている間はDOMを一切さわらない。
  * main.js との約束(なくても動く): render(h) / bindInput({canOp,setNotch}) / flashGrip() /
  *   setService({svcHtml,color,destHtml}) / setLight(lum) / setTarget(n|null: つぎにねらうノッチを点滅)
+ *   h.uiLimAt(コーチと同じ まるめた「制限まで あと m」)・h.uiBrakeNow(いまブレーキ)があれば そろえる
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
 
@@ -26,6 +27,8 @@ const ruby = (name, kana) => (kana ? `<ruby>${name}<rt>${kana}</rt></ruby>` : na
 const rubySt = (name) => ruby(name, STATION_KANA[name]);
 /* 「ふん/ぷん」の読み分け(1・3・4・6・8・10 は ぷん) */
 const fun = (m) => ([2, 5, 7, 9].includes(m % 10) ? 'ふん' : 'ぷん');
+/* 距離の表示のきざみ(main.js の qStep と同じ: 100m以上は10m、20m以上は5m、ほかは1m) */
+const qStep = (m) => (m >= 100 ? 10 : m >= 20 ? 5 : 1);
 
 /* ノッチ: 上から P4 … P1, N, B1 … B7, EB の13段 */
 const NOTCHES = [['P4', 4], ['P3', 3], ['P2', 2], ['P1', 1], ['N', 0],
@@ -46,6 +49,7 @@ export class Cab {
     this.root = $('#cab');
     this.speedo = $('#speedo');
     this.ctx = this.speedo.getContext('2d');
+    this.needle = null;
     this._night = false;
     this._dials = {};
     this._k = {};
@@ -59,6 +63,7 @@ export class Cab {
       lampBrk: $('#lamp-brake'),
       lampDoor: $('#lamp-door'),
       lampSlip: $('#lamp-slip'),
+      lampDoorT: document.querySelector('#lamp-door .lamp-t'),
       timsSvc: $('#tims-svc'),
       timsDest: $('#tims-dest'),
       timsNext: $('#tims-next'),
@@ -88,6 +93,18 @@ export class Cab {
     const root = this.root;
     if (root.querySelector('.cab-mascon')) return;
 
+    /* 速度計: 文字盤・帯・液晶のキャンバス(#speedo)の上に、針だけのキャンバスを重ねる(針は回すだけ) */
+    const sp = this.speedo;
+    if (sp && sp.parentElement && !sp.parentElement.classList.contains('speedo-wrap')) {
+      const wrap = document.createElement('div');
+      wrap.className = 'speedo-wrap';
+      sp.parentElement.insertBefore(wrap, sp);
+      wrap.appendChild(sp);
+      const nd = document.createElement('canvas');
+      nd.className = 'speedo-needle';
+      nd.setAttribute('aria-hidden', 'true');
+      wrap.appendChild(nd);
+    }
     /* 速度計のわき: ブレーキの強さ(8つのLED) */
     const bw = root.querySelector('.bc-wrap');
     if (bw) bw.innerHTML = '<span class="bc-cap">ブレーキ</span><div class="bc-leds" id="bc-fill">' + '<i></i>'.repeat(8) + '</div>';
@@ -122,8 +139,19 @@ export class Cab {
     /* 表示灯: 見出し(ほかの計器とおなじく、穴の上に小さく) */
     const lamps = root.querySelector('.cab-lamps');
     if (lamps && !lamps.querySelector('.lamps-cap')) lamps.insertAdjacentHTML('afterbegin', '<span class="lamps-cap">ランプ</span>');
+    /* ドアの灯は「ドアが しまった」(戸じめ)で つく */
+    const ld = root.querySelector('#lamp-door');
+    if (ld) ld.innerHTML = 'ドア<br>しまった';
     /* レンズの文字(2行)は1つの箱に入れて、レンズのまん中におく(flex の中の <br> にたよらない) */
     root.querySelectorAll('.lamp').forEach((l) => { if (!l.querySelector('.lamp-t')) l.innerHTML = `<span class="lamp-t">${l.innerHTML}</span>`; });
+    /* 4つの灯は1枚の表示盤(ひとつの枠に すきまなく並ぶ。さわる物ではない) */
+    if (lamps && !lamps.querySelector('.lamps-grid')) {
+      const grid = document.createElement('div');
+      grid.className = 'lamps-grid';
+      grid.setAttribute('aria-hidden', 'true');
+      lamps.querySelectorAll('.lamp').forEach((l) => grid.appendChild(l));
+      lamps.appendChild(grid);
+    }
 
     /* 制限スピード: 見出しにふりがな */
     const cap = root.querySelector('.lim-cap');
@@ -148,8 +176,9 @@ export class Cab {
   }
 
   _buildNotch() {
+    /* 段の場所は CSS で決める(たて: 上から順に自動で並ぶ / 横向きのスマホ: data-i で 左=ひじょう … 右=P4) */
     const rows = NOTCHES.map(([label, val], i) =>
-      `<div class="nt nt-${zoneOf(val)}" data-n="${val}" style="grid-row:${i + 1}">${label}</div>`).join('');
+      `<div class="nt nt-${zoneOf(val)}" data-n="${val}" data-i="${i}">${label}</div>`).join('');
     /* 左の見出し(さわっても反応しない。.nt ではない) */
     const caps = '<span class="nt-cap nt-cap-p" style="grid-row:1/5">すすむ</span>'
       + '<span class="nt-cap nt-cap-b" style="grid-row:6/13">ブレーキ</span>';
@@ -228,6 +257,36 @@ export class Cab {
       this._grad = null;
       this._k.w = -1;
     }
+    /* 針のキャンバス: 大きさが変わったときだけ、右向き(0°)の針を一度描く。あとは CSS で回すだけ */
+    const nd = this.needle || (this.needle = this.root.querySelector('.speedo-needle'));
+    if (nd && (nd.width !== px || nd.height !== px || this._ndSmall !== (css < 100))) {
+      nd.width = nd.height = px;
+      this._ndSmall = css < 100;
+      this._drawNeedle(nd, px);
+      this._ndDeg = null;
+    }
+  }
+
+  /* 針(先細り・影つき)と中心のキャップ。右向き(角度0)で描いておく */
+  _drawNeedle(cv, W) {
+    const c = cv.getContext('2d'), R = W / 2;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, W, W);
+    c.save();
+    c.translate(R, R);
+    c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = R * 0.04; c.shadowOffsetY = R * 0.02;
+    c.beginPath();
+    c.moveTo(-0.16 * R, -0.028 * R); c.lineTo(0.80 * R, -0.008 * R); c.lineTo(0.84 * R, 0);
+    c.lineTo(0.80 * R, 0.008 * R); c.lineTo(-0.16 * R, 0.028 * R); c.closePath();
+    c.fillStyle = '#ff5a36'; c.fill();
+    c.restore();
+    /* 中心のキャップ(回しても見え方が変わらないよう、光は まん中に) */
+    const hub = c.createRadialGradient(R, R, 0, R, R, R * 0.085);
+    hub.addColorStop(0, '#6b757c'); hub.addColorStop(0.55, '#2a3035'); hub.addColorStop(1, '#121518');
+    c.fillStyle = hub;
+    c.beginPath(); c.arc(R, R, R * 0.085, 0, TAU); c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.45)';
+    c.beginPath(); c.arc(R, R, R * 0.02, 0, TAU); c.fill();
   }
 
   _measureLever() {
@@ -243,40 +302,78 @@ export class Cab {
     }
   }
 
-  /* 持ち手のまん中を、その段のまん中に(上下のはしは台の中におさめる) */
+  /* 持ち手のまん中を、その段のまん中に(上下のはしは台の中におさめる)。
+   * レバーが横長(横一列の目盛り)のときは 左=ひじょう … 右=P4 で横に動かす */
   _placeGrip(idx) {
-    const H = this._levH || this.els.lever.clientHeight, gh = this._gripH || this.els.leverGrip.offsetHeight || 30;
+    const lv = this.els.lever;
+    if (lv.clientWidth > lv.clientHeight * 2) {
+      const W = lv.clientWidth, gw = this.els.leverGrip.offsetWidth || 30;
+      const x = clamp(((12 - idx + 0.5) * W) / 13 - gw / 2, 0, W - gw);
+      this.els.leverGrip.style.transform = `translateX(${x.toFixed(1)}px)`;
+      return;
+    }
+    const H = this._levH || lv.clientHeight, gh = this._gripH || this.els.leverGrip.offsetHeight || 30;
     const y = clamp(((idx + 0.5) * H) / 13 - gh / 2, 1 - (this._padT || 0), H - gh + (this._padB || 0) - 1);
     this.els.leverGrip.style.transform = `translateY(${y.toFixed(1)}px)`;
   }
 
   /* ---------------- 入力(main.js から1回だけ呼ぶ) ----------------
-   * レバーも目盛りも、さわった高さで13段のどれかに。下へはみ出してもかならず EB */
+   * レバーも目盛りも、さわった位置で13段のどれかに。下へはみ出してもかならず EB。
+   *  ・段のさかいで指がゆれても ばたばたしない: いまの段の まん中から 0.8段 はなれるまで変えない
+   *  ・指(タッチ)で いまの段の となり(2段の手前まで)を さわったら 1段だけ動かす(ねらった段の となりに当たっても同じ)。
+   *    ひじょうの段・2段より遠くは その段へ
+   *  ・横向きのスマホ(目盛りが横一列: 横幅が高さの2倍より大きい)は 左=ひじょう … 右=P4 */
   bindInput({ canOp = () => true, setNotch } = {}) {
     if (this._inputBound) return;
     this._inputBound = true;
     const list = this.els.notchList;
-    const toNotch = (clientY) => {
-      const r = list.getBoundingClientRect();
-      const k = (clientY - r.top) / Math.max(1, r.height);
-      const idx = clamp(Math.floor(k * 13), 0, 12);
-      return idx === 12 ? -8 : 4 - idx;
+    /* さわった位置 → 段の位置(0〜13 の小数。0 = P4 の上のはし)。目盛りの外(上の天板など)は いちばん近い段へ */
+    const rowAt = (ev, r) => {
+      if (r.width > r.height * 2) return clamp(13 - ((ev.clientX - r.left) / Math.max(1, r.width)) * 13, 0, 12.999);
+      return clamp(((ev.clientY - r.top) / Math.max(1, r.height)) * 13, 0, 12.999);
     };
-    const apply = (ev) => {
-      if (!canOp()) return;
-      const n = toNotch(ev.clientY);
+    const send = (idx) => {
+      const n = idx === 12 ? -8 : 4 - idx;
       if (setNotch) setNotch(n); else if (this.sim) this.sim.setNotch(n);
     };
     [this.els.lever, list].forEach((el) => {
-      let id = null;
+      let id = null, dragIdx = -1, armed = true, x0 = 0, y0 = 0, rowPx = 14, horiz = false;
       el.addEventListener('pointerdown', (ev) => {
         id = ev.pointerId;
         try { el.setPointerCapture(id); } catch (e) { /* 合成イベント等 */ }
         if (ev.cancelable) ev.preventDefault();
-        apply(ev);
+        dragIdx = -1;
+        if (!canOp()) return;
+        const r = list.getBoundingClientRect();
+        horiz = r.width > r.height * 2;
+        rowPx = Math.max(4, (horiz ? r.width : r.height) / 13);
+        x0 = ev.clientX; y0 = ev.clientY;
+        armed = true;
+        const f = rowAt(ev, r), t = Math.floor(f);
+        const cur = this._lastNotch != null ? notchIdx(this._lastNotch) : -1;
+        let idx = t;
+        if (ev.pointerType !== 'mouse' && cur >= 0 && t !== 12) {
+          const d = f - (cur + 0.5);
+          if (Math.abs(d) <= 0.5) idx = cur;
+          else if (Math.abs(d) < 2) { idx = clamp(cur + (d > 0 ? 1 : -1), 0, 12); armed = false; }
+        }
+        dragIdx = idx;
+        if (idx !== cur) send(idx);
       });
-      el.addEventListener('pointermove', (ev) => { if (id === ev.pointerId) apply(ev); });
-      const end = (ev) => { if (id === ev.pointerId) id = null; };
+      el.addEventListener('pointermove', (ev) => {
+        if (id !== ev.pointerId || dragIdx < 0 || !canOp()) return;
+        /* 1段だけ動かしたタップは、指が半段ぶん動くまで そのまま(指のゆれで さらに動かない) */
+        if (!armed) {
+          if (Math.abs(horiz ? ev.clientX - x0 : ev.clientY - y0) < rowPx * 0.5) return;
+          armed = true;
+        }
+        const f = rowAt(ev, list.getBoundingClientRect());
+        if (Math.abs(f - (dragIdx + 0.5)) > 0.8) {
+          const idx = Math.floor(f);
+          if (idx !== dragIdx) { dragIdx = idx; send(idx); }
+        }
+      });
+      const end = (ev) => { if (id === ev.pointerId) { id = null; dragIdx = -1; } };
       el.addEventListener('pointerup', end);
       el.addEventListener('pointercancel', end);
       el.addEventListener('lostpointercapture', end);
@@ -315,7 +412,9 @@ export class Cab {
       this._lum = lum;
       this.root.style.setProperty('--cab-lum', lum.toFixed(2));
     }
-    const dark = lum < 0.45;
+    /* 夜(.16)・トンネル(.3)は 夜の計器(文字盤の明かり)。夜のホーム(.46)でも夜のまま
+     * (駅に とまるたびに 文字盤が 昼の色に かわらないように)。夕方(.55)・地下のホーム(.5)は 昼の計器 */
+    const dark = lum < 0.5;
     const b = document.body;
     if (b.classList.contains('cab-dark') !== dark) b.classList.toggle('cab-dark', dark);
     if (dark !== this._night) { this._night = dark; this._k.night = -1; }
@@ -357,11 +456,27 @@ export class Cab {
     this._renderBC(h.bc);
     this._cls(this.els.lampPat, 'on', h.atsLamp === 'pattern' || h.atsLamp === 'brake');
     this._cls(this.els.lampBrk, 'on', h.atsLamp === 'brake');
-    this._cls(this.els.lampDoor, 'on', !!h.doorOpen);
+    this._renderDoorLamp(!h.doorOpen && !h.finished);
     this._cls(this.els.lampSlip, 'on', !!h.slipping);
     this._renderTims(h, sim);
     this._renderLimit(h);
     this._renderGrade(h.grade);
+  }
+
+  /* ドアの灯(戸じめ): ドアが しまっているあいだ つく。ついた瞬間だけ 1.2秒 ふわっと光る(.just) */
+  _renderDoorLamp(on) {
+    const el = this.els.lampDoor;
+    if (el._c_on === on) return;
+    const was = el._c_on;
+    this._cls(el, 'on', on);
+    if (on && was === false && !this._jump) {
+      el.classList.add('just');
+      clearTimeout(this._doorJustT);
+      this._doorJustT = setTimeout(() => el.classList.remove('just'), 1200);
+    } else if (!on) {
+      clearTimeout(this._doorJustT);
+      el.classList.remove('just');
+    }
   }
 
   /* 運転がかわった(新しい sim): 表示の記憶を捨てる */
@@ -377,6 +492,8 @@ export class Cab {
     this._noNext = false;
     this._distK = null;
     this._delayK = null;
+    this._depM = null;
+    this._limSd = null;
     this._clockM = null;
     this._arrM = null;
     this._atSta = null;   // 最初のフレームでかならず「つぎは」「ただいま」を書く
@@ -416,26 +533,41 @@ export class Cab {
     if (this._vs == null || this._jump) this._vs = v;
     else this._vs += (v - this._vs) * Math.min(1, dtR * 10);
     if (Math.abs(v - this._vs) < 0.03) this._vs = v;
+    /* 針: べつのキャンバスを CSS で回すだけ(0.05°より動いたときだけ書く。合成だけで済む) */
+    const nd = this.needle;
+    if (nd) {
+      const deg = (angOf(Math.min(VMAX + 2, this._vs)) * 180) / Math.PI;
+      if (this._ndDeg == null || Math.abs(deg - this._ndDeg) > 0.05) {
+        this._ndDeg = deg;
+        nd.style.transform = 'rotate(' + deg.toFixed(2) + 'deg)';
+      }
+    }
     const lim = h.limit;
     const a = h.ats;
     const pat = a && a.pattern < lim ? a.pattern : 999;
     const patI = pat < 999 ? Math.floor(pat / 2.5) : 99;
-    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置に小さいきいろの三角 */
-    const tgtI = a && a.kind !== 'stop' && a.target < lim ? Math.floor(a.target / 2.5) : -1;
+    /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置に小さいきいろの三角
+     * (止まれの信号・駅の停止(0km/h)は出さない: 針の止まる位置にかさなるため) */
+    const tgtI = a && a.kind !== 'stop' && a.target >= 2.5 && a.target < lim ? Math.floor(a.target / 2.5) : -1;
     const lamp = h.atsLamp;
     /* きいろの帯(パターン〜制限)を光らせるのは、ATSが注意を出しているか、パターンに近いときだけ
-     * (駅で止まっているあいだに 帯がきいろ一色にならないように) */
+     * (駅で止まっているあいだは 帯を出さず、パターンのはじまりに 小さな印だけ) */
     const warn = lamp !== 'normal' || v > pat - 10 ? 1 : 0;
     const blinking = lamp === 'brake' || (lamp === 'pattern' && pat < lim);
     const blink = blinking ? ((now / 250) | 0) & 1 : 0;   // 2Hzで点滅
-    const v10 = (this._vs * 10) | 0, vi = Math.floor(v), night = this._night ? 1 : 0;
+    const vi = Math.floor(v), night = this._night ? 1 : 0;
+    /* 液晶の色: 制限+1 をこえたら あか(2Hzで点滅)、制限-5 をこえたら だいだい */
+    const over = vi > lim + 1 ? 1 : 0, near = !over && vi > lim - 5 ? 1 : 0;
+    const ob = over ? ((now / 250) | 0) & 1 : 0;
     const k = this._k;
-    if (k.v10 === v10 && k.vi === vi && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.warn === warn && k.blink === blink && k.night === night && k.w === W) return;
-    k.v10 = v10; k.vi = vi; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.warn = warn; k.blink = blink; k.night = night; k.w = W;
-    this._drawSpeedo(this._vs, vi, lim, pat, tgtI, lamp, warn, blink, night);
+    if (k.vi === vi && k.lim === lim && k.patI === patI && k.tgtI === tgtI && k.lamp === lamp && k.warn === warn && k.blink === blink && k.night === night && k.over === over && k.near === near && k.ob === ob && k.w === W) return;
+    k.vi = vi; k.lim = lim; k.patI = patI; k.tgtI = tgtI; k.lamp = lamp; k.warn = warn; k.blink = blink; k.night = night; k.over = over; k.near = near; k.ob = ob; k.w = W;
+    this._draws = (this._draws || 0) + 1;   // 描きなおした回数(確認用)
+    this._drawSpeedo(vi, lim, pat, tgtI, lamp, warn, blink, night, over ? (ob ? 2 : 1) : near ? 3 : 0);
   }
 
-  _drawSpeedo(vn, vi, lim, pat, tgtI, lamp, warn, blink, night) {
+  /* ink: 0 ふつう / 1 制限こえ(あか) / 2 制限こえ(点滅のうすいほう) / 3 制限ちかい(だいだい) */
+  _drawSpeedo(vi, lim, pat, tgtI, lamp, warn, blink, night, ink) {
     const c = this.ctx, W = this.speedo.width, R = W / 2;
     const small = (this._cssW || 150) < 100;
     const px = W / (this._cssW || W);   // CSSの1pxぶん
@@ -454,13 +586,17 @@ export class Cab {
     if (!this._dash || this._dashW !== W) { this._dash = [rr * seg * 0.72, rr * seg * 0.28]; this._dashW = W; }
     c.setLineDash(this._dash);
     this._segArc(c, R, rr, 0, SEG_N, '#241514');
+    let tick = false;
     if (lamp === 'brake') {
       if (!blink) this._segArc(c, R, rr, 0, limI, '#ff4a3d');
     } else {
       this._segArc(c, R, rr, 0, gI, '#1fa85a');
-      this._segArc(c, R, rr, gI + 1, limI, warn && !(lamp === 'pattern' && blink) ? '#ffb32e' : '#4a3812');
+      /* パターン〜制限: 注意のときだけ きいろ(点滅)。ふだんは帯を出さず、パターンのはじまりに くすんだ印 */
+      if (warn) this._segArc(c, R, rr, gI + 1, limI, lamp === 'pattern' && blink ? '#4a3812' : '#ffb32e');
+      else tick = pat < lim;
     }
     c.setLineDash(NO_DASH);
+    if (tick) this._wedge(c, R, px, pat, 0.03, '#b07a1e');
 
     /* 制限の三角(あか)と、このさきの目標(小さいきいろ)。中心をさす三角で、ふちは黒 */
     if (tgtI >= 0) this._wedge(c, R, px, tgtI * 2.5, 0.04, '#ffb32e');
@@ -468,38 +604,24 @@ export class Cab {
 
     /* 液晶: 速度(切り捨て)。小さい速度計では ATS の状態も出す */
     const lcd = this._lcdBox(R, small);
-    let txt = String(vi), ink = night ? '#e6fff1' : '#d6ffe8';
+    let txt = String(vi);
+    let col = ink === 1 ? '#ff5347' : ink === 2 ? '#ff9a8f' : ink === 3 ? '#ffc443' : night ? '#e6fff1' : '#d6ffe8';
     if (small && lamp !== 'normal') {
       c.fillStyle = lamp === 'brake' ? '#ff4a3d' : '#ffb32e';
       this._rrect(c, lcd.x + 1, lcd.y + 1, lcd.w - 2, lcd.h - 2, lcd.h * 0.25);
       c.fill();
       txt = lamp === 'brake' ? 'ブレーキ' : 'ちゅうい';
-      ink = '#140a00';
+      col = '#140a00';
       c.font = `700 ${(lcd.h * 0.62).toFixed(1)}px "Zen Kaku Gothic New",sans-serif`;
     } else {
-      c.font = `700 ${(lcd.h * 0.8).toFixed(1)}px ${NUM_FONT}`;
+      c.font = `700 ${(lcd.h * (small ? 0.8 : 0.86)).toFixed(1)}px ${NUM_FONT}`;
     }
-    c.fillStyle = ink;
+    c.fillStyle = col;
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.fillText(txt, R, lcd.y + lcd.h * 0.54, lcd.w - 4);
 
-    /* 針(先細り・影つき) */
-    const av = angOf(Math.min(VMAX + 2, vn));
-    c.save();
-    c.translate(R, R); c.rotate(av);
-    c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = R * 0.04; c.shadowOffsetY = R * 0.02;
-    c.beginPath();
-    c.moveTo(-0.16 * R, -0.028 * R); c.lineTo(0.80 * R, -0.008 * R); c.lineTo(0.84 * R, 0);
-    c.lineTo(0.80 * R, 0.008 * R); c.lineTo(-0.16 * R, 0.028 * R); c.closePath();
-    c.fillStyle = '#ff5a36'; c.fill();
-    c.restore();
-
-    /* 中心のキャップとガラスの映り込み(グラデーションは大きさごとに作りおき) */
+    /* ガラスの映り込み(グラデーションは大きさごとに作りおき)。針は べつのキャンバス(この上) */
     const g = this._grads(R);
-    c.fillStyle = g.hub;
-    c.beginPath(); c.arc(R, R, R * 0.085, 0, TAU); c.fill();
-    c.fillStyle = 'rgba(255,255,255,0.55)';
-    c.beginPath(); c.arc(R - R * 0.03, R - R * 0.03, R * 0.018, 0, TAU); c.fill();
     c.fillStyle = g.glass;
     c.beginPath(); c.arc(R, R, R * 0.915, 0, TAU); c.fill();
   }
@@ -527,19 +649,18 @@ export class Cab {
   }
 
   _lcdBox(R, small) {
-    /* 小さい速度計: 0 と 120 の数字にかからないよう、下のすきまいっぱいに */
+    /* 小さい速度計: 0 と 120 の数字にかからないよう、下のすきまいっぱいに。
+     * ふつう: 大きな液晶(字は 約23px)。0 と 120 の数字は すこし外(半径 0.66)へ */
     return small ? { x: R - R * 0.41, y: R + R * 0.53, w: R * 0.82, h: R * 0.27 }
-      : { x: R - R * 0.30, y: R + R * 0.36, w: R * 0.60, h: R * 0.30 };
+      : { x: R - R * 0.31, y: R + R * 0.33, w: R * 0.62, h: R * 0.36 };
   }
 
   _grads(R) {
     if (this._grad && this._grad.R === R) return this._grad;
     const c = this.ctx;
-    const hub = c.createRadialGradient(R - R * 0.02, R - R * 0.03, 0, R, R, R * 0.085);
-    hub.addColorStop(0, '#5b656c'); hub.addColorStop(1, '#15191c');
     const glass = c.createRadialGradient(R - 0.35 * R, R - 0.55 * R, 0, R - 0.35 * R, R - 0.55 * R, R * 0.9);
     glass.addColorStop(0, 'rgba(255,255,255,0.10)'); glass.addColorStop(1, 'rgba(255,255,255,0)');
-    this._grad = { R, hub, glass };
+    this._grad = { R, glass };
     return this._grad;
   }
 
@@ -594,14 +715,14 @@ export class Cab {
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `700 ${(R * (small ? 0.19 : 0.18)).toFixed(1)}px ${NUM_FONT}`;
     for (let v = 0; v <= VMAX; v += 20) {
-      const an = angOf(v);
-      c.fillText(String(v), Math.cos(an) * R * 0.62, Math.sin(an) * R * 0.62);
+      const an = angOf(v), rn = !small && (v === 0 || v === VMAX) ? 0.66 : 0.62;
+      c.fillText(String(v), Math.cos(an) * R * rn, Math.sin(an) * R * rn);
     }
     c.shadowBlur = 0; c.shadowColor = 'transparent';
     if (!small) {
       c.fillStyle = night ? '#a8977a' : '#7d8890';
       c.font = `500 ${(R * 0.1).toFixed(1)}px ${NUM_FONT}`;
-      c.fillText('km/h', 0, R * 0.27);
+      c.fillText('km/h', 0, R * 0.24);
     }
     /* 液晶の窓 */
     c.translate(-R, -R);
@@ -662,13 +783,14 @@ export class Cab {
       this._atCur = atSta ? cur : null;
       if (E.timsCap) E.timsCap.textContent = atSta ? 'ただいま' : 'つぎは';
       this._cls(E.timsDist, 'tims-dist-small', atSta);
+      if (atSta) { this._cls(E.timsDist, 'late', false); this._cls(E.timsDist, 'near', false); }
       if (atSta) {
         E.timsNext._t = null;
         E.timsNext.innerHTML = rubySt(cur.name);
         E.timsDist.innerHTML = nx ? `つぎは ${rubySt(nx.name)}` : '';
       }
       /* ドアが閉まったら、つぎの駅・のこり距離・つく時刻を書きなおす */
-      this._nextName = null; this._distK = null; this._arrM = null; this._noNext = false;
+      this._nextName = null; this._distK = null; this._arrM = null; this._noNext = false; this._delayK = null; this._depM = null;
     }
     if (!nx) {
       if (!this._noNext) {
@@ -702,24 +824,40 @@ export class Cab {
       this._segLen = cur && prev ? Math.max(1, cur.stopAt - prev.stopAt) : 0;
       this._prog = null;
     }
-    /* のこりの距離(m は1mごと、km は10mごと) */
+    /* のこりの距離(m は1mごと、km は10mごと)。とまる位置を すぎたら「すぎた ◯m」(あか)。
+     * だいだい(.near)は「いま ブレーキ」のときだけ(コーチ・ブレーキめやすと同じ きまり: だいだい = いま やる) */
     const d = Math.max(0, nx.dist);
-    const dk = d >= 1000 ? 100000 + Math.round(d / 10) : Math.round(d);
+    const past = nx.dist < -0.5;
+    const dk = past ? -1 - Math.round(-nx.dist) : d >= 1000 ? 100000 + Math.round(d / 10) : Math.round(d);
     if (!atSta && dk !== this._distK) {
       this._distK = dk;
-      E.timsDist.textContent = d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
+      E.timsDist.textContent = past ? `すぎた ${Math.round(-nx.dist)} m` : d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
+      this._cls(E.timsDist, 'late', past);
     }
+    if (!atSta) this._cls(E.timsDist, 'near', !past && h.uiBrakeNow === true);
     /* つく時刻(分が変わったときだけ文字列を作る。毎フレームの文字列づくりをしない) */
     const am = Math.floor(nx.arr / 60);
     if (am !== this._arrM) { this._arrM = am; this._set(E.timsSch, `${this._hm(nx.arr)} つく`); }
-    /* じかん: 分のきざみ(こどもが読みやすく、表示もほとんど変わらない) */
-    const early = nx.arr - sim.t;
-    let dk2, txt, late = false;
-    if (early >= 60) { const m = Math.floor(early / 60); dk2 = m; txt = `じかんまで あと ${m}${fun(m)}`; }
-    else if (early >= 0) { dk2 = 0; txt = 'もうすぐ つく じかん'; }
-    else if (early > -60) { dk2 = -1; txt = 'すこし おくれ'; late = true; }
-    else { const m = Math.floor(-early / 60); dk2 = -1 - m; txt = `${m}${fun(m)} おくれ`; late = true; }
-    if (dk2 !== this._delayK) { this._delayK = dk2; E.timsDelay.textContent = txt; this._cls(E.timsDelay, 'late', late); }
+    if (atSta) {
+      /* 駅で止まっているあいだは しゅっぱつの時刻(のこり秒は画面の下のコーチが言う。数字を2か所に出さない) */
+      const dm = nx.dep != null ? Math.floor(nx.dep / 60) : -1;
+      if (dm !== this._depM) {
+        this._depM = dm;
+        this._delayK = null;
+        E.timsDelay.textContent = dm >= 0 ? `しゅっぱつ ${this._hm(nx.dep)}` : '';
+        this._cls(E.timsDelay, 'late', false);
+      }
+    } else {
+      this._depM = null;
+      /* じかん: 分のきざみ(こどもが読みやすく、表示もほとんど変わらない) */
+      const early = nx.arr - sim.t;
+      let dk2, txt, late = false;
+      if (early >= 60) { const m = Math.floor(early / 60); dk2 = m; txt = `つく じかんまで あと ${m}${fun(m)}`; }
+      else if (early >= 0) { dk2 = 0; txt = 'もうすぐ つく じかん'; }
+      else if (early > -60) { dk2 = -1; txt = 'すこし おくれ'; late = true; }
+      else { const m = Math.floor(-early / 60); dk2 = -1 - m; txt = `${m}${fun(m)} おくれ`; late = true; }
+      if (dk2 !== this._delayK) { this._delayK = dk2; E.timsDelay.textContent = txt; this._cls(E.timsDelay, 'late', late); }
+    }
     /* すすみぐあい(前の駅→つぎの駅) */
     {
       const p = this._segLen ? Math.round(clamp(1 - d / this._segLen, 0, 1) * 400) : 0;
@@ -745,7 +883,7 @@ export class Cab {
     }
     const a = h.ats;
     if (a && (a.kind === 'limit' || a.kind === 'signal')) {
-      if (a.at !== this._limAt) { this._limAt = a.at; this._limD0 = Math.max(1, a.at - h.pos); }
+      if (a.at !== this._limAt) { this._limAt = a.at; this._limD0 = Math.max(1, a.at - h.pos); this._limSd = null; }
       if (a.kind !== this._limKind || a.target !== this._limKey) {
         this._limKind = a.kind; this._limKey = a.target;
         let l1;
@@ -758,14 +896,25 @@ export class Cab {
         this._lnBarK = null;
         this._lnD._t = null;
       }
-      const d = Math.max(0, Math.round(a.at - h.pos));
+      /* 「あと ◯m」: コーチと同じ数(main.js が h.uiLimAt に まるめた距離を入れる)。
+       * なければ 同じ きざみ(100m以上 10m・20m以上 5m・ほか 1m)で、半きざみ以上 かわったときだけ */
+      const raw = Math.max(0, a.at - h.pos);
+      let d;
+      if (typeof h.uiLimAt === 'number' && a.kind === 'limit') d = Math.max(0, Math.round(h.uiLimAt));
+      else {
+        const prev = this._limSd;
+        if (prev != null && Math.abs(raw - prev) < qStep(prev) * 0.75) d = prev;
+        else d = Math.round(raw / qStep(raw)) * qStep(raw);
+        this._limSd = d;
+      }
       this._set(this._lnD, String(d));
-      const bk = Math.round(clamp(d / this._limD0, 0, 1) * 200);
+      const bk = Math.round(clamp(raw / this._limD0, 0, 1) * 200);
       if (bk !== this._lnBarK) { this._lnBarK = bk; this._lnBar.style.transform = `scaleX(${(bk / 200).toFixed(3)})`; }
       this._cls(E.limNext, 'hidden', false);
     } else {
       this._cls(E.limNext, 'hidden', true);
       this._limAt = null;
+      this._limSd = null;
     }
   }
 

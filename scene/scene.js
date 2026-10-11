@@ -3478,17 +3478,21 @@ export class RailScene {
     const cam = this.camera;
     const mode = this.camMode;
     if (mode === 'cab') {
-      const fAhead = at(s + 42);
+      /* 運転士の目は 車両の先頭(sim.pos)より 1.0m うしろ(運転台の中)。
+       * 停止位置の判定は sim.pos のままなので、ここでは見る位置だけ。毎フレームの new をしない(使い回しの箱) */
+      const Lc = L - 2;
+      const fe = frameInto(this.frames, this.step, Math.max(1, Math.min(Lc, s - 1.0)), this._eyeF || (this._eyeF = newFrame()));
+      const fAhead = frameInto(this.frames, this.step, Math.max(1, Math.min(Lc, s + 42)), this._aheadF || (this._aheadF = newFrame()));
       /* 運転士の目線（左寄り・レール上3.05m）+ 速度に応じた揺れ */
-      const eye = f.p.clone().addScaledVector(f.left, 0.85);
+      const eye = (this._eyeV || (this._eyeV = new THREE.Vector3())).copy(fe.p).addScaledVector(fe.left, 0.85);
       eye.y += 3.05;
       const sway = Math.sin(this.clockT * 7.3) * 0.012 + Math.sin(this.clockT * 2.1) * 0.02;
       const bob = Math.sin(this.clockT * 9.1) * 0.008;
       const k = Math.min(1, sim.v / 70);
-      eye.addScaledVector(f.left, sway * k);
+      eye.addScaledVector(fe.left, sway * k);
       eye.y += bob * k;
       cam.position.copy(eye);
-      const look = fAhead.p.clone().addScaledVector(fAhead.left, 0.55);
+      const look = (this._lookV || (this._lookV = new THREE.Vector3())).copy(fAhead.p).addScaledVector(fAhead.left, 0.55);
       look.y += 2.4;
       cam.lookAt(look);
       /* 体感: ブレーキで視線が沈み、カーブでは内側へ傾き、継ぎ目で小さくはねる(FOVは変えない) */
@@ -3503,7 +3507,7 @@ export class RailScene {
           -(this._accSm * 0.01 + this._by * 0.25) * 0.5, -this._roll * 0.5);
       }
       cam.fov = 58;
-      this._camS = s;
+      this._camS = s - 1.0;
     } else if (mode === 'chase' || mode === 'drone') {
       const back = mode === 'drone' ? 95 : 34, side = mode === 'drone' ? 30 : 4.5;
       /* ターミナルの屋根の下・トンネルの中では天井より低く */
@@ -3550,6 +3554,73 @@ export class RailScene {
     /* 外からの視点では運転台を描かないので、頭のずれはもどしておく */
     if (mode !== 'cab' && typeof this.cockpit.setHeadOffset === 'function') this.cockpit.setHeadOffset(0, 0, 0, 0);
     cam.updateProjectionMatrix();
+  }
+
+  /* 運転台(3Dの窓まわり)の明かり・ワイパー・雪・時計・時刻表。render() から毎フレーム呼ばれる。
+   *  light: 室内の明るさ(なめらかにするのは cockpit 側。計器盤 #cab も cockpit.light で同じ明るさになる)
+   *    昼1 / 雨.7 / 雪.85 / 夕方.55 / 夜.16。ターミナル(明るい屋根の下)は .72 以上、トンネルは .3 以下、
+   *    ホームに いるあいだは 夜.46・夕方.62 以上(地下のホームは .5 以上)
+   *  flash: トンネルの灯具(12mごと)が窓の上を通るときの 速い明かり(3Dの枠と天板だけ。計器盤には入れない)
+   *  tint: 枠の色み(屋内は青白・夕方は だいだい・夜は青・雨は少し青)
+   * 毎フレームの new をしない(渡す箱は使い回し) */
+  _updateCockpit(dt, s, indoorEye) {
+    const ck = this.cockpit, sim = this.sim;
+    if (!ck || !sim) return;
+    const tod = this.timeOfDay, night = tod === 'night', eve = tod === 'evening';
+    const wx = this.weather, rain = wx === 'rain', snow = wx === 'snow';
+    const inTerm = this._inTerminal(s + 3, -6), inTun = this._inTunnel(s + 3);
+    const ie = typeof indoorEye === 'boolean' ? indoorEye : (inTerm || inTun);
+    let light = night ? 0.16 : eve ? 0.55 : rain ? 0.7 : snow ? 0.85 : 1;
+    if (inTerm) light = Math.max(light, 0.72);
+    else if (inTun) light = Math.min(light, 0.3);
+    /* ホーム(停止位置の175m手前〜30m先)にいるか(毎フレームなので for で。関数を作らない) */
+    let atPlat = false;
+    const sts = this.line.stations;
+    for (let i = 0; i < sts.length; i++) {
+      const st = sts[i];
+      if (s > st.s - 175 && s < st.s + 30) { atPlat = true; break; }
+    }
+    if (atPlat && !inTun) light = Math.max(light, night ? 0.46 : eve ? 0.62 : light);
+    if (atPlat && inTun) light = Math.max(light, 0.5);
+    /* トンネルの灯具の明かり: 灯具は s = 12k + 6 (trackbed.js の TUN_LAMP の pitch 12 / phase 6 と同じ数。
+     * 駅の担当の buildTunnelLights が置く)。目(先頭の1mうしろ)の 2mほど前を灯具が通るときに いちばん明るい。
+     * 速いほど はっきり(止まっているときは 0) */
+    let flash = 0;
+    if (inTun && !atPlat && this.camMode === 'cab') {
+      const e = s - 1.0;
+      let x = ((((6 - e) % 12) + 12) % 12) - 2;   // つぎの灯具までの前向きの距離 - 2m
+      if (x > 6) x -= 12;
+      const g = x * (7 / 12);
+      flash = 0.16 * Math.exp(-g * g) * Math.min(1, sim.v / 30);
+    }
+    const o = this._ckO || (this._ckO = { light: 1, flash: 0, tr: 1, tg: 1, tb: 1, night: false, wiper: false, snow: false, clockMin: 0 });
+    o.light = light;
+    o.flash = flash;
+    /* 枠の色み(見た目の比率)。屋内 → 夕方 → 夜 → ぬれ の順にきめる */
+    if (inTerm || inTun) { o.tr = 0.95; o.tg = 1; o.tb = 1.06; }
+    else if (eve) { o.tr = 1.14; o.tg = 0.96; o.tb = 0.8; }
+    else if (night) { o.tr = 0.9; o.tg = 0.95; o.tb = 1.08; }
+    else if (rain || snow) { o.tr = 0.97; o.tg = 0.99; o.tb = 1.02; }
+    else { o.tr = 1; o.tg = 1; o.tb = 1; }
+    o.night = night;
+    /* ワイパー: 雨は 'on'(つづけて)、雪は 'int'(間をあけて)、屋内・外のカメラでは止める */
+    o.wiper = ie || this.camMode !== 'cab' ? false : rain ? 'on' : snow ? 'int' : false;
+    o.snow = snow && !ie;
+    /* 天板の時計(ゲーム内の 時:分。計器盤のモニタと同じ: 夜19時・夕方16時・昼10時はじまり) */
+    const baseHour = night ? 19 : eve ? 16 : 10;
+    o.clockMin = Math.floor((sim.t + baseHour * 3600) / 60);
+    /* 雨のガラス(ui/rainglass.js)が 粒の数の上限を きめるのに使う */
+    ck.quality = this.quality;
+    /* 天板の時刻表: 運転・つぎの駅が かわったときだけ書きなおす */
+    if (typeof ck.setTimetable === 'function' && (this._ttSim !== sim || this._ttIdx !== sim.stopIdx)) {
+      this._ttSim = sim;
+      this._ttIdx = sim.stopIdx;
+      const names = [];
+      const stops = sim.stops || [];
+      for (let i = 0; i < stops.length; i++) names.push(stops[i].name);
+      ck.setTimetable(names, sim.stopIdx);
+    }
+    ck.update(dt, o);
   }
 
   /* 目の慣れ: カメラがトンネル・ターミナルにいると暗く(k<1)。

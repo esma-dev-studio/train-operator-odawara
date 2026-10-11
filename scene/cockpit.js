@@ -8,12 +8,19 @@
  * 上から描く(トーンマッピング・ブルーム・霧の影響を受けない)。
  * 材質はすべて MeshBasic(toneMapped:false)。色は計器盤(#cab)と同じ式で暗くする:
  *   #cab::after は rgb(2,4,7) を (1-明るさ)*0.62 だけ重ねる → shade() も同じ。
+ * ガラスらしさ: ふちの黒いセラミック(フリット)・運転士窓の上の遮光幕・天板のうすい映り込み。
+ * ふちのギザギザ: 窓のふちはフリットの帯(テクスチャで ぼける)、ワイパーは 1.5画素の ぼかしの帯でかくす
+ *   (COCKPIT_FEATHER。描画側はこれを見て キャンバスのアンチエイリアスを切ってよい)。
  * 外との約束: useOverlay() / renderOverlay(renderer, camera) / setHeadOffset(dx,dy,pitch,roll) /
- *   update(dt, {light, night, wiper, snow}) / windowRects() / wiperScreen() / layoutFor(aspect)
+ *   update(dt, {light, flash, tr,tg,tb, night, wiper, snow, clockMin}) / setTimetable(names, idx) /
+ *   windowRects() / wiperScreen() / sillLevel() / layoutFor(aspect) / light(なめらかにした明るさ。flash は入らない)
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
 
 const TAN = Math.tan(THREE.MathUtils.degToRad(29));   // 縦FOV58°の半分
+
+/* 窓のふち(フリット)とワイパーの ぼかしの帯がある = キャンバスのアンチエイリアスなしでも ふちがギザギザにならない */
+export const COCKPIT_FEATHER = true;
 
 /* ---- 計器盤と同じ減光(sRGBで rgb(2,4,7) へ寄せる) ---- */
 export const CAB_DIM = 0.62;
@@ -35,7 +42,7 @@ export function shade(hex, light, out) {
 const COL = {
   frame: hexRGB('#3a4046'), seal: hexRGB('#060708'), dash: hexRGB('#2c3237'), dashBase: hexRGB('#2a2e31'),
   dashEdge: hexRGB('#15191c'), wiper: hexRGB('#0c0d0f'), rubber: hexRGB('#050506'), chrome: hexRGB('#6c747a'),
-  snow: hexRGB('#e9eef3'),
+  snow: hexRGB('#e9eef3'), hem: hexRGB('#2b3034'),
 };
 const s2l = (s) => (s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4));
 
@@ -91,24 +98,37 @@ function outwardNormals(pts) {
 /* 点列を外へ w(頂点ごと) だけずらす */
 const offsetPts = (pts, nrm, w) => pts.map((p, i) => [p[0] + nrm[i][0] * nrm[i][2] * w[i], p[1] + nrm[i][1] * nrm[i][2] * w[i]]);
 
-/* 内側の輪(a)と外側の輪(b)のあいだを帯にして buf に足す(色は頂点ごと) */
-function pushRing(buf, a, b, z, colA, colB) {
+/* 内側の輪(a)と外側の輪(b)のあいだを帯にして buf に足す(色は頂点ごと)。uvA/uvB を渡すと UV も。
+ * open: 最後の点から最初の点へ つながない(UV をくりかえす帯は 最初の点を最後にもう一度 足して閉じる) */
+function pushRing(buf, a, b, z, colA, colB, uvA, uvB, open) {
   const n = a.length, base = buf.pos.length / 3;
   for (let i = 0; i < n; i++) {
     buf.pos.push(a[i][0], a[i][1], z); buf.col.push(...colA[i]);
     buf.pos.push(b[i][0], b[i][1], z); buf.col.push(...colB[i]);
+    if (uvA) buf.uv.push(uvA[i][0], uvA[i][1], uvB[i][0], uvB[i][1]);
   }
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < (open ? n - 1 : n); i++) {
     const j = (i + 1) % n, a0 = base + i * 2, b0 = a0 + 1, a1 = base + j * 2, b1 = a1 + 1;
     buf.idx.push(a0, b0, b1, a0, b1, a1);
   }
 }
 
-const newBuf = () => ({ pos: [], col: [], idx: [] });
+const newBuf = () => ({ pos: [], col: [], idx: [], uv: [] });
+/* 三角形を すべてカメラ向き(+z から見て反時計回り)にそろえる。片面の材質(FrontSide)で描くため */
+function faceCamera(buf) {
+  const p = buf.pos, ix = buf.idx;
+  for (let t = 0; t < ix.length; t += 3) {
+    const a = ix[t] * 3, b = ix[t + 1] * 3, c = ix[t + 2] * 3;
+    const cz = (p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[b + 1] - p[a + 1]) * (p[c] - p[a]);
+    if (cz < 0) { const k = ix[t + 1]; ix[t + 1] = ix[t + 2]; ix[t + 2] = k; }
+  }
+  return buf;
+}
 function bufGeo(buf) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(buf.pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(buf.col, 3));
+  if (buf.uv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uv, 2));
   g.setIndex(buf.idx);
   return g;
 }
@@ -141,9 +161,21 @@ function mergeParts(parts) {
   return g;
 }
 const mat4 = (x, y, z, rx = 0) => new THREE.Matrix4().makeRotationX(rx).setPosition(x, y, z);
+const I4 = new THREE.Matrix4();
 
-/* 天板の表面 1024x128(一度だけ)。画像の上が奥(窓の下)、下が手前(計器盤とのさかい)。
- * 左に時刻表(スタフ)差し、右に時計置き。まん中(u .33〜.67)は「いまやること」の帯がかかるので何も置かない */
+const canvasTex = (cv, srgb) => {
+  const t = new THREE.CanvasTexture(cv);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+};
+
+/* 天板の時刻表差しの位置(テクスチャの画素。u .09〜.215, v .25〜.85。画面の左はしで切れないよう少し内寄り) */
+const CARD = { x0: Math.round(0.09 * 1024), x1: Math.round(0.215 * 1024), y0: Math.round(0.25 * 128), y1: Math.round(0.85 * 128) };
+/* 天板の時計の位置(テクスチャの u,v。v は下が0)と 時計の板の半分の大きさ(u,v) */
+const CLOCK_UV = [0.84, 1 - 0.55, 20 / 1024, 20 / 128];
+
+/* 天板の表面 1024x128(一度だけ。時刻表の紙は setTimetable で描きなおす)。画像の上が奥(窓の下)、下が手前(計器盤とのさかい)。
+ * 左に時刻表(スタフ)差し、右の時計は別の小さな板(分ごとに針が動く)。まん中(u .33〜.67)は「いまやること」の帯がかかるので何も置かない */
 function dashTexture() {
   const W = 1024, H = 128;
   const cv = document.createElement('canvas');
@@ -167,50 +199,141 @@ function dashTexture() {
     c.fillStyle = 'rgba(255,255,255,0.08)';
     c.fillRect(x, 12, 10, 1);
   }
-  /* 化粧板の継ぎ目(u .30 / .70) */
-  [0.30, 0.70].forEach((u) => {
-    const x = Math.round(u * W);
-    c.fillStyle = '#121518'; c.fillRect(x, 0, 1, H);
-    c.fillStyle = 'rgba(255,255,255,0.06)'; c.fillRect(x + 1, 0, 1, H);
-  });
-  /* 時刻表差し(u .09〜.215, v .25〜.85。画面の左はしで切れないよう少し内寄り): 黒い枠・紙・罫線・上の押さえ金具 */
+  /* (化粧板の継ぎ目は描かない: 台形の天板では ななめの線に見えて「いまやること」の帯のわきが きずのように見えた) */
+  /* 時刻表差しの台(黒い枠・落ち影・上の押さえ金具)。紙は drawCard */
   {
-    const x0 = Math.round(0.09 * W), x1 = Math.round(0.215 * W), y0 = Math.round(0.25 * H), y1 = Math.round(0.85 * H);
+    const { x0, x1, y0, y1 } = CARD;
     c.fillStyle = 'rgba(0,0,0,0.35)'; c.fillRect(x0 + 2, y0 + 3, x1 - x0, y1 - y0);   // 落ち影
     c.fillStyle = '#15181b'; c.fillRect(x0, y0, x1 - x0, y1 - y0);
-    c.fillStyle = '#d9d5c8'; c.fillRect(x0 + 3, y0 + 3, x1 - x0 - 6, y1 - y0 - 6);
-    c.fillStyle = 'rgba(0,0,0,0.35)';
-    const lh = (y1 - y0 - 10) / 7;
-    for (let k = 1; k <= 6; k++) c.fillRect(x0 + 6, Math.round(y0 + 4 + k * lh), x1 - x0 - 12, 1);
-    c.fillStyle = 'rgba(0,0,0,0.22)';
-    c.fillRect(x0 + Math.round((x1 - x0) * 0.32), y0 + 6, 1, y1 - y0 - 10);
-    c.fillStyle = '#0b0c0d'; c.fillRect(x0 - 2, y0, x1 - x0 + 4, 6);
-    c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(x0 - 2, y0 + 6, x1 - x0 + 4, 1);
   }
-  /* 時計置き(u .82〜.86): 黒い台・白い文字盤・針2本 */
-  {
-    const cx = Math.round(0.84 * W), cy = Math.round(0.55 * H);
-    c.fillStyle = 'rgba(0,0,0,0.35)';
-    c.beginPath(); c.arc(cx + 2, cy + 3, 18, 0, Math.PI * 2); c.fill();
-    c.fillStyle = '#0e1012';
-    c.beginPath(); c.arc(cx, cy, 18, 0, Math.PI * 2); c.fill();
-    c.fillStyle = '#cfd3d6';
-    c.beginPath(); c.arc(cx, cy, 11, 0, Math.PI * 2); c.fill();
-    c.strokeStyle = '#15181b'; c.lineWidth = 1;
-    c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + 6, cy - 5); c.moveTo(cx, cy); c.lineTo(cx - 1, cy - 9); c.stroke();
-    c.fillStyle = 'rgba(255,255,255,0.10)';
-    c.fillRect(cx - 16, cy - 19, 32, 1);
-  }
+  drawCard(c, null, 0);
   /* 奥ほど暗く(上30%) / 奥の見切りの影 / 手前のふちのハイライト */
   const g = c.createLinearGradient(0, 0, 0, H * 0.3);
   g.addColorStop(0, 'rgba(0,0,0,0.25)'); g.addColorStop(1, 'rgba(0,0,0,0)');
   c.fillStyle = g; c.fillRect(0, 0, W, H * 0.3);
   c.fillStyle = 'rgba(0,0,0,0.35)'; c.fillRect(0, 0, W, 4);
   c.fillStyle = 'rgba(255,255,255,0.10)'; c.fillRect(0, H - 3, W, 2);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
+  const tex = canvasTex(cv, true);
   tex.anisotropy = 8;
-  return tex;
+  return { tex, c };
+}
+
+/* 時刻表(スタフ)の紙: 6行。駅名の長さの「字のかたまり(こい線)」と 時刻の線。つぎに止まる駅の行は だいだい。
+ * 実物の字は読めない大きさ(画面で 約170x45px)なので、行ごとに長さがかわる線で「本物の時刻表」に見せる */
+function drawCard(c, names, idx) {
+  const { x0, x1, y0, y1 } = CARD;
+  c.fillStyle = '#d9d5c8'; c.fillRect(x0 + 3, y0 + 3, x1 - x0 - 6, y1 - y0 - 6);
+  const lh = (y1 - y0 - 10) / 7;
+  /* 見出しの帯(列車番号・種別のらん) */
+  c.fillStyle = 'rgba(30,34,40,0.55)'; c.fillRect(x0 + 6, y0 + 6, x1 - x0 - 12, Math.round(lh) - 3);
+  c.fillStyle = 'rgba(0,0,0,0.35)';
+  for (let k = 1; k <= 6; k++) c.fillRect(x0 + 6, Math.round(y0 + 4 + k * lh), x1 - x0 - 12, 1);
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  const xm = x0 + Math.round((x1 - x0) * 0.62);
+  c.fillRect(xm, y0 + 6, 1, y1 - y0 - 10);
+  if (names && names.length) {
+    const n = names.length;
+    const first = Math.max(0, Math.min(idx - 1, n - 6));
+    for (let r = 0; r < 6; r++) {
+      const i = first + r;
+      if (i >= n) break;
+      const yy = Math.round(y0 + 4 + (r + 1) * lh);
+      if (i === idx) { c.fillStyle = 'rgba(255,176,46,0.75)'; c.fillRect(x0 + 6, yy + 1, x1 - x0 - 12, Math.round(lh) - 1); }
+      const len = Math.min(xm - x0 - 12, 8 + String(names[i]).length * 7);
+      c.fillStyle = i < idx ? 'rgba(20,20,20,0.35)' : 'rgba(20,20,20,0.78)';
+      c.fillRect(x0 + 8, yy + Math.round(lh * 0.35), len, Math.max(2, Math.round(lh * 0.38)));
+      c.fillRect(xm + 5, yy + Math.round(lh * 0.35), x1 - xm - 14, Math.max(2, Math.round(lh * 0.38)));
+    }
+  }
+  /* 上の押さえ金具 */
+  c.fillStyle = '#0b0c0d'; c.fillRect(x0 - 2, y0, x1 - x0 + 4, 6);
+  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(x0 - 2, y0 + 6, x1 - x0 + 4, 1);
+}
+
+/* 天板の時計 64x64(黒い台・白い文字盤・目盛り・針2本・落ち影)。分が変わったときだけ描きなおす */
+function drawClock(c, min) {
+  const S = 64, cx = 30, cy = 29;
+  c.clearRect(0, 0, S, S);
+  c.fillStyle = 'rgba(0,0,0,0.35)';
+  c.beginPath(); c.arc(cx + 3, cy + 4, 27, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#0e1012';
+  c.beginPath(); c.arc(cx, cy, 27, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#cfd3d6';
+  c.beginPath(); c.arc(cx, cy, 18, 0, Math.PI * 2); c.fill();
+  c.strokeStyle = '#3a4046'; c.lineWidth = 1.5;
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI * 2, r0 = k % 3 ? 15 : 13;
+    c.beginPath(); c.moveTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0); c.lineTo(cx + Math.sin(a) * 17, cy - Math.cos(a) * 17); c.stroke();
+  }
+  const m = ((min % 1440) + 1440) % 1440;
+  const am = (m % 60) / 60 * Math.PI * 2, ah = ((m / 60) % 12) / 12 * Math.PI * 2;
+  c.strokeStyle = '#15181b'; c.lineCap = 'round';
+  c.lineWidth = 3;
+  c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.sin(ah) * 9, cy - Math.cos(ah) * 9); c.stroke();
+  c.lineWidth = 2;
+  c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.sin(am) * 14, cy - Math.cos(am) * 14); c.stroke();
+  c.fillStyle = '#15181b';
+  c.beginPath(); c.arc(cx, cy, 2, 0, Math.PI * 2); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.14)';
+  c.fillRect(cx - 24, cy - 27, 48, 2);
+}
+
+/* フリット(ガラスのふちの黒いセラミック) 64x32: 横(u)は窓のふちにそってくりかえし、縦は 絵の上(v=1)が ふち → 下(v=0)が内。
+ * ふちの1/4はべた塗り、その内は小さくなっていく網点、いちばん内は透明 */
+function fritTexture() {
+  const W = 64, H = 32, cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fff';
+  c.fillRect(0, 0, W, 8);
+  const rows = [[12, 3.2, 0], [18, 2.3, 4], [24, 1.4, 0]];
+  rows.forEach(([y, r, ox]) => {
+    for (let x = ox; x < W + 8; x += 8) { c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill(); }
+  });
+  const t = canvasTex(cv, false);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.ClampToEdgeWrapping;
+  t.anisotropy = 4;
+  return t;
+}
+
+/* 遮光幕(運転士窓の上) 512x64: 半透明の黒い布(3pxごとの織り目)・下に 6px の すそ(金具)・まん中に 10px の引き手 */
+const BLIND = { fabric: 44, hem: 6, tab: 10 };
+function blindTexture() {
+  const W = 512, H = 64, cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  c.fillStyle = 'rgba(18,22,26,0.70)';
+  c.fillRect(0, 0, W, BLIND.fabric);
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  for (let y = 1; y < BLIND.fabric; y += 3) c.fillRect(0, y, W, 1);
+  c.fillStyle = 'rgba(255,255,255,0.035)';
+  for (let x = 0; x < W; x += 3) c.fillRect(x, 0, 1, BLIND.fabric);
+  /* すそ: 金属の棒(上のふちが少し明るい) */
+  c.fillStyle = '#2b3034'; c.fillRect(0, BLIND.fabric, W, BLIND.hem);
+  c.fillStyle = 'rgba(255,255,255,0.16)'; c.fillRect(0, BLIND.fabric, W, 1);
+  c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(0, BLIND.fabric + BLIND.hem - 1, W, 1);
+  /* 引き手 */
+  const tw = 40, tx = (W - tw) / 2, ty = BLIND.fabric + BLIND.hem;
+  c.fillStyle = '#1b1f22'; c.fillRect(tx, ty, tw, BLIND.tab);
+  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(tx + 2, ty + 1, tw - 4, 1);
+  const t = canvasTex(cv, true);
+  t.anisotropy = 4;
+  return t;
+}
+
+/* ぼかしの帯 2x16: 絵の上(v=1)が不透明、下(v=0)が透明(ワイパーのふちのアンチエイリアス) */
+function featherTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 2; cv.height = 16;
+  const c = cv.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 0, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = g; c.fillRect(0, 0, 2, 16);
+  const t = canvasTex(cv, false);
+  t.generateMipmaps = false;
+  t.minFilter = THREE.LinearFilter;
+  return t;
 }
 
 export class Cockpit {
@@ -229,11 +352,16 @@ export class Cockpit {
     this._offE = new THREE.Euler();
     this._one = new THREE.Vector3(1, 1, 1);
     this._offV = [0, 0, 0, 0];
+    this._dbV = new THREE.Vector2();
+    this._dbH = 0;
     /* 材質はすべて Basic(光・トーンマッピング・霧なし)。色は update() で計器盤と同じ式で決める */
     const basic = (o) => new THREE.MeshBasicMaterial(Object.assign({ toneMapped: false, fog: false }, o));
     this.matFrame = basic({ vertexColors: true, side: THREE.DoubleSide });
     this.matSeal = basic({ side: THREE.DoubleSide });
-    this.matDash = basic({ map: dashTexture(), vertexColors: true });
+    const dt = dashTexture();
+    this._dashTex = dt.tex;
+    this._dashC = dt.c;
+    this.matDash = basic({ map: dt.tex, vertexColors: true });
     this.matDashEdge = basic({});
     /* ワイパー: 黒い腕・ブレード / ゴム / 根元のメッキ */
     this.matWiper = basic({ vertexColors: true, side: THREE.DoubleSide });   // 枠と同じシェーダ(頂点色・両面)
@@ -241,10 +369,33 @@ export class Cockpit {
     this.matChrome = basic({});
     /* 雪の日の窓の下のふちの雪(雪のときだけ、だんだん積もる) */
     this.matSill = basic({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+    /* ガラスまわり(フリット・遮光幕・映り込み・ぼかし・時計)は ぜんぶ「テクスチャ+頂点色+半透明・片面」の
+     * 同じシェーダ(重ね描きで ふえるシェーダは これ1つ) */
+    const glassM = (o) => basic(Object.assign({ vertexColors: true, transparent: true, depthWrite: false }, o));
+    this.matFrit = glassM({ map: fritTexture() });
+    this.matBlind = glassM({ map: blindTexture() });
+    /* 映り込みは天板の絵を 128x16 に縮めたもの(ぼやけた うつり。時刻表を描きなおしたときだけ 作りなおす) */
+    this._reflCv = document.createElement('canvas');
+    this._reflCv.width = 128; this._reflCv.height = 16;
+    this._reflTex = canvasTex(this._reflCv, true);
+    this._reflTex.generateMipmaps = false;
+    this._reflTex.minFilter = THREE.LinearFilter;
+    this._updRefl();
+    this.matRefl = glassM({ map: this._reflTex, blending: THREE.AdditiveBlending });
+    this.matFeather = glassM({ map: featherTexture() });
+    this._clockCv = document.createElement('canvas');
+    this._clockCv.width = this._clockCv.height = 64;
+    this._clockC = this._clockCv.getContext('2d');
+    this._clockMin = 600;
+    drawClock(this._clockC, this._clockMin);
+    this._clockTex = canvasTex(this._clockCv, true);
+    this.matClock = glassM({ map: this._clockTex, depthTest: false });
     this._tmpS = [0, 0, 0];
     this._tmpC = new THREE.Color();
-    this.light = 1;          // 室内の明るさ(昼1・夜/トンネル小)
-    this._shadeL = -1;
+    this.light = 1;          // 室内の明るさ(昼1・夜/トンネル小)。なめらか・flash なし(計器盤もこれを使う)
+    this.flash = 0;          // トンネルの灯具の速い明かり(3Dの枠と天板だけ)
+    this._tR = 1; this._tG = 1; this._tB = 1;   // 枠の色み(なめらか)
+    this._shadeL = -1; this._shadeF = 0; this._shadeT = [1, 1, 1];
     this.wiperOn = false;
     this.wiperT = 0;
     this.wiperRest = 0.012;   // 休止角(ほぼ水平・左向き。窓の下のゴムの上に寝かせる)
@@ -255,10 +406,15 @@ export class Cockpit {
     this._noSnowT = Infinity;
     this.layout = null;
     this.aspect = 0;
+    this.quality = 'mid';
+    this._ttNames = null; this._ttIdx = -1;
     this._applyShade();
   }
 
   setVisible(v) { this.root.visible = v; }
+
+  /* 窓の下のふちの雪の量(0..1)。雨のガラス(ui/rainglass.js)がワイパーのはしの雪の山に使う */
+  sillLevel() { return this._sill; }
 
   /* 頭の位置のずれ(m)と傾き(rad)。運転台が画面の中で少しだけ動き、車体に固定された物に見える */
   setHeadOffset(dx, dy, pitch, roll) {
@@ -290,7 +446,8 @@ export class Cockpit {
     this.root.matrixAutoUpdate = false;
     /* 本体のシーン用に作られていたシェーダは もう使わないので手放す(材質ごとに作りおきされて残るため)。
      * 次に描くときに上描き用だけが作られる */
-    [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill]
+    [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill,
+      this.matFrit, this.matBlind, this.matRefl, this.matFeather, this.matClock]
       .forEach((m) => m.dispose());
   }
 
@@ -299,6 +456,9 @@ export class Cockpit {
     if (!renderer || !camera) return;
     if (!this._own) this.useOverlay();
     if (!this.root.visible) return;
+    /* ワイパーのぼかしの帯は 描画バッファの 1.5画素の幅(大きさが変わったときだけ作りなおす) */
+    const dbH = renderer.getDrawingBufferSize(this._dbV).y;
+    if (dbH > 0 && dbH !== this._dbH) { this._dbH = dbH; this._buildWiperFeather(); }
     this.root.matrix.multiplyMatrices(camera.matrixWorld, this._off);
     this.root.matrixWorldNeedsUpdate = true;
     renderer.setRenderTarget(null);
@@ -355,7 +515,9 @@ export class Cockpit {
     const g0 = 0.0065 * hh, rv0 = 0.024 * hh, fb0 = 0.04 * hh;
     const sc = Math.min(1, (pillarW * 0.45) / (g0 + rv0 + 0.012 * hh));
     const fbC = Math.max(0.002 * hh, pillarW * 0.45 - (g0 + rv0) * sc);
-    const fr = newBuf(), sl = newBuf();
+    /* フリットの帯の幅(ガラスの内へ。下の辺は 35%)。u は ふちにそった長さ(帯の幅の2倍で1くりかえし) */
+    const fritW = 0.034 * hh;
+    const fr = newBuf(), sl = newBuf(), ft = newBuf();
     const holes = [];
     const ringFor = (win, side) => {
       const nrm = outwardNormals(win);
@@ -381,6 +543,17 @@ export class Cockpit {
       const cF2 = a3.map((p) => { const k = lin(trimK(yN(p))); return [k, k, k]; });
       pushRing(fr, a2, a3, z, cF1, cF2);
       holes.push(a3);
+      /* フリット: ガラスのふちから内へ。外のふち(窓ゴムとの さかい)は ゴムと同じ黒なので、
+       * 見えるふちはテクスチャの網点のぼかしになる(ふちのギザギザが出ない) */
+      const fw = wb.map((w) => -fritW * (0.35 + 0.65 * w));
+      const inn = offsetPts(win, nrm, fw);
+      const wo = win.concat([win[0]]), wi = inn.concat([inn[0]]);
+      let acc = 0;
+      /* v: ふち(窓ゴムがわ)=1(テクスチャの上のべた塗り) → 内=0(透明) */
+      const uO = wo.map((p, i) => { if (i) acc += Math.hypot(p[0] - wo[i - 1][0], p[1] - wo[i - 1][1]); return [acc / (fritW * 2), 1]; });
+      const uI = uO.map((u) => [u[0], 0]);
+      const one = wo.map(() => [1, 1, 1]);
+      pushRing(ft, wo, wi, z + 0.0005, one, one, uO, uI, true);
     };
     ringFor(winL, 1);
     ringFor(winR, -1);
@@ -402,6 +575,51 @@ export class Cockpit {
     const frame = new THREE.Mesh(bufGeo(fr), this.matFrame);
     const seals = new THREE.Mesh(bufGeo(sl), this.matSeal);
     [frame, seals].forEach((m) => { m.renderOrder = 12; m.frustumCulled = false; this.root.add(m); });
+    const frit = new THREE.Mesh(bufGeo(faceCamera(ft)), this.matFrit);
+    frit.renderOrder = 12;
+    frit.frustumCulled = false;
+    this.root.add(frit);
+
+    /* --- 遮光幕(運転士窓の上。枠のうしろ z -0.9005 に置き、窓の上のふちから 0.2 下まで。上の帯(HUD)の下に すそが見える) --- */
+    {
+      const zb = -0.9005, kz = zb / z;
+      const yT = L.top + 0.02, yBt = L.top - 0.2;
+      const xl = gl[3][0] * kz, xr = gl[2][0] * kz;
+      const yt = yT * hh * kz, yb = yBt * hh * kz;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute([xl, yb, zb, xr, yb, zb, xr, yt, zb, xl, yt, zb], 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+      g.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 3));
+      g.setIndex([0, 1, 2, 0, 2, 3]);
+      const blind = new THREE.Mesh(g, this.matBlind);
+      blind.renderOrder = 12;
+      blind.frustumCulled = false;
+      this.root.add(blind);
+      /* 雨つぶを描かない上のはし: 布と すその下のふち(ndc) */
+      L.blindBot = yT - (yT - yBt) * ((BLIND.fabric + BLIND.hem) / 64);
+    }
+
+    /* --- 天板のうすい映り込み(運転士窓の下のほう。天板の絵を上下さかさに、加算で。夜は出さない) ---
+     * 天板の奥の縁(画像の上 v=1)がガラスの下に、手前(v=0)が上に うつる。u は天板の横の位置にあわせる */
+    {
+      const zr = -0.95, kz = zr / z;
+      const xl = gl[0][0] / hw, xr = gl[1][0] / hw;   // ndc
+      const y0 = yG, y1 = yG + 0.16;
+      const uOf = (xn) => (xn / 1.12 + 1) / 2;
+      const vTop = 1 - 0.16 / Math.max(0.05, L.dash + 1.04);
+      const pos = [xl * hw * kz, y0 * hh * kz, zr, xr * hw * kz, y0 * hh * kz, zr, xr * hw * kz, y1 * hh * kz, zr, xl * hw * kz, y1 * hh * kz, zr];
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute([uOf(xl), 1, uOf(xr), 1, uOf(xr), vTop, uOf(xl), vTop], 2));
+      const k = 0.09;
+      g.setAttribute('color', new THREE.Float32BufferAttribute([k, k, k, k, k, k, 0, 0, 0, 0, 0, 0], 3));
+      g.setIndex([0, 1, 2, 0, 2, 3]);
+      this.refl = new THREE.Mesh(g, this.matRefl);
+      this.refl.renderOrder = 12;
+      this.refl.frustumCulled = false;
+      this.refl.visible = this._reflK > 0.02;
+      this.root.add(this.refl);
+    }
 
     /* --- 雪(窓の下のふち。ふちのでこぼこは決まった乱数で) --- */
     {
@@ -413,8 +631,8 @@ export class Cockpit {
         for (let i = 0; i <= N; i++) {
           const t = i / N, x = x0 + (x1 - x0) * t;
           const corner = Math.max(0, 1 - Math.min(t, 1 - t) / 0.12);
-          const h = 0.014 + 0.026 * corner * corner + (rnd() - 0.5) * 0.012;
-          const pb = P(x, yG - 0.004), pt = P(x, yG + Math.max(0.005, h));
+          const h = 0.028 + 0.05 * corner * corner + (rnd() - 0.5) * 0.012;
+          const pb = P(x, yG - 0.004), pt = P(x, yG + Math.max(0.008, h));
           sb.pos.push(pb[0], pb[1], z + 0.0015, pt[0], pt[1], z + 0.0015);
           /* 下(ゴムぎわ)は影で灰色、上の縁は白(白い景色の前でも形がわかる) */
           sb.col.push(0.5, 0.53, 0.58, 1, 1, 1);
@@ -436,10 +654,9 @@ export class Cockpit {
     const zNear = yN / (1.04 * TAN);              // ndc y = -1.04 になる奥行き
     const hwFar = -zFar * TAN * aspect * 1.12;
     const hwN = -zNear * TAN * aspect * 1.2;
+    const dp = [-hwFar, yTop, zFar, hwFar, yTop, zFar, hwN, yN, zNear, -hwN, yN, zNear];
     const dashShape = new THREE.BufferGeometry();
-    dashShape.setAttribute('position', new THREE.Float32BufferAttribute([
-      -hwFar, yTop, zFar, hwFar, yTop, zFar, hwN, yN, zNear, -hwN, yN, zNear,
-    ], 3));
+    dashShape.setAttribute('position', new THREE.Float32BufferAttribute(dp, 3));
     /* UV: 奥の縁(窓の下)が画像の上側。dp の頂点順(奥左・奥右・手前右・手前左)に合わせる */
     dashShape.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
     /* 奥ほど暗く(0.82)、手前は計器盤の上端と同じ(1.0) */
@@ -455,6 +672,36 @@ export class Cockpit {
     lip.renderOrder = 12;
     this.root.add(lip);
 
+    /* --- 天板の時計(分ごとに針が動く小さな板)。天板の三角形(奥左・手前右・奥右)の上の (u,v) の点を
+     * 同じ三角形の割合で3Dへ。縦長の画面では けいてきボタンの下になるので置かない --- */
+    this.clock = null;
+    if (!narrow) {
+      const [cu, cv, du, dv] = CLOCK_UV;
+      const V = (i) => [dp[i * 3], dp[i * 3 + 1], dp[i * 3 + 2]];
+      const fl = V(0), fR = V(1), nr = V(2), nl = V(3);
+      /* (u,v) → 天板の上の点(u+v>1 は 奥左・手前右・奥右、それ以外は 奥左・手前左・手前右 の三角形) */
+      const onDash = (u, v) => {
+        let a, b, A, B;
+        if (u + v >= 1) { a = 1 - v; b = u - a; A = nr; B = fR; }
+        else { b = u; a = 1 - v - u; A = nl; B = nr; }
+        return [0, 1, 2].map((k) => fl[k] + a * (A[k] - fl[k]) + b * (B[k] - fl[k]));
+      };
+      const cps = [onDash(cu - du, cv - dv), onDash(cu + du, cv - dv), onDash(cu + du, cv + dv), onDash(cu - du, cv + dv)];
+      const pos = [];
+      cps.forEach((p) => pos.push(p[0], p[1] + 0.0005, p[2]));
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+      g.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 3));
+      const b = { pos, idx: [0, 1, 2, 0, 2, 3], col: [], uv: [] };
+      faceCamera(b);
+      g.setIndex(b.idx);
+      this.clock = new THREE.Mesh(g, this.matClock);
+      this.clock.renderOrder = 13;
+      this.clock.frustumCulled = false;
+      this.root.add(this.clock);
+    }
+
     /* --- ワイパー(根元は運転士窓の右下。休止位置は窓の下のゴムに沿って寝ている) --- */
     const pivotNdc = [cx - cw * 0.9, L.dash + 0.024];
     const zw = -1.0;
@@ -462,33 +709,94 @@ export class Cockpit {
     this.wiper = new THREE.Group();
     this.wiper.position.set(pivotNdc[0] * hwW, pivotNdc[1] * hhW, zw);
     const armLen = hhW * 1.2;
-    /* 腕(黒い板)とブレードの背骨は同じ材質なので1つに。光の当たらない材質なので、
-     * 腕は上のふちほど少し明るく、背骨はもう一段明るくして 平らな黒い棒に見えないように */
+    /* 腕: 根元 0.012 → 0.55 のところで 0.007 まで細くなる板(先は同じ太さ)。
+     * ブレード: 腕の上(窓がわ z -0.008)に べつの背骨(上のふちが明るい)・腕とつなぐ金具2つ・背骨の上のゴム。
+     * 光の当たらない材質なので、頂点色で上のふちほど明るくして 平らな黒い棒に見えないように。
+     * ゴムも同じ材質(頂点色で #050506 の暗さ)にまとめて 1回で描く(細いゴムだけの箱は ふちが点線のようにちらつく) */
+    const armBox = new THREE.BoxGeometry(armLen * 0.95, 0.012, 0.01);
+    armBox.translate(-armLen * 0.475, 0, 0);
+    {
+      const p = armBox.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const t = Math.min(1, -p.getX(i) / (armLen * 0.55));
+        p.setY(i, p.getY(i) * (1 - t * (1 - 0.007 / 0.012)));
+      }
+    }
+    const bladeX = -armLen * 0.55, bladeL = armLen * 0.85, bY = 0.0125;
+    const kR = Math.pow(s2l(COL.rubber[0]) / s2l(COL.wiper[0]), 1 / 2.2);   // ゴムの暗さ(見た目の比率)
     const armGeo = mergeParts([
-      { geo: new THREE.BoxGeometry(armLen * 0.95, 0.016, 0.01), m: mat4(-armLen * 0.475, 0, 0), k: [0.9, 1.9] },
-      { geo: new THREE.BoxGeometry(armLen * 0.8, 0.008, 0.012), m: mat4(-armLen * 0.52, 0.011, -0.004), k: [2.0, 2.5] },
+      { geo: armBox, m: I4, k: [1.3, 2.4] },
       { geo: new THREE.CylinderGeometry(0.022, 0.024, 0.02, 12), m: mat4(0, 0, 0, Math.PI / 2), k: [1.4, 1.4] },
+      { geo: new THREE.BoxGeometry(bladeL, 0.010, 0.006), m: mat4(bladeX, bY, -0.008), k: [2.0, 4.2] },
+      { geo: new THREE.BoxGeometry(0.03, 0.012, 0.006), m: mat4(bladeX - bladeL * 0.2, bY * 0.55, -0.004), k: [1.6, 3.0] },
+      { geo: new THREE.BoxGeometry(0.03, 0.012, 0.006), m: mat4(bladeX + bladeL * 0.2, bY * 0.55, -0.004), k: [1.6, 3.0] },
+      { geo: new THREE.BoxGeometry(bladeL * 0.98, 0.0045, 0.005), m: mat4(bladeX, bY + 0.00725, -0.0085), k: [kR, kR] },
     ]);
     const arm = new THREE.Mesh(armGeo, this.matWiper);
-    /* ブレードのゴム(窓に当たる黒い帯) */
-    const rubber = new THREE.Mesh(new THREE.BoxGeometry(armLen * 0.8, 0.004, 0.006), this.matRubber);
-    rubber.position.set(-armLen * 0.52, 0.017, -0.007);
     /* 根元のメッキのキャップ */
     const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.03, 12), this.matChrome);
     cap.rotation.x = Math.PI / 2;
     cap.position.z = 0.006;
-    this.wiper.add(arm, rubber, cap);
+    this.wiper.add(arm, cap);
     this.wiper.traverse((o) => { o.renderOrder = 13; });
     this.wiper.rotation.z = -this.wiperAng;
     this.root.add(this.wiper);
     this._wiperLen = armLen;
+    this._bladeX = bladeX; this._bladeL = bladeL; this._bladeY = bY;
     this._pivotNdc = pivotNdc;
+    this._wFeather = null;
+    this._buildWiperFeather();
     this._rects = null;
+    this._sheenVars(L);
+  }
+
+  /* ワイパーのふちの ぼかしの帯(腕の下のふち・ブレードの上のふち。描画バッファの1.5画素の幅) */
+  _buildWiperFeather() {
+    if (!this.wiper || !(this._dbH > 0)) return;
+    if (this._wFeather) { this.wiper.remove(this._wFeather); this._wFeather.geometry.dispose(); this._wFeather = null; }
+    const L = this._wiperLen, w = (1.5 * 2 / this._dbH) * 1.0 * TAN;   // z=-1 の平面での 1.5画素
+    const half = (x) => 0.006 * (1 - Math.min(1, -x / (L * 0.55)) * (1 - 0.007 / 0.012));
+    const b = newBuf();
+    const zf = 0.0055;
+    /* 腕の下のふち: 根元から先まで 8つに区切る(細くなるので) */
+    const N = 8, x1 = -L * 0.95;
+    for (let i = 0; i <= N; i++) {
+      const x = (x1 * i) / N, y = -half(x);
+      b.pos.push(x, y, zf, x, y - w, zf);
+      b.uv.push(0, 1, 0, 0);   // ふち=1(不透明) → 外=0(透明)
+      const c = lin(1.3);
+      b.col.push(c, c, c, c, c, c);
+      if (i < N) { const a = i * 2; b.idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+    }
+    /* ブレードの上のふち(ゴムの上) */
+    {
+      const base = b.pos.length / 3, yT = this._bladeY + 0.0095, xa = this._bladeX - this._bladeL / 2, xb = this._bladeX + this._bladeL / 2;
+      b.pos.push(xa, yT, -0.002, xb, yT, -0.002, xb, yT + w, -0.002, xa, yT + w, -0.002);
+      b.uv.push(0, 1, 0, 1, 0, 0, 0, 0);
+      /* ゴム(#050506)の色: ワイパーの色(#0c0d0f)に対するリニアの比 */
+      const c = s2l(COL.rubber[0]) / s2l(COL.wiper[0]);
+      for (let k = 0; k < 4; k++) b.col.push(c, c, c);
+      b.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+    const m = new THREE.Mesh(bufGeo(faceCamera(b)), this.matFeather);
+    m.renderOrder = 13;
+    m.frustumCulled = false;
+    this._wFeather = m;
+    this.wiper.add(m);
+  }
+
+  /* フロントガラスの映り込み(#glass-sheen)の帯の位置を 窓の上のふち・天板の奥の縁にあわせる(CSS の calc で使う) */
+  _sheenVars(L) {
+    if (typeof document === 'undefined') return;
+    const el = document.getElementById('glass-sheen');
+    if (!el) return;
+    el.style.setProperty('--gl-top', (((1 - L.top) / 2) * 100).toFixed(2) + '%');
+    el.style.setProperty('--gl-bot', (((1 + L.dash) / 2) * 100).toFixed(2) + '%');
   }
 
   /* 雨滴を描く範囲(画面の正規化座標 0..1, 左上原点)と角の丸み(rTop/rBot: 画面の高さに対する比)。
    * 窓の形はななめの辺があるので、かならずガラスの内側になるよう内寄りの四角にする。
-   * 作りなおしたときだけ新しい配列(毎フレーム同じものを返す) */
+   * 運転士窓は遮光幕の下から(幕の上には描かない)。作りなおしたときだけ新しい配列(毎フレーム同じものを返す) */
   windowRects() {
     const L = this.layout;
     if (!L) return null;
@@ -497,48 +805,91 @@ export class Cockpit {
     const ap = L.aPillar, cx = L.cX, cw = L.cW, m = 0.004;
     this._rectsL = L;
     this._rects = [
-      { x0: toU(-1 + ap + m), x1: toU(cx - cw * 0.5 - m), y0: toV(L.top), y1: toV(L.dash + 0.012), rTop: L.rTop, rBot: L.rBot },
+      { x0: toU(-1 + ap + m), x1: toU(cx - cw * 0.5 - m), y0: toV(L.blindBot != null ? L.blindBot : L.top), y1: toV(L.dash + 0.012), rTop: 0, rBot: L.rBot },
       { x0: toU(cx + cw * 0.62 + m), x1: 1, y0: toV(L.top), y1: toV(L.dash + 0.012), rTop: L.rTop, rBot: L.rBot },
     ];
     return this._rects;
   }
 
-  /* ワイパーの根元・長さ(画面の高さに対する比)・角度。毎フレーム呼ばれるので同じ箱を書きかえて返す */
+  /* ワイパーの根元・長さ(画面の高さに対する比)・角度・ブレードの帯(腕の中心から 下 b0 〜 上 b1。画面の高さに対する比)。
+   * 毎フレーム呼ばれるので同じ箱を書きかえて返す */
   wiperScreen() {
     if (!this.layout) return null;
-    const o = this._wpS || (this._wpS = { px: 0, py: 0, len: 0, ang: 0 });
+    const o = this._wpS || (this._wpS = { px: 0, py: 0, len: 0, ang: 0, b0: 0, b1: 0 });
     o.px = (this._pivotNdc[0] + 1) / 2;
     o.py = (1 - this._pivotNdc[1]) / 2;
     o.len = (this._wiperLen / TAN) / 2;   // ndcでの腕の長さ(縦基準)
     o.ang = this.wiperAng;
+    o.b0 = -0.0075 / TAN / 2;
+    o.b1 = (this._bladeY + 0.011) / TAN / 2;
     return o;
   }
 
+  /* 映り込み用の 小さな天板の絵 */
+  _updRefl() {
+    const c = this._reflCv.getContext('2d');
+    c.clearRect(0, 0, 128, 16);
+    c.drawImage(this._dashC.canvas, 0, 0, 128, 16);
+    this._reflTex.needsUpdate = true;
+  }
+
+  /* 時刻表の紙: 運転の停車駅の名前と つぎに止まる駅の番号。かわったときだけ天板の絵を描きなおす */
+  setTimetable(names, idx) {
+    if (!this._dashC) return;
+    const key = names ? names.join('|') : '';
+    if (key === this._ttKey && idx === this._ttIdx) return;
+    this._ttKey = key; this._ttIdx = idx;
+    drawCard(this._dashC, names, idx);
+    this._dashTex.needsUpdate = true;
+    this._updRefl();
+  }
+
   /* 明るさが変わったときだけ、各部の色を計器盤と同じ式で決めなおす */
-  _shadeMat(m, col) {
-    const s = shade(col, this.light, this._tmpS);
+  _shadeMat(m, col, l) {
+    const s = shade(col, l == null ? this.light : l, this._tmpS);
     m.color.setRGB(s[0], s[1], s[2], THREE.SRGBColorSpace);
+  }
+
+  /* テクスチャの地の色 base が shade(col, l) になる倍率(リニア)を c に */
+  _ratio(c, col, base, l) {
+    const s = shade(col, l, this._tmpS);
+    c.setRGB(s2l(s[0]) / s2l(base[0]), s2l(s[1]) / s2l(base[1]), s2l(s[2]) / s2l(base[2]), THREE.LinearSRGBColorSpace);
+    return c;
   }
 
   _applyShade() {
     const l = this.light, s = this._tmpS, c = this._tmpC;
-    this._shadeMat(this.matFrame, COL.frame);
+    /* 枠・天板は トンネルの灯具の明かり(flash)も足す。色み(tint)は枠と遮光幕だけ(計器盤とのさかいに色の段がつかない) */
+    const lf = Math.min(1, l + this.flash);
+    shade(COL.frame, lf, s);
+    this.matFrame.color.setRGB(s[0] * this._tR, s[1] * this._tG, s[2] * this._tB, THREE.SRGBColorSpace);
     this._shadeMat(this.matSeal, COL.seal);
-    this._shadeMat(this.matDashEdge, COL.dashEdge);
+    this._shadeMat(this.matFrit, COL.seal);
+    this._shadeMat(this.matDashEdge, COL.dashEdge, lf);
     this._shadeMat(this.matWiper, COL.wiper);
+    this._shadeMat(this.matFeather, COL.wiper);
     this._shadeMat(this.matRubber, COL.rubber);
     this._shadeMat(this.matChrome, COL.chrome);
     this._shadeMat(this.matSill, COL.snow);
-    /* 天板: テクスチャの地(#2a2e31)が shade('#2c3237') になる倍率(リニア) */
-    shade(COL.dash, l, s);
-    const b = COL.dashBase;
-    c.setRGB(s2l(s[0]) / s2l(b[0]), s2l(s[1]) / s2l(b[1]), s2l(s[2]) / s2l(b[2]), THREE.LinearSRGBColorSpace);
-    this.matDash.color.copy(c);
+    /* 天板・時計: テクスチャの地(#2a2e31)が shade('#2c3237') になる倍率(リニア) */
+    this.matDash.color.copy(this._ratio(c, COL.dash, COL.dashBase, lf));
+    this.matClock.color.copy(c);
+    /* 遮光幕: すそ(#2b3034)が枠と同じ式で暗くなる倍率 × 色み */
+    this._ratio(c, COL.hem, COL.hem, lf);
+    this.matBlind.color.setRGB(c.r * lin(this._tR), c.g * lin(this._tG), c.b * lin(this._tB), THREE.LinearSRGBColorSpace);
+    /* 映り込み: 明るいほど(夜・トンネルは出さない) */
+    const rk = Math.min(1, Math.max(0, (l - 0.3) / 0.7));
+    this._reflK = rk;
+    this.matRefl.color.setRGB(rk, rk, rk, THREE.LinearSRGBColorSpace);
+    if (this.refl) this.refl.visible = rk > 0.02;
     this._shadeL = l;
+    this._shadeF = this.flash;
+    this._shadeT[0] = this._tR; this._shadeT[1] = this._tG; this._shadeT[2] = this._tB;
   }
 
   /* light: 0..1 室内の明るさ(計器盤 #cab の減光にも使う: cab.setLight)
-   * wiper: false / true / 'on' / 'int'(5秒休んで1回ふく)。snow: 目が外の雪の中にいる */
+   * flash: トンネルの灯具の速い明かり(なめらかにしない。枠と天板だけ) / tr,tg,tb: 枠の色み(見た目の比率)
+   * wiper: false / true / 'on' / 'int'(5秒休んで1回ふく)。snow: 目が外の雪の中にいる / clockMin: 天板の時計(分) */
   update(dt, opt) {
     const o = opt || {};
     const light = o.light == null ? 1 : o.light;
@@ -548,15 +899,33 @@ export class Cockpit {
     const now = typeof performance !== 'undefined' ? performance.now() : 0;
     const rdt = this._lt != null ? Math.min(2, (now - this._lt) / 1000) : dt;
     this._lt = now;
-    this.light += (light - this.light) * Math.min(1, Math.max(dt, rdt) * 3);
+    const a = Math.min(1, Math.max(dt, rdt) * 3);
+    this.light += (light - this.light) * a;
     if (Math.abs(this.light - light) < 0.002) this.light = light;
-    if (Math.abs(this.light - this._shadeL) > 0.005 || (this.light === light && this._shadeL !== light)) this._applyShade();
+    this.flash = o.flash > 0 ? o.flash : 0;
+    /* 枠の色みも同じ速さで(トンネルに入ったとき色がぱっと変わらない) */
+    const tr = o.tr > 0 ? o.tr : 1, tg = o.tg > 0 ? o.tg : 1, tb = o.tb > 0 ? o.tb : 1;
+    this._tR += (tr - this._tR) * a; this._tG += (tg - this._tG) * a; this._tB += (tb - this._tB) * a;
+    if (Math.abs(this._tR - tr) + Math.abs(this._tG - tg) + Math.abs(this._tB - tb) < 0.002) { this._tR = tr; this._tG = tg; this._tB = tb; }
+    const T = this._shadeT;
+    const tintMoved = Math.abs(this._tR - T[0]) > 0.003 || Math.abs(this._tG - T[1]) > 0.003 || Math.abs(this._tB - T[2]) > 0.003
+      || ((this._tR !== T[0] || this._tG !== T[1] || this._tB !== T[2]) && this._tR === tr && this._tG === tg && this._tB === tb);
+    if (Math.abs(this.light - this._shadeL) > 0.005 || (this.light === light && this._shadeL !== light)
+      || Math.abs(this.flash - this._shadeF) > 0.005 || (this.flash === 0 && this._shadeF !== 0) || tintMoved) this._applyShade();
+    /* 天板の時計: 分が変わったときだけ描きなおす */
+    if (o.clockMin != null && o.clockMin !== this._clockMin) {
+      this._clockMin = o.clockMin;
+      drawClock(this._clockC, o.clockMin);
+      this._clockTex.needsUpdate = true;
+    }
     /* 雪: 外にいるあいだ20秒かけて積もり、屋内・雪なしでは8秒でとける。
-     * 雪の日の運転のはじめ(1分以上 雪を見ていなかった)は、もう少し積もっているところから */
+     * 雪の日の運転のはじめ(1分以上 雪を見ていなかった)は、もう少し積もっているところから
+     * (運転開始の暗転の中の1コマ(dt=0)でも決めて、雪のシェーダを暗転の中で作らせる) */
+    const want = o.snow ? 1 : 0;
+    if (want && this._noSnowT > 60) this._sill = Math.max(this._sill, 0.6);
+    if (want) this._noSnowT = 0;
     if (dt > 0) {
-      const want = o.snow ? 1 : 0;
-      if (want && this._noSnowT > 60) this._sill = Math.max(this._sill, 0.6);
-      this._noSnowT = want ? 0 : this._noSnowT + dt;
+      if (!want) this._noSnowT += dt;
       this._sill += (want - this._sill) * Math.min(1, dt / (want ? 20 : 8));
       if (!want && this._sill < 0.01) this._sill = 0;
     }
@@ -565,7 +934,8 @@ export class Cockpit {
       if (this.sill.visible !== vis) this.sill.visible = vis;
       if (vis) this.matSill.opacity = Math.min(0.92, this._sill);
     }
-    /* ワイパー: 1往復1.4秒。'int' は5秒休んでから1往復。止めるときは往復の終わり(位相が一周した)で止める */
+    /* ワイパー: 1往復1.4秒。'int' は5秒休んでから1往復。止めるときは往復の終わり(位相が一周した)で止める。
+     * 両はしで少し止まる(smoothstep 2つ: 0.08〜0.42 で上がり、0.58〜0.92 で もどる) */
     if (wiper === 'on') this.wiperOn = true;
     else if (wiper === 'int' && !this.wiperOn) {
       this._rest += dt;
@@ -579,7 +949,7 @@ export class Cockpit {
         this.wiperAng = this.wiperRest;
       } else {
         this._ph0 = ph;
-        const swing = 0.5 - 0.5 * Math.cos(ph * Math.PI * 2);
+        const swing = smooth(0.08, 0.42, ph) - smooth(0.58, 0.92, ph);
         this.wiperAng = this.wiperRest + swing * 1.55;
       }
     } else {
