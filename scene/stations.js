@@ -1342,15 +1342,16 @@ export function buildFurniture(rs) {
 const SKIN = 0xd8b49a;
 function crowdRes(rs) {
   if (rs._crowdRes && rs._crowdRes.v4) return rs._crowdRes;
-  const torso = () => new THREE.CylinderGeometry(0.19, 0.16, 0.6, 7).scale(1, 1, 0.62).translate(0, 1.12, 0);
-  const arm = (sx) => new THREE.CylinderGeometry(0.045, 0.04, 0.56, 5, 1, true).translate(0, -0.28, 0).rotateZ(sx * 0.08).translate(sx * 0.23, 1.38, 0);
-  const leg = (sx) => new THREE.CylinderGeometry(0.06, 0.055, 0.78, 5, 1, true).translate(sx * 0.08, 0.43, 0);
+  /* 1人約170三角形(ホームに人が多いので、形は軽めに) */
+  const torso = () => new THREE.CylinderGeometry(0.19, 0.16, 0.6, 6).scale(1, 1, 0.62).translate(0, 1.12, 0);
+  const arm = (sx) => new THREE.CylinderGeometry(0.045, 0.04, 0.56, 4, 1, true).translate(0, -0.28, 0).rotateZ(sx * 0.08).translate(sx * 0.23, 1.38, 0);
+  const leg = (sx) => new THREE.CylinderGeometry(0.06, 0.055, 0.78, 4, 1, true).translate(sx * 0.08, 0.43, 0);
   const shoe = (sx) => new THREE.BoxGeometry(0.1, 0.06, 0.24).translate(sx * 0.08, 0.03, 0.04);
   const head = () => [
-    [new THREE.CylinderGeometry(0.05, 0.055, 0.1, 6, 1, true).translate(0, 1.46, 0), SKIN],
-    [new THREE.SphereGeometry(0.115, 7, 5).translate(0, 1.6, 0), SKIN],
+    [new THREE.CylinderGeometry(0.05, 0.055, 0.1, 4, 1, true).translate(0, 1.46, 0), SKIN],
+    [new THREE.SphereGeometry(0.115, 6, 4).translate(0, 1.6, 0), SKIN],
   ];
-  const hair = () => new THREE.SphereGeometry(0.118, 7, 3, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(1.05, 1.0, 1.08).translate(0, 1.618, -0.018);
+  const hair = () => new THREE.SphereGeometry(0.118, 6, 2, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(1.05, 1.0, 1.08).translate(0, 1.618, -0.018);
   /* 待つ人: 服(インスタンス色)+脚・くつ・頭・髪(頂点色)+リュック/肩かけかばん(3人に1人ずつ) */
   const crowd = mergeColored([
     [torso(), 0xffffff, { stCloth: 1 }], [arm(1), 0xffffff, { stCloth: 1 }], [arm(-1), 0xffffff, { stCloth: 1 }],
@@ -1358,7 +1359,6 @@ function crowdRes(rs) {
     ...head(), [hair(), 0x1d1915],
     [new THREE.BoxGeometry(0.28, 0.36, 0.14).translate(0, 1.15, -0.19), 0x23272d, { stBag: 1 }],
     [new THREE.BoxGeometry(0.08, 0.26, 0.3).translate(0.27, 0.92, 0), 0x6b4a32, { stBag: 2 }],
-    [new THREE.BoxGeometry(0.03, 0.62, 0.03).rotateZ(-0.62).translate(0.06, 1.18, 0.0), 0x4a3424, { stBag: 2 }],
   ], ['stCloth', 'stBag']);
   /* 頂点の処理: 服の部分だけインスタンス色、かばんは インスタンス番号で3種に */
   const vsPars = '#include <common>\nattribute float stCloth;\nattribute float stBag;';
@@ -1424,13 +1424,18 @@ export function buildCrowds(rs) {
   const W = rs._stw;
   const T = rs.terminal;
   const sty = stationStyles(rs);
-  const LB = lineBaker(rs);
-  const doorUV = lineBoard(rs, 'door').uv;
-  const tn = new THREE.Vector3(), dc = new THREE.Vector3();
+  const tn = new THREE.Vector3(), dc = new THREE.Vector3(), mk = new THREE.Matrix4();
   rs._crowdMeshes = [];
+  /* ドアの印の ▲▲(上から見た三角形2つ。+z が線路のほう) */
+  const arrow = new THREE.BufferGeometry();
+  arrow.setAttribute('position', new THREE.Float32BufferAttribute([
+    -0.24, 0, -0.16, -0.06, 0, -0.16, -0.15, 0, 0.17, 0.06, 0, -0.16, 0.24, 0, -0.16, 0.15, 0, 0.17,
+  ], 3));
+  arrow.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
   rs.line.stations.forEach((st, si) => {
     const isTerm = !!T && st.name === '新宿';
     const ob = (W && W.obst[si]) || [];
+    const SBk = stationBaker(rs, si);
     const stairs = sty[si].kind !== 'house' && !isTerm && !rs._inTunnel(st.s);
     /* ホームのはし(ターミナルは島式ホームの範囲) */
     const sMin = isTerm ? st.s - (T.up ? 150 : 163) : st.s - (stairs ? STAIR.foot - 2.5 : P_A - 5);
@@ -1450,7 +1455,7 @@ export function buildCrowds(rs) {
     const put = (s, lat, side, yawJ) => {
       frameInto(rs, Math.max(2, s), f);
       const yaw = Math.atan2(-side * f.left.x, -side * f.left.z) + yawJ;
-      items.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.05), yaw, sc: 0.88 + rnd() * 0.2, col: cloth[Math.floor(rnd() * cloth.length)] });
+      items.push({ s, p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.05), yaw, sc: 0.88 + rnd() * 0.2, col: cloth[Math.floor(rnd() * cloth.length)] });
       ob.push({ s, lat, r: 0.22 });
     };
     [1, -1].forEach((side) => {
@@ -1463,18 +1468,24 @@ export function buildCrowds(rs) {
         DOOR_OFF.forEach((off) => {
           const ds = upSide ? st.s - P_A + 5 + 20 * cI + off : st.s - 20 * cI - off;
           if (ds < st.s - P_A + 2 || ds > st.s + P_B - 2) return;
-          /* 足もとの印: へりから1.45m(点字ブロックのすぐうしろ) */
+          /* 足もとの印: へりから1.45m(点字ブロックのすぐうしろ)。うすい板+水色の ▲▲(駅の形に焼きこむ) */
           frameInto(rs, ds, f);
           flatT(f, tn).multiplyScalar(-side);
           dc.copy(f.p).addScaledVector(f.left, P.edge + 1.45 * side);
           dc.y = f.p.y + 1.05 + 0.006;
-          LB.quadFlat(dc, tn, 0.55, 0.45, doorUV);
+          if (SBk) {
+            SBk.quadFlat(dc, tn, 0.55, 0.45, null, 0xdfe6ea);
+            dc.y += 0.002;
+            /* ▲ の先を線路のほうへ: 箱の z = 線路のほう(左ホームは -left、右ホームは +left) */
+            mk.makeBasis(tn, UPV, dc.clone().set(f.left.x * -side, 0, f.left.z * -side)).setPosition(dc);
+            SBk.geo(arrow, { m: mk, col: 0x3d8fd6, white: true });
+          }
           /* 運転台の窓の横(停止位置の前後)・乗る人(動く)が使うドアには並べない */
           if (side > 0 && ds > st.s - 16 && ds < st.s + 14) return;
           if (side > 0 && BOARD_DOORS.some((b) => Math.abs(st.s - b - ds) < 0.5)) return;
           if (rnd() > busy) return;
           const r = rnd();
-          const nP = r < 0.4 ? 1 : r < 0.75 ? 2 : r < 0.9 ? 3 : 4;
+          const nP = r < 0.55 ? 1 : r < 0.85 ? 2 : r < 0.95 ? 3 : 4;      // 平均 約1.6人
           const rows = [2.9, 3.45];
           for (let k = 0; k < nP; k++) {
             const u = rows[k >> 1] + (rnd() - 0.5) * 0.08;
@@ -1512,6 +1523,8 @@ export function buildCrowds(rs) {
       }
     });
     if (!items.length) return;
+    /* 前(s が大きい)から順に並べる: 前を向いたカメラのうしろの人は count を減らして描かない */
+    items.sort((x, y) => y.s - x.s);
     const im = new THREE.InstancedMesh(R.crowd, R.matCrowd, items.length);
     items.forEach((it, i) => {
       q.setFromAxisAngle(UPV, it.yaw); sc.setScalar(it.sc);
@@ -1524,7 +1537,7 @@ export function buildCrowds(rs) {
     im.computeBoundingSphere();
     rs.world.add(im);
     /* 遠近の切りかえ(updatePeople): カメラから160m以内の駅だけ細かい形+影 */
-    rs._crowdMeshes.push({ im, a: st.s - P_A - 10, b: st.s + P_B + 10, lite: false });
+    rs._crowdMeshes.push({ im, a: st.s - P_A - 10, b: st.s + P_B + 10, lite: false, n: items.length, sArr: Float32Array.from(items.map((it) => it.s)) });
   });
 
   /* 屋根から下がる駅名(表も裏も読める。なまえの部分だけ) */
@@ -1734,18 +1747,31 @@ export function updatePeople(rs, dt) {
 
 /* 待つ人の遠近: カメラから160m以内の駅は細かい形+影、それより遠い駅は箱3つの形(影なし)。
  * 変わったときだけ形を差しかえる(材質・プログラムは同じ) */
+const _lodDir = new THREE.Vector3(), _lodFr = newFrame();
 function updateCrowdLod(rs) {
   const list = rs._crowdMeshes, R = rs._crowdRes;
   if (!list || !R || !R.crowdLite) return;
   const cs = rs._camS != null ? rs._camS : rs.sim ? rs.sim.pos : 0;
+  /* カメラが線路の前(s がふえる向き)を向いているか(運転台・うしろ・上空・よこ)。線路わきのカメラは反対を向く */
+  let fwd = 0;
+  if (rs.camera && rs.frames) {
+    rs.camera.getWorldDirection(_lodDir);
+    frameInto(rs, cs, _lodFr);
+    fwd = _lodDir.x * _lodFr.t.x + _lodDir.z * _lodFr.t.z;
+  }
   for (let i = 0; i < list.length; i++) {
     const e = list[i];
     const d = cs < e.a ? e.a - cs : cs > e.b ? cs - e.b : 0;
     const lite = d > 160;
-    if (lite === e.lite) continue;
-    e.lite = lite;
-    e.im.geometry = lite ? R.crowdLite : R.crowd;
-    e.im.castShadow = !lite;
+    if (lite !== e.lite) {
+      e.lite = lite;
+      e.im.geometry = lite ? R.crowdLite : R.crowd;
+      e.im.castShadow = !lite;
+    }
+    /* 前を向いているときは、カメラより8m以上うしろの人は描かない(見えない・影も落とさない) */
+    let cnt = e.n;
+    if (fwd > 0.35 && !lite) { cnt = 0; while (cnt < e.n && e.sArr[cnt] >= cs - 8) cnt++; }
+    if (e.im.count !== cnt) e.im.count = cnt;
   }
 }
 

@@ -1933,7 +1933,8 @@ export class RailScene {
         bodies.push({ x: p.x, y: f.p.y + 7.9, z: p.z, yaw: Math.atan2(f.t.x, f.t.z), sx: b - a, sy, sz });
         /* 駅名の看板: 入ってくる運転台のほうの面(線路の真上) */
         const fs = frameAt(F, this.step, sc - sz / 2 - 0.06);
-        const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3), signOf(st));
+        const sw = over ? 10 : 8;
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.18), signOf(st));
         sign.position.copy(fs.p);
         sign.position.y += 7.9 + Math.min(2.2, sy - 0.75);
         sign.lookAt(sign.position.clone().addScaledVector(fs.t, -10));

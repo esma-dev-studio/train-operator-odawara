@@ -365,17 +365,6 @@ const drawNoEntry = (c, s) => {
   c.fillStyle = '#1a1d20'; fitText(c, 'この さき', s / 2, 44 * k, s - 30 * k, 26 * k, 900);
   c.fillStyle = '#c8281e'; fitText(c, 'はいれません', s / 2, 84 * k, s - 26 * k, 25 * k, 900);
 };
-/* 乗車位置の足もとの印: うすい色の板に水色の ▲▲(上=線路のほうを指す) */
-const drawDoorMark = (c, s) => {
-  const k = s / 128;
-  c.fillStyle = '#e3e8eb'; c.fillRect(0, 0, s, s);
-  c.strokeStyle = 'rgba(40,60,80,0.35)'; c.lineWidth = 3 * k; c.strokeRect(2 * k, 2 * k, s - 4 * k, s - 4 * k);
-  c.fillStyle = '#3d8fd6';
-  [s * 0.29, s * 0.71].forEach((x) => {
-    c.beginPath(); c.moveTo(x, 18 * k); c.lineTo(x + 26 * k, 92 * k); c.lineTo(x - 26 * k, 92 * k); c.closePath(); c.fill();
-  });
-  c.fillRect(14 * k, 102 * k, s - 28 * k, 10 * k);
-};
 /* 運転士用モニターの画面: 停まっている電車の横とホーム(遠近)・黄色い線・人が3人 */
 const drawItv = (c, s) => {
   const k = s / 128;
@@ -410,7 +399,6 @@ export function lineBoard(rs, key) {
   else if (kind === 'stop8') fn = boardDraw('#ffffff', '#111111', '8', 96, 900, '#111');
   else if (kind === 'appr') fn = drawAppr(val);
   else if (kind === 'noent') fn = drawNoEntry;
-  else if (kind === 'door') fn = drawDoorMark;
   else if (kind === 'itv') fn = drawItv;
   else if (kind === 'km') { fn = boardDraw('#f2f2ee', '#16283a', val, val.length > 1 ? 70 : 84, 900, '#16283a'); small = true; }
   else if (kind === 'nori') { fn = boardDraw('#20272d', '#ffffff', val, 88, 900, '#f2c230'); small = true; }
@@ -789,20 +777,27 @@ export function buildSignals(rs, inPlat, coverAt = () => Infinity, backOk = null
     backs.push(s2);
   });
   if (backs.length) {
+    /* 700mごとのまとまりに分けて world 直下へ(見えるまとまりだけ描く。数が少ないので P6 の分割にはかからない) */
+    const cells = new Map();
+    backs.forEach((s2) => { const k = Math.floor(s2 / 700); if (!cells.has(k)) cells.set(k, []); cells.get(k).push(s2); });
+    let maxN = 1;
+    cells.forEach((list) => { maxN = Math.max(maxN, list.length); });
     const bgeo = R.backGeo.clone();
-    bgeo.setAttribute('stPlate', new THREE.InstancedBufferAttribute(new Float32Array(backs.length * 2), 2));
+    bgeo.setAttribute('stPlate', new THREE.InstancedBufferAttribute(new Float32Array(maxN * 2), 2));
     rs._sigBuilt.backGeo = bgeo;
-    const bk = new THREE.InstancedMesh(bgeo, R.mat, backs.length);
-    backs.forEach((s2, i) => {
-      frameInto(rs, s2, f);
-      q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));          // 表は上り列車のほう(こちらには裏)
-      p.copy(f.p).addScaledVector(f.left, -6.4);
-      bk.setMatrixAt(i, _m4.compose(p, q, one));
+    cells.forEach((list) => {
+      const bk = new THREE.InstancedMesh(bgeo, R.mat, list.length);
+      list.forEach((s2, i) => {
+        frameInto(rs, s2, f);
+        q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));          // 表は上り列車のほう(こちらには裏)
+        p.copy(f.p).addScaledVector(f.left, -6.4);
+        bk.setMatrixAt(i, _m4.compose(p, q, one));
+      });
+      bk.castShadow = true;
+      bk.userData.sigBack = true; bk.userData.st = true; bk.userData.noSplit = true;
+      bk.computeBoundingSphere();
+      rs.world.add(bk);
     });
-    bk.castShadow = true;
-    bk.userData.sigBack = true; bk.userData.st = true;
-    bk.computeBoundingSphere();
-    rs.world.add(bk);
   }
 
   rs._sigState = { sigs, n, asp: new Int8Array(n).fill(-1), base, glows, R };

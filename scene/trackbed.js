@@ -847,6 +847,8 @@ function accCyl(acc, a, b, r, col, caps = false, seg = 6) {
 const BRK = {
   normal: { top: 6.9, pipeBot: 5.75, msgY: 6.15, wireY: 5.1 },
   tunnel: { top: 6.2, pipeBot: 5.55, msgY: 5.85, wireY: 5.1 },
+  /* ターミナル: トロリ線は外と同じ高さ(とまっている電車のパンタグラフのすぐ上)。吊り下げ管を天井(7.4m)まで */
+  term: { top: 7.35, pipeBot: 5.75, msgY: 6.15, wireY: 5.1 },
 };
 const brkDX = (b) => Math.sqrt(Math.max(0.04, 1.1 * 1.1 - (b.pipeBot - b.wireY) ** 2));
 /* き電線・配電線: 柱から外へ 0.45 / 0.9m、高さ7.4m(がいしの上)。径間で0.55mたるむ */
@@ -880,7 +882,7 @@ function gantryGeo(xL, xR) {
   for (const x of [xL, xR]) {
     const side = Math.sign(x) || 1;
     accBar(acc, V3(x, 7.18, 0), V3(x + side * 1.0, 7.18, 0), 0.08, 0.08, AZ, steel);
-    for (const d of FEEDER_DX) accCyl(acc, V3(x + side * d, 7.22, 0), V3(x + side * d, FEEDER_Y, 0), 0.065, ins, true, 6);
+    for (const d of FEEDER_DX) accBox(acc, x + side * d, (7.22 + FEEDER_Y) / 2, 0, 0.13, FEEDER_Y - 7.22, 0.13, ins);
   }
   return accToGeometry(acc);
 }
@@ -958,7 +960,7 @@ export function buildCatenary(rs, o = {}) {
       s = b.lay.top.reduce((best, x) => (Math.abs(x - s0) < Math.abs(best - s0) ? x : best), b.lay.top[0]);
       type = 'bridge'; dy = 0.3;
     } else if (inTunnel3(s0)) type = 'tunnel';
-    else if (T && s0 > T.a && s0 < T.b) { type = 'terminal'; dy = 0.5; }
+    else if (T && s0 > T.a && s0 < T.b) type = 'terminal';
     else if (nearCross(s0)) s = s0 + 12;
     if (type === 'gantry') { const sa = stairAt(s); if (sa !== null) s = sa; }
     sup.push({ s, type, dy, k: sup.length });
@@ -967,7 +969,7 @@ export function buildCatenary(rs, o = {}) {
   const fr = newFrame();
   const m4 = new THREE.Matrix4(), bx = new THREE.Vector3(), by = new THREE.Vector3(), bz = new THREE.Vector3(), pp = new THREE.Vector3();
   const gList = { double: [], station: [], quad: [] };
-  const bList = { normal: [], tunnel: [] }, bS = { normal: [], tunnel: [] };
+  const bList = { normal: [], tunnel: [], term: [] }, bS = { normal: [], tunnel: [], term: [] };
   const offOf = (key, s) => (key === 'own' ? 0 : key === 'up' ? -3.8 : key === 'tl' || key === 'tr' ? TERM_TR[key] : quadOffAt(s, key === 'q0' ? 0 : 1, qi));
   sup.forEach((sp) => {
     frameInto(F, step, sp.s, fr);
@@ -981,7 +983,7 @@ export function buildCatenary(rs, o = {}) {
       sp.v = v;   // き電線の位置(柱の位置)に使う
       gList[v].push({ m: m4.makeBasis(fr.left, UPV, fr.t).setPosition(fr.p).clone(), s: sp.s });
     }
-    const bv = sp.type === 'tunnel' ? 'tunnel' : 'normal';
+    const bv = sp.type === 'tunnel' ? 'tunnel' : sp.type === 'terminal' ? 'term' : 'normal';
     const B = BRK[bv], DX = brkDX(B);
     const zig = sp.k % 2 ? 0.2 : -0.2;
     sp.w = {};
@@ -1018,7 +1020,7 @@ export function buildCatenary(rs, o = {}) {
     });
   });
   /* ブラケットは小さいので、カメラから約400m以内の区間だけ描く(300mごとのまとまり) */
-  [['normal', bracketGeo(BRK.normal)], ['tunnel', bracketGeo(BRK.tunnel)]].forEach(([k, geo]) => {
+  [['normal', bracketGeo(BRK.normal)], ['tunnel', bracketGeo(BRK.tunnel)], ['term', bracketGeo(BRK.term)]].forEach(([k, geo]) => {
     const cells = new Map();
     bList[k].forEach((m, i) => {
       const c = Math.floor(bS[k][i] / 300);
