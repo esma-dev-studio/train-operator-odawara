@@ -1218,7 +1218,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 #route-strip { margin-top: 1px; }
 #rs-win { height: 24px; }
 .rs-all { margin-top: 2px; }
-.gl-btn { height: 64px; }
+.hud-top .gl-btn { height: 64px; }   /* タイトルの せってい(.t-gear)は そのまま */
 #cam-label { top: calc(var(--hud-top-h) + 8px); }
 #stop-card, #badge-toast { top: calc(var(--hud-top-h) + 12px); }
 #msg-center { top: calc(var(--hud-top-h) + 24px); }
@@ -1263,13 +1263,13 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   .bh-ctx { border: 0; padding: 0; }
   #bh-v { font-size: 2rem; }
   #bh-ctx-num { font-size: 1.45rem; }
-  .gl-btn { height: auto; min-height: 64px; }
+  .hud-top .gl-btn { height: auto; min-height: 64px; }
 }
 /* 背の低い横画面(スマホの横): 帯は 44px。見出しの文字は はぶく */
 @media (max-height: 540px) and (orientation: landscape) {
   :root { --hud-top-h: 52px; }
   .hud-top { top: 6px; left: 8px; right: 8px; gap: 6px; flex-wrap: nowrap; }
-  #bighud, #drive-head, .gl-btn { height: 44px; min-height: 0; }
+  #bighud, #drive-head, .hud-top .gl-btn { height: 44px; min-height: 0; }
   #bighud { order: 0; flex: none; padding: 0 10px; gap: 8px; border-radius: 10px; }
   #bighud > .bh-row { flex: none; }
   .gl-btns { order: 0; }
