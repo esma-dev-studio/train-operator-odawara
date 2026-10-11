@@ -236,11 +236,15 @@ const GY = (c, inner, out) => {
   if (out - inner < 0.5) return -0.5;
   return -0.42 - 0.08 * Math.min(1, Math.max(0, (c - inner) / (out - inner)));
 };
+/* opts.cols = [c0, c1]: groundColumnsAt の列のうち c0〜c1 番だけを出す(のり面の下の隠れ列は c0 が0のときだけ)。
+ * 頂点色 vcol(i, c, C) の c と C は全部の列での番号・数のまま(となりの帯と境目の色がそろう) */
 export function groundStrip(F, FS, i0, i1, side, opts = {}) {
   const step = opts.step || 5;
   const shiftF = opts.shift || (() => 0);
   const vcol = opts.vcol || null;
-  const C = GROUND_COLS.L.length + 1;
+  const CA = GROUND_COLS.L.length + 1;
+  const c0 = opts.cols ? opts.cols[0] : 0, c1 = opts.cols ? opts.cols[1] : CA - 1;
+  const C = c1 - c0 + 1;
   /* 地面は2行(10m)おきで十分(三角形を半分に)。最後の行は必ず入れる */
   const rowStep = opts.rowStep || 2;
   const list = [];
@@ -258,7 +262,7 @@ export function groundStrip(F, FS, i0, i1, side, opts = {}) {
     const cols = groundColumnsAt(F, FS, i, side, sh);
     const inner = cols[1], out = cols[2];
     const ls = FS.left[i];
-    for (let c = 0; c < C; c++) {
+    for (let c = c0; c <= c1; c++) {
       const off = cols[c];
       /* 12mまでは線路の向き、45mから先はなめらかな向き */
       const w = sstep(12 + sh, 45 + sh, off);
@@ -268,7 +272,7 @@ export function groundStrip(F, FS, i0, i1, side, opts = {}) {
       pos[n * 3 + 1] = f.p.y + GY(off, inner, out);
       pos[n * 3 + 2] = f.p.z + L.z * lat;
       uv[n * 2] = lat; uv[n * 2 + 1] = i * step;
-      if (col) { const cc = vcol(i, c, C); col[n * 3] = cc[0]; col[n * 3 + 1] = cc[1]; col[n * 3 + 2] = cc[2]; }
+      if (col) { const cc = vcol(i, c, CA); col[n * 3] = cc[0]; col[n * 3 + 1] = cc[1]; col[n * 3 + 2] = cc[2]; }
       n++;
     }
     if (ri > 0) {
@@ -585,6 +589,87 @@ export const texSuburbGround = (aniso) => canvasTex(512, 512, (c) => {
   speckle(c, 512, 512, 2600, R, 0.07);
 }, { aniso });
 
+/* 家並みの屋根(64m四方。上から見た住宅地): 線路の140mより外の地面に貼る(本物の家を置かない遠く)。
+ * 縦(v)=線路の向き。32mごとに幅4.5mの路地(白い外側線)、64mごとに横の道。路地のあいだに背中合わせの2列の家。
+ * 屋根は town.js の家と同じ色(地面の頂点色で暗くなるぶん明るめに描く)、棟の線と日の当たる半分。
+ * 1割は白・灰色の陸屋根のマンション(14×20m・パラペット)、すき間の1割強は庭木の緑 */
+const ROOFSCAPE_COLS = ['#3a3d41', '#46423e', '#2e3236', '#574a3f', '#474e56', '#62564a', '#2f4a66', '#6e4634', '#55634f', '#8b5a42'];
+const ROOFSCAPE_W = [2, 2, 2, 2, 2, 2, 1, 1.5, 1, 1];
+export const texRoofscape = (aniso) => canvasTex(512, 512, (c) => {
+  const R = rngOf(4747);
+  const PX = 8;                                 // 1m = 8画素
+  const lift = (hex, k) => {                    // 地面の頂点色(約0.46倍)で暗くなるぶん、見た目(sRGB)で明るく
+    const n = parseInt(hex.slice(1), 16);
+    const f = (v) => Math.min(255, Math.round(v * k));
+    return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+  };
+  const pickRoof = () => {
+    let t = R() * ROOFSCAPE_W.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < ROOFSCAPE_COLS.length; i++) { t -= ROOFSCAPE_W[i]; if (t <= 0) return ROOFSCAPE_COLS[i]; }
+    return ROOFSCAPE_COLS[0];
+  };
+  /* 地(庭・土間・砂利。手前の郊外・市街地の地面と平均の色がそろうように: 境目の140mで色がとばない) */
+  c.fillStyle = '#7d7e66'; c.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 60; i++) {
+    c.fillStyle = ['#737a58', '#86836f', '#8d8a7c', '#78765f'][(R() * 4) | 0];
+    wrapRect(c, 512, 512, R() * 512, R() * 512, 20 + R() * 60, 20 + R() * 60);
+  }
+  /* 路地(縦・32mごと)と横の道(64mごと) */
+  const LW = 4.5 * PX;
+  const road = (x, y, w, h, vert) => {
+    c.fillStyle = '#5d5f61'; c.fillRect(x, y, w, h);
+    c.fillStyle = 'rgba(232,232,226,.85)';
+    if (vert) { c.fillRect(x + 2, y, 1, h); c.fillRect(x + w - 3, y, 1, h); } else { c.fillRect(x, y + 2, w, 1); c.fillRect(x, y + h - 3, w, 1); }
+  };
+  [0, 256].forEach((x) => road(x, 0, LW, 512, true));
+  road(0, 0, 512, LW, false);
+  /* 家の列: ブロック(路地のあいだ 27.5m)に背中合わせの2列。表は路地のほう */
+  const roofRect = (x, y, w, h, col, ridgeV) => {
+    c.fillStyle = 'rgba(0,0,0,.28)'; c.fillRect(x + 2, y + 2, w, h);   // 影(右下)
+    c.fillStyle = lift(col, 1.3); c.fillRect(x, y, w, h);
+    c.fillStyle = 'rgba(255,255,255,.13)';
+    if (ridgeV) c.fillRect(x, y, Math.floor(w / 2), h); else c.fillRect(x, y, w, Math.floor(h / 2));
+    c.fillStyle = 'rgba(0,0,0,.35)';
+    if (ridgeV) c.fillRect(x + Math.floor(w / 2), y, 1, h); else c.fillRect(x, y + Math.floor(h / 2), w, 1);
+  };
+  const block = (bx) => {
+    const x0 = bx + LW, x1 = bx + 256;            // ブロックの横の範囲(画素)
+    const mid = (x0 + x1) / 2;
+    [[x0, 1], [x1, -1]].forEach(([edge, dir]) => {
+      let y = LW + 2;
+      while (y < 512 - 8 * PX) {
+        if (R() < 0.035) {
+          /* 陸屋根のマンション(14×20m) */
+          const w = 14 * PX, h = 20 * PX;
+          if (y + h > 512 - 2) break;
+          const x = dir > 0 ? edge + 2 : edge - 2 - w;
+          c.fillStyle = 'rgba(0,0,0,.3)'; c.fillRect(x + 3, y + 3, w, h);
+          c.fillStyle = R() < 0.5 ? '#a8a8a2' : '#8f908b'; c.fillRect(x, y, w, h);
+          c.fillStyle = 'rgba(255,255,255,.35)'; c.fillRect(x, y, w, 2); c.fillRect(x, y, 2, h);
+          c.fillStyle = 'rgba(0,0,0,.18)'; c.fillRect(x, y + h - 2, w, 2); c.fillRect(x + w - 2, y, 2, h);
+          c.fillStyle = 'rgba(0,0,0,.12)'; c.fillRect(x + w * 0.3, y + h * 0.2, 14, 10);
+          y += h + 3 * PX;
+          continue;
+        }
+        const fw = (7 + R() * 3) * PX, d = (7 + R() * 2) * PX, g = (1.5 + R() * 3) * PX;
+        if (y + fw > 512 - 2) break;
+        if (R() > 0.1) {
+          const x = dir > 0 ? edge + g : edge - g - d;
+          if (Math.abs(x + d / 2 - mid) < 110) roofRect(Math.round(x), Math.round(y + 0.6 * PX), Math.round(d), Math.round(fw - 1.2 * PX), pickRoof(), R() < 0.7);
+        }
+        /* 庭木 */
+        if (R() < 0.14) {
+          c.fillStyle = R() < 0.5 ? '#3d5331' : '#34482c';
+          const tx = dir > 0 ? edge + g + d + 10 + R() * 12 : edge - g - d - 10 - R() * 12;
+          c.beginPath(); c.arc(tx, y + R() * fw, 6 + R() * 8, 0, 7); c.fill();
+        }
+        y += fw;
+      }
+    });
+  };
+  block(0); block(256);
+}, { aniso });
+
 /* トンネルの出口の明るさ(上ほど少し明るい) */
 /* グレーチング(0.5m角): 細い鋼の板が3cmごと、その直角に10cmごとの棒。すき間は暗い */
 const texGrating = () => canvasTex(64, 64, (c) => {
@@ -823,20 +908,84 @@ export function buildTrackBed(rs, o = {}) {
   };
   const cuts = rs.line.sections.river.map((r) => [r.from - 240, r.to + 240]);
   const inCut = (q) => cuts.some(([a, b]) => (q + 0.5) * step > a && (q + 0.5) * step < b);
+  /* 140mより外を「家並みの屋根」にする所: 世田谷の低層住宅地(代々木上原の先〜和泉多摩川)・郊外と、丘陵では駅の前後500m。
+   * 都心寄りの市街地は中高層と遠景のビルで埋まるので、いままでの舗装の地面のまま */
+  const sts = rs.line.stations;
+  const stS = (n) => { const st = sts.find((x) => x.name === n); return st ? st.s : null; };
+  const sA = stS('代々木上原'), sB = stS('和泉多摩川');
+  const lrLo = sA !== null && sB !== null ? Math.min(sA, sB) : 1e9, lrHi = sA !== null && sB !== null ? Math.max(sA, sB) : -1e9;
+  const roofsAt = (s, k) => (k === 1 && s > lrLo && s < lrHi) || k === 2 || (k === 3 && sts.some((st) => Math.abs(st.s - s) < 500));
   const segs = [];
   let cur = null;
   for (let q = 0; q < N; q++) {
     if (inCut(q)) { cur = null; continue; }
-    const k = kindAt((q + 0.5) * step);
+    const sq = (q + 0.5) * step;
+    const k = kindAt(sq);
     const mk = k <= 1 ? 0 : k === 2 ? 1 : 2;
-    if (!cur || cur.mk !== mk) { cur = { mk, i0: q, i1: q + 1 }; segs.push(cur); } else cur.i1 = q + 1;
+    const rf = roofsAt(sq, k);
+    if (!cur || cur.mk !== mk || cur.rf !== rf) { cur = { mk, rf, i0: q, i1: q + 1 }; segs.push(cur); } else cur.i1 = q + 1;
   }
   const gm = [M.groundUrban, M.groundSuburb, M.ground];
-  segs.forEach(({ mk, i0, i1 }) => {
+  /* 家並みの屋根の地面(groundUrban と同じ作り=同じシェーダ)。路線を作り直しても使い回す */
+  if (!M.groundRoofs) {
+    const tr = texRoofscape(o.aniso || 4); tr.repeat.set(1 / 64, 1 / 64);
+    M.groundRoofs = new THREE.MeshStandardMaterial({ map: tr, vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
+    M.groundRoofs.userData.wxMacro = true;
+    rs._keep.add(M.groundRoofs); rs._keep.add(tr);
+  }
+  const gcolR = (i, c, C) => { const v = gcol(i, c, C); return [v[0] * 1.1, v[1] * 1.1, v[2] * 1.1]; };
+  /* 家並みの屋根の帯は三角形が少ない(10mごとに2列)ので、約3kmごと・両側を1つのメッシュにまとめる
+   * (750mごとの帯の結合にかけると、前方の見える範囲だけで4回ほど描くことになる) */
+  const BLK = Math.round(3000 / step);
+  const roofBlocks = new Map();
+  segs.forEach(({ mk, rf, i0, i1 }) => {
     [1, -1].forEach((side) => {
-      add(groundStrip(F, FS, i0, i1, side, { step, shift: side > 0 ? e1 : null, vcol: gcol }), gm[mk]);
+      const sh = side > 0 ? e1 : null;
+      if (!rf) { add(groundStrip(F, FS, i0, i1, side, { step, shift: sh, vcol: gcol }), gm[mk]); return; }
+      add(groundStrip(F, FS, i0, i1, side, { step, shift: sh, vcol: gcol, cols: [0, 5] }), gm[mk]);
+      for (let a = i0; a < i1;) {
+        const b = Math.min(i1, (Math.floor(a / BLK) + 1) * BLK);
+        if (b - a >= 2) {
+          const k = Math.floor(a / BLK);
+          if (!roofBlocks.has(k)) roofBlocks.set(k, []);
+          roofBlocks.get(k).push(groundStrip(F, FS, a, b, side, { step, shift: sh, vcol: gcolR, cols: [5, 7] }));
+        }
+        a = b;
+      }
     });
   });
+  roofBlocks.forEach((list) => {
+    const g = mergeIndexed(list);
+    g.userData.noMerge = true;
+    const m = add(g, M.groundRoofs);
+    m.userData.cullCell = true;
+  });
+}
+
+/* 添字つきの形(同じ属性)を1つにまとめる(家並みの屋根の帯用) */
+function mergeIndexed(list) {
+  const names = Object.keys(list[0].attributes);
+  let nv = 0, ni = 0;
+  list.forEach((g) => { nv += g.attributes.position.count; ni += g.index.count; });
+  const out = new THREE.BufferGeometry();
+  names.forEach((nm) => {
+    const it = list[0].attributes[nm].itemSize;
+    const arr = new Float32Array(nv * it);
+    let o = 0;
+    list.forEach((g) => { arr.set(g.attributes[nm].array, o); o += g.attributes[nm].array.length; });
+    out.setAttribute(nm, new THREE.BufferAttribute(arr, it));
+  });
+  const idx = new Uint32Array(ni);
+  let k = 0, base = 0;
+  list.forEach((g) => {
+    const src = g.index.array;
+    for (let i = 0; i < src.length; i++) idx[k++] = src[i] + base;
+    base += g.attributes.position.count;
+    g.dispose();
+  });
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  out.computeBoundingSphere();
+  return out;
 }
 
 /* ---------------- 小さな部材を1つの形にまとめる道具 ---------------- */

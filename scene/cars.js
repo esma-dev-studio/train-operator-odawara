@@ -1,13 +1,48 @@
 /* =========================================================
- * scene/cars.js — 自動車(軽・ミニバン・セダン): 家の車庫・月極駐車場・踏切待ちの車
+ * scene/cars.js — 自動車(軽・ミニバン・セダン・路線バス): 家の車庫・月極駐車場・踏切待ちの車・道を走る車
  *
  * ・形は「横から見た輪郭」を左右に押し出した角柱 + 窓ガラス(グリーンハウス) + タイヤ4つ + 灯火。
  *   1台およそ110三角形。種類ごと・700mごとに1つの InstancedMesh にまとめる(描画は種類×かたまりの数だけ)。
  * ・材質は木の材質と同じシェーダ('fc-tree')を使う(新しいシェーダを増やさない):
  *   頂点色が2以上の部分(ガラス・タイヤ・灯火)は「固定色」で、インスタンス色(塗装)に染めない。
  * ・影は線路の近くの車(sh)だけ。先頭に並べて、影を描くときだけ数を減らす(town.js と同じやり方)。
+ * ・夜の灯火: 頂点色の r が 2.45 より大きい部分(前照灯・尾灯)は、インスタンス色の r が 2 以上の車
+ *   (走っている車・踏切待ちの車。止めてある車は消灯)だけ uCarLamp の強さで光る。
+ *   木と車は同じ patchTreeCar を通すので、'fc-tree' のシェーダは1つのまま。
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
+import { uFcAmb } from './facade.js';
+
+/* 灯火の強さ(夜 2.2 / 夕方 1.0 / 昼 0)。town.js の applyLook が書く。木と車の材質で共有 */
+export const uCarLamp = { value: 0 };
+
+/* 木と車の材質の onBeforeCompile の中身(1つだけ。'fc-tree' を共有する材質は必ずこれを通す)
+ * ・頂点色>=2 はインスタンス色に染めない「固定色」(幹・ガラス・タイヤ・灯火)
+ * ・インスタンス色の r>=2 は「灯火をつけている車」の印(塗装の色は 2 を引いた値)
+ * ・夜は街の照り返し(uFcAmb)で葉・車体を少しだけ持ち上げる(真っ黒の影絵にしない) */
+export function patchTreeCar(sh) {
+  sh.uniforms.uCarLamp = uCarLamp;
+  sh.uniforms.uFcAmb = uFcAmb;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying float vLamp;')
+    .replace('#include <color_vertex>', `#include <color_vertex>
+vLamp = 0.;
+#ifdef USE_COLOR
+#ifdef USE_INSTANCING_COLOR
+float fcOn = step(1.5, instanceColor.r);
+vColor.r -= 2. * fcOn * color.r;
+vLamp = step(2.45, color.r) * fcOn;
+#endif
+if (color.r > 1.5) vColor.xyz = color.xyz - 2.0;
+#endif`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform float uCarLamp;\nuniform float uFcAmb;\nvarying float vLamp;')
+    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+#ifdef USE_COLOR
+totalEmissiveRadiance += vColor.rgb * vLamp * uCarLamp;
+#endif
+totalEmissiveRadiance += diffuseColor.rgb * uFcAmb * .12 * (1. - vLamp);`);
+}
 
 /* 輪郭(x=長さ方向 0→前, y=高さ。反時計回り)・幅・ガラスの輪郭・タイヤの位置(x)・前後の灯火の高さ */
 const SPEC = {
@@ -23,15 +58,23 @@ const SPEC = {
     prof: [[0, 0.2], [4.6, 0.2], [4.6, 0.7], [3.6, 0.85], [2.9, 1.42], [1.2, 1.42], [0.5, 0.9], [0, 0.82]], w: 1.75,
     glass: [[0.51, 0.92], [3.56, 0.92], [2.99, 1.36], [1.1, 1.36]], wheels: [0.95, 3.65], head: 0.6, tail: 0.72,
   },
+  /* 路線バス(10.5m): 白い車体・灰色のすそ・つづいた窓の帯。会社の色・文字は付けない */
+  bus: {
+    prof: [[0, 0.32], [10.5, 0.32], [10.5, 2.92], [10.38, 3.1], [0.1, 3.1], [0, 2.98]], w: 2.5,
+    glass: [[-0.015, 1.25], [10.515, 1.25], [10.515, 2.65], [-0.015, 2.65]], wheels: [2.15, 7.85], head: 0.72, tail: 0.95,
+    skirt: [[0, 0.32], [10.5, 0.32], [10.5, 0.9], [0, 0.9]], r: 0.5,
+  },
 };
 export const CAR_TYPES = ['kei', 'minivan', 'sedan'];
-export const CAR_LEN = { kei: 3.39, minivan: 4.7, sedan: 4.6 };
-export const CAR_WID = { kei: 1.47, minivan: 1.7, sedan: 1.75 };
+export const CAR_LEN = { kei: 3.39, minivan: 4.7, sedan: 4.6, bus: 10.5 };
+export const CAR_WID = { kei: 1.47, minivan: 1.7, sedan: 1.75, bus: 2.5 };
 /* 白・銀が多い日本の街の車の色(sRGBの見た目) */
 export const CAR_PAINTS = [0xf2f2f0, 0xf2f2f0, 0xd9dadc, 0xd9dadc, 0x2a2c30, 0x8e939a, 0x9a2a2a, 0x2c4a7a, 0xb8a98c];
 
 /* 固定色(リニア+2)。ガラス・タイヤ・前照灯・尾灯 */
 const COL_GLASS = [2.06, 2.08, 2.1], COL_TIRE = [2.03, 2.03, 2.03], COL_HEAD = [2.92, 2.9, 2.8], COL_TAIL = [2.5, 2.04, 2.04];
+/* バスのすその灰色(固定色。2.45 より小さいこと: 灯火とまちがえない) */
+const COL_SKIRT = [2.2, 2.21, 2.22];
 
 /* 多角形(x-y平面・反時計回り。0番の頂点から全体が見えること)を z0..z1 に押し出した角柱。
  * caps: 'both' / 'z0' / 'z1'(見えない側のふたを省く) */
@@ -68,9 +111,12 @@ function lampQuad(x, y, z, w, h, nx) {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   return g;
 }
-/* タイヤ(六角柱・外側のふただけ) */
-const HEX = [];
-for (let k = 0; k < 6; k++) HEX.push([0.3 * Math.cos((k * Math.PI) / 3 + Math.PI / 6), 0.3 * Math.sin((k * Math.PI) / 3 + Math.PI / 6)]);
+/* タイヤ(六角柱・外側のふただけ。半径 r) */
+const hexOf = (r) => {
+  const a = [];
+  for (let k = 0; k < 6; k++) a.push([r * Math.cos((k * Math.PI) / 3 + Math.PI / 6), r * Math.sin((k * Math.PI) / 3 + Math.PI / 6)]);
+  return a;
+};
 
 /* 部品をまとめる(position/normal/uv(0)/color) */
 function merge(parts) {
@@ -101,18 +147,21 @@ export function geoCar(type) {
   const parts = [{ g: prism(S.prof, -hw, hw), col: [1, 1, 1] }];
   /* 窓ガラス: 車体より少しだけ外に出して、横の窓・前後のガラスとして見せる(屋根の縁は塗装のまま) */
   parts.push({ g: prism(S.glass, -hw - 0.005, hw + 0.005), col: COL_GLASS });
+  /* バスのすそ(灰色の帯) */
+  if (S.skirt) parts.push({ g: prism(S.skirt, -hw - 0.008, hw + 0.008), col: COL_SKIRT });
   /* タイヤ(軸は幅の向き。外側のふただけ) */
+  const tr = S.r || 0.3, HEX = hexOf(tr);
   S.wheels.forEach((x) => {
     [-1, 1].forEach((sd) => {
-      const poly = HEX.map(([px, py]) => [x + px, 0.3 + py]);
+      const poly = HEX.map(([px, py]) => [x + px, tr + py]);
       const zi = sd * (hw - 0.18), zo = sd * (hw + 0.02);
       parts.push({ g: sd > 0 ? prism(poly, zi, zo, 'z1') : prism(poly, zo, zi, 'z0'), col: COL_TIRE });
     });
   });
   /* 前照灯・尾灯(車体の前後の面に貼る) */
   [-1, 1].forEach((sd) => {
-    parts.push({ g: lampQuad(L + 0.006, S.head, sd * (hw - 0.22), 0.3, 0.12, 1), col: COL_HEAD });
-    parts.push({ g: lampQuad(-0.006, S.tail, sd * (hw - 0.16), 0.22, 0.16, -1), col: COL_TAIL });
+    parts.push({ g: lampQuad(L + 0.006, S.head, sd * (hw - 0.24), 0.34, 0.16, 1), col: COL_HEAD });
+    parts.push({ g: lampQuad(-0.006, S.tail, sd * (hw - 0.17), 0.24, 0.18, -1), col: COL_TAIL });
   });
   const g = merge(parts);
   /* 長さ方向(x)を +z に、中心を原点へ */
@@ -124,7 +173,7 @@ export function geoCar(type) {
 }
 
 /* 材質(RailScene ごとに1回)。木と同じ 'fc-tree' の部品・キーなので新しいシェーダはできない */
-function carMaterial(rs) {
+export function carMaterial(rs) {
   if (rs._carMatP1) return rs._carMatP1;
   const cv = document.createElement('canvas');
   cv.width = cv.height = 4;
@@ -133,13 +182,8 @@ function carMaterial(rs) {
   const white = new THREE.CanvasTexture(cv);
   white.colorSpace = THREE.SRGBColorSpace;
   const m = new THREE.MeshStandardMaterial({ map: white, color: 0xffffff, vertexColors: true, roughness: 0.35, metalness: 0.45 });
-  /* 頂点色>=2 はインスタンス色に染めず、そのままの色で(木の幹と同じしくみ) */
-  m.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader.replace('#include <color_vertex>', `#include <color_vertex>
-#ifdef USE_COLOR
-if (color.r > 1.5) vColor.xyz = color.xyz - 2.0;
-#endif`);
-  };
+  /* 頂点色>=2 はインスタンス色に染めず、そのままの色で(木の幹と同じしくみ。木と同じ patchTreeCar) */
+  m.onBeforeCompile = patchTreeCar;
   m.customProgramCacheKey = () => 'fc-tree';
   rs._keep.add(m); rs._keep.add(white);
   rs._carMatP1 = m;
@@ -155,7 +199,8 @@ export function carPaint(spot, hex, rnd) {
   return spot;
 }
 
-/* spots: [{x, y(地面), z, yaw(前=+zの向き), type, r,g,b(リニア), s, sh}] → 種類ごと・700mごとの InstancedMesh */
+/* spots: [{x, y(地面), z, yaw(前=+zの向き), type, r,g,b(リニア。r+2 で灯火をつける), s, sh}] → 種類ごと・700mごとの InstancedMesh。
+ * 各 spot に、入ったメッシュ(sp._im)と番号(sp._i)を書きもどす(踏切待ちの車を動かすため) */
 const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _one = new THREE.Vector3(1, 1, 1);
 const _y = new THREE.Vector3(0, 1, 0);
 function shadowNearOnly() { this.userData.fullCount = this.count; this.count = this.userData.nearCount; }
@@ -184,6 +229,7 @@ export function addCars(rs, spots, group) {
       _c.setRGB(sp.r, sp.g, sp.b);
       im.setColorAt(i, _c);
       if (sp.sh) near++;
+      sp._im = im; sp._i = i;
     });
     im.instanceColor.needsUpdate = true;
     im.castShadow = near > 0;
