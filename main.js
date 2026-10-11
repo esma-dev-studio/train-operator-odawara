@@ -861,7 +861,11 @@ const App = {
     this._starting = true;
     try {
       this._unlockAudio();
-      if (!again) this.line = prepareLine(this.rawLine, this.direction);
+      /* 路線は むきが おなじなら いまのものを つかう(タイトルのデモ走行と おなじ路線なら
+       * ワールドを 作りなおさないので、出発の 暗転が みじかい) */
+      if (!again && (!this.line || !this.line.meta || this.line.meta.direction !== this.direction)) {
+        this.line = prepareLine(this.rawLine, this.direction);
+      }
       /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす) */
       this.save.last = { direction: this.direction, service: this.service, daytime: this.daytime, weather: this.weather, startIdx: this.startIdx, endIdx: this.endIdx };
       this.writeSave();
@@ -1254,7 +1258,8 @@ const App = {
   _toBrake(h, c) { return h.next.dist - c.dB - Math.min(12, 3 + this.sim.v * 0.15); },
 
   /* 表示する距離を「きざみ」で まるめ、前の表示から 半きざみ以上 かわったときだけ 書きかえる
-   * (150msごとの計算で 95 → 90 → 95 と ちらつかない) */
+   * (150msごとの計算で 95 → 90 → 95 と ちらつかない)。
+   * コーチと ブレーキめやすは おなじ slot を つかう(おなじ距離が べつの数字に ならない) */
   _steady(slot, m) {
     if (!this._sd) this._sd = {};
     const prev = this._sd[slot];
@@ -1289,7 +1294,7 @@ const App = {
     } else if (pred == null) {
       if (el.pred._d !== 'none') { el.pred._d = 'none'; el.pred.style.display = 'none'; }
       const toBrake = this._toBrake(h, c);
-      txt = toBrake > 0 ? `ブレーキまで<br><b>${this._steady('bgTo', toBrake)}m</b>` : '<b>ブレーキ</b>を<br>かけよう';
+      txt = toBrake > 0 ? `ブレーキまで<br><b>${this._steady('toBrake', toBrake)}m</b>` : '<b>ブレーキ</b>を<br>かけよう';
       if (toBrake <= 0) cls = 'over';
     } else {
       const d = pred - h.next.dist;     // +: いきすぎ / -: てまえ
@@ -1301,7 +1306,7 @@ const App = {
       cls = ok ? 'ok' : d > 0 ? 'over' : '';
       setCls(el.pred, 'bg-pred ' + cls);
       /* ことば(いきすぎ/てまえ)は めもりの はしの ラベルを 光らせて しめす。文は 数字だけ */
-      txt = ok ? '<b>ぴったり</b>' : `<b>${this._steady('bgD', Math.abs(d))}</b>m`;
+      txt = ok ? '<b>ぴったり</b>' : `<b>${this._steady('pred', Math.abs(d))}</b>m`;
       act = ok ? 0 : d > 0 ? 1 : -1;
     }
     setHtml(el.txt, txt);
