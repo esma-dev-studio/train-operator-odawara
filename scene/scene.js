@@ -687,7 +687,7 @@ export class RailScene {
    * 立方体の背景(64)と環境光(PMREM 256)にする。作業用の材質はすぐ捨てる(シェーダの数は増えない) */
   _buildStandInSky() {
     this._standIn = null;
-    let geo = null, mat = null, cube = null;
+    let geo = null, mat = null, cube = null, iblRT = null;
     try {
       geo = new THREE.SphereGeometry(10, 24, 12);
       const pos = geo.attributes.position, col = [];
@@ -703,13 +703,15 @@ export class RailScene {
       mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, toneMapped: false });
       const tmp = new THREE.Scene();
       tmp.add(new THREE.Mesh(geo, mat));
-      const ibl = this._pmrem.fromScene(tmp, 0.04).texture;
+      iblRT = this._pmrem.fromScene(tmp, 0.04);
       cube = new THREE.WebGLCubeRenderTarget(64, { type: THREE.HalfFloatType });
       const cc = new THREE.CubeCamera(0.1, 100, cube);
       cc.update(this.renderer, tmp);
-      this._standIn = { ibl, bg: cube.texture, cube };
+      /* iblRT・cube は 晴れの空が届いて使わなくなったら _promoteEnv が捨てる */
+      this._standIn = { ibl: iblRT.texture, bg: cube.texture, cube, iblRT };
     } catch (e) {
       if (cube) cube.dispose();
+      if (iblRT) iblRT.dispose();
       this._standIn = null;
     }
     if (geo) geo.dispose();
@@ -1395,15 +1397,21 @@ export class RailScene {
 
   /* 準備で描く代表(材質・物の種類・形の並びが同じなら1つだけ)。ワールドの中の見えていない物
    * (遠いセル・トンネルで点く灯りなど。走っているうちに見えてくる)も入れる。
-   * ワールドの外の見えていない物(使っていない夕焼け・夜空の箱、雨・雪の粒)は入れない:
+   * 本体のシーンの直下で見えていない物(使っていない夕焼け・夜空の箱、ほかの天気の粒)は入れない:
    * 時間帯・天気が変わるときは必ず準備しなおすので、そのときに作る(いま作ると重いシェーダのぶん待たされる)。
+   * ただし いまの天気の雨・雪の粒は入れる(トンネル・屋内では かくれているだけで、外に出たとたんに見える)。
+   * 運転台の重ね描きのシーン(root が本体のシーンでない)は、見えていなくても全部入れる
+   * (タイトルのデモは外の視点から始まり、とちゅうで運転台の視点に切りかわる。そこで作ると止まる)。
    * skip(運転台の重ね描きの根)の中は入れない */
   _warmReps(root, skip) {
     const reps = [], seen = new Set();
     const world = this.world;
+    const top = root === this.scene;
+    const fx = this.weatherFx;
+    const fxKeep = top && fx ? (fx.mode === 'rain' ? fx.rain : fx.mode === 'snow' ? fx.snow : null) : null;
     const walk = (o) => {
       if (o === skip) return;
-      if (root.isScene && o.parent === root && o !== world && !o.visible) return;
+      if (top && o.parent === root && o !== world && o !== fxKeep && !o.visible) return;
       if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material && o.geometry) {
         const g = o.geometry;
         let gk = '';
@@ -1605,6 +1613,7 @@ export class RailScene {
 
   /* 作り直しで外した材質・テクスチャを、新しいワールドの準備が済んでから捨てる */
   _flushStale() {
+    this._dropStandIn();   // 準備のあと(暗転中): 使わなくなった代わりの青空も ここで
     if (!this._staleMats.length && !this._staleTex.length) return;
     const mats = this._staleMats, texs = this._staleTex;
     this._staleMats = []; this._staleTex = [];
@@ -1723,6 +1732,20 @@ export class RailScene {
     this._lateN = Object.keys(L).length;
     this._shadowDirty = true;
     if (apply) this._applyWeather();
+    this._dropStandIn();
+  }
+
+  /* 晴れの空(HDR)が届いたあと、代わりの青空(_standIn)を どこも使っていなければ捨てる(GPUの約6MB)。
+   * 背景・環境光・曇りの代わり(env.rain)のどれかが まだ使っていれば、つぎの機会まで残す */
+  _dropStandIn() {
+    const si = this._standIn;
+    if (!si || !this.env.clear || this.env.clear.placeholder) return;
+    const sc = this.scene;
+    if (sc.environment === si.ibl || sc.background === si.bg) return;
+    if (this.env.rain && (this.env.rain.ibl === si.ibl || this.env.rain.bg === si.bg)) return;
+    this._standIn = null;
+    try { if (si.iblRT) si.iblRT.dispose(); } catch (e) { /* noop */ }
+    try { if (si.cube) si.cube.dispose(); } catch (e) { /* noop */ }
   }
 
   /* 遠いセル(全線を約700m/750mごとに分けたメッシュ)を登録する。
@@ -2054,6 +2077,9 @@ export class RailScene {
     if (A.bad < 2) return null;
     A.bad = 0;
     A.up = 0;
+    /* 一度 下げたら、この起動のあいだは もう上げない(軽い場面で上げて 重い場面で下げる、の くりかえしは
+     * そのたびに画面の大きさの作りなおしで止まる) */
+    A.locked = true;
     if (cpuAvg > 9) {
       const c = this._stepCpu();
       if (c) return c;
