@@ -530,7 +530,10 @@ export function buildTown(rs) {
   };
   /* 世田谷の低層住宅地(代々木上原の先〜和泉多摩川)。駅の s で決めるので のぼり/くだり どちらでも同じ所 */
   const sA = rs._stationS('代々木上原'), sB = rs._stationS('和泉多摩川');
-  T.lowRise = (s) => sA !== null && sB !== null && s > Math.min(sA, sB) + 250 && s < Math.max(sA, sB);
+  /* 代々木上原の駅前250mは中高層のまま。のぼりは s の向きが逆なので、代々木上原の側の端をずらす */
+  const lrOk = sA !== null && sB !== null;
+  const lrLo = lrOk ? (sA < sB ? sA + 250 : sB) : 0, lrHi = lrOk ? (sA < sB ? sB : sA - 250) : -1;
+  T.lowRise = (s) => s > lrLo && s < lrHi;
   const sj = sts.find((st) => st.name === '新宿');
   T.sShinjuku = sj ? sj.s : -1e9;
   const QO = rs.quadOff || [3.8, 7.6];
@@ -904,6 +907,8 @@ function pickType(kind, h, rng) {
   if (kind === 2) return r < 0.45 ? 'mansion' : r < 0.8 ? 'corridor' : 'office';
   return r < 0.5 ? 'mansion' : 'corridor';
 }
+/* 車庫の土間コンクリートの色(リニア。乱数を使わないので、ほかの配置の乱数の並びは変わらない) */
+const PAD_COL = new THREE.Color(0x8e8c86);
 /* 車の種類。描画の回数をおさえるため、700mのかたまりごとに2種類だけ(となりのかたまりとは組み合わせが変わる) */
 const pickCar = (rng, s) => { const k = Math.floor(s / 700); return CAR_TYPES[(k + (rng() < 0.55 ? 0 : 1)) % 3]; };
 
@@ -1204,9 +1209,11 @@ function buildHouses(rs, T) {
         if (carType) {
           const clat = front + 0.3 + CAR_LEN[carType] / 2;
           const kx = fr.x + fr.lx * side * clat + fr.tx * carZ, kz = fr.z + fr.lz * side * clat + fr.tz * carZ;
-          const sp = { x: kx, y: fr.y - 0.5, z: kz, yaw: Math.atan2(side * fr.lx, side * fr.lz) + (rng() - 0.5) * 0.06, type: carType, s: sMid, sh: false };
+          const sp = { x: kx, y: fr.y - 0.45, z: kz, yaw: Math.atan2(side * fr.lx, side * fr.lz) + (rng() - 0.5) * 0.06, type: carType, s: sMid, sh: false };
           T.cars.push(carPaint(sp, pick(CAR_PAINTS, rng), rng));
-          aos.push({ x: kx, y: fr.y - 0.47, z: kz, yaw: sp.yaw, sx: CAR_WID[carType] + 0.5, sy: 1, sz: CAR_LEN[carType] + 0.4, s: sMid });
+          /* 車庫の土間コンクリート(芝生の上にじかに置かず、舗装の上に止める。小物の箱なので描画は増えない) */
+          boxes.push({ x: kx, y: fr.y - 0.51, z: kz, yaw, sx: CAR_LEN[carType] + 0.9, sy: 0.06, sz: CAR_WID[carType] + 1.0, s: sMid, sh: false, r: PAD_COL.r, g: PAD_COL.g, b: PAD_COL.b });
+          aos.push({ x: kx, y: fr.y - 0.425, z: kz, yaw: sp.yaw, sx: CAR_WID[carType] + 0.5, sy: 1, sz: CAR_LEN[carType] + 0.4, s: sMid });
           /* 木や塀が車に重ならないよう、占有にも書く(あとで内側を0.75mけずって書くので大きめに) */
           stamps.push([kx, kz, axx, axz, azx, azz, CAR_LEN[carType] / 2 + 0.75, CAR_WID[carType] / 2 + 0.75]);
         }

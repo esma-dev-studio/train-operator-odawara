@@ -354,6 +354,8 @@ const MAIN_V = /* glsl */`
   float fcPh = step(fcSc.y, 3.6) * uFcSide.x;
   float fcSide = max(step(.5, abs(normal.z)) * uFcSide.x * step(.3, fract(vFcSeed * 31.7)), fcPh * (1. - vFcRoof));
   fcW.x = mix(fcW.x, uFcSide.y, fcSide);
+  /* 塔屋は屋上にあるので、地面ぎわの汚れ・街の照り返しを付けない(高さを大きくして効かなくする) */
+  vFcH += fcPh * 40.;
   /* 屋上は壁の画素(タイル左下=腰壁)を読ませる(ガラスの映り込みを出さない) */
   fcW = mix(fcW, vec2(.002), vFcRoof);
   #ifdef USE_MAP
