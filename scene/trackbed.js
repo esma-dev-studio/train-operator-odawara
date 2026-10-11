@@ -76,6 +76,34 @@ export function fenceOffL(s, qi = curQI) {
   return Math.max(5.4, quadOffAt(s, 1, qi) + 3.6);
 }
 
+/* ---------------- 駅の見た目の型(駅名から毎回同じに決まる) ----------------
+ * kind: 'over'(線路の上の駅舎=橋上駅舎) / 'foot'(跨線橋) / 'house'(地上の駅舎)。
+ * 地下駅と新宿は 'house'。roofA: 屋根の長さ(st.s-roofA まで) / roofCol: 屋根の色。
+ * 階段のある駅(over/foot)は、階段(STAIR)と屋根がぶつからないよう屋根を短めにする */
+export const STAIR = { c: 147, top: 141, foot: 128.6 };   // 駅舎の中心 st.s-147、階段は st.s-141(上)〜st.s-128.6(下)
+const ROOF_COLS = [0x3d4a56, 0x5f554a, 0xcfd2d4];
+const hmix = (x) => {
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+};
+export function stationStyleOf(name, plain) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const u1 = hmix(h + 300), u2 = hmix(h + 23), u3 = hmix(h + 37);
+  const kind = !plain ? 'house' : u1 < 0.4 ? 'over' : u1 < 0.7 ? 'foot' : 'house';
+  const roofs = kind === 'house' ? [95, 125, 140] : [95, 125];
+  return { kind, roofCol: ROOF_COLS[Math.floor(u2 * 3) % 3], roofA: roofs[Math.floor(u3 * roofs.length) % roofs.length] };
+}
+/* 路線ぜんぶの駅の型(rs.stationStyles に作り置き。路線が変わったら作り直す) */
+export function stationStyles(rs) {
+  if (rs.stationStyles && rs._stationStylesFor === rs.line) return rs.stationStyles;
+  const T = rs.terminal;
+  rs.stationStyles = rs.line.stations.map((st) => stationStyleOf(st.name, !(T && st.name === '新宿') && !rs._inTunnel(st.s)));
+  rs._stationStylesFor = rs.line;
+  return rs.stationStyles;
+}
+
 /* ---------------- フレーム ---------------- */
 /* scene.js の buildFrames と同じ作り方(ツールから使う) */
 export function framesFromLine(line) {
@@ -563,6 +591,32 @@ const texGlowGrad = () => canvasTex(4, 64, (c) => {
 
 /* ---------------- 材質(一度だけ作って路線を作り直しても使い回す) ---------------- */
 const srgbLin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
+
+/* トンネルの壁: 灯具(12mごと・高さ4.2m。駅の担当の buildTunnelLights が s=12k+6 に置く)の光が
+ * 壁を下へ扇形に照らすようすを、壁の材質の中で描く(加算の板を使わない=重ね塗りが減る)。
+ * 壁の UV: x = 距離(m)/TUN_WALL_UV、y = 0(-0.5m)〜1(天井 TUN.H) */
+export const TUN_WALL_UV = 4;
+export const TUN_LAMP = { pitch: 12, phase: 6, y: 4.2 };
+function tunnelWallMaterial(tex) {
+  const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, side: THREE.DoubleSide, envMapIntensity: 0.5 });
+  const f = (x) => x.toFixed(3);
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+#ifdef USE_MAP
+  {
+    float tS = vMapUv.x * ${f(TUN_WALL_UV)};
+    float tD = ( fract( ( tS - ${f(TUN_LAMP.phase)} ) / ${f(TUN_LAMP.pitch)} + 0.5 ) - 0.5 ) * ${f(TUN_LAMP.pitch)};
+    float tH = vMapUv.y * ${f(TUN.H + 0.5)} - 0.5;
+    float tB = max( ${f(TUN_LAMP.y)} - tH, 0.0 ), tA = max( tH - ${f(TUN_LAMP.y)}, 0.0 );
+    float tW = 0.9 + 0.75 * tB;
+    float tF = exp( - tD * tD / ( 2.0 * tW * tW ) ) * exp( - tA * tA * 1.5 ) * exp( - tB * 0.35 );
+    totalEmissiveRadiance += diffuseColor.rgb * ( 0.06 + 0.55 * tF );
+  }
+#endif`);
+  };
+  m.customProgramCacheKey = () => 'tunwall';
+  return m;
+}
 export function ensureTrackMats(rs, aniso = 4) {
   const M = rs.M;
   if (M.sleeperBand) return M;
@@ -577,7 +631,12 @@ export function ensureTrackMats(rs, aniso = 4) {
   keep('groundUrban', new THREE.MeshStandardMaterial({ map: gu, vertexColors: true, roughness: 0.95, side: DS }));
   const gs = texSuburbGround(aniso); gs.repeat.set(1 / 48, 1 / 48);
   keep('groundSuburb', new THREE.MeshStandardMaterial({ map: gs, vertexColors: true, roughness: 1, side: DS }));
-  keep('tunnelWall', new THREE.MeshStandardMaterial({ map: texTunnelWall(aniso), roughness: 0.95, side: DS, envMapIntensity: 0.5 }));
+  keep('tunnelWall', tunnelWallMaterial(texTunnelWall(aniso)));
+  /* トンネルの天井: 壁と同じコンクリートに、ごく弱い自発光(箱の形がわかるように。プログラムは M.tunnel と同じ) */
+  const tn = rs.M.tunnel;
+  keep('tunnelCeil', new THREE.MeshStandardMaterial({
+    map: tn.map, color: tn.color.clone(), roughness: tn.roughness, side: tn.side, envMapIntensity: tn.envMapIntensity, emissive: 0x0b0c0d,
+  }));
   keep('soundWall', new THREE.MeshStandardMaterial({ map: texSoundWall(aniso), color: 0xb3b1aa, roughness: 0.9, side: DS, envMapIntensity: 1.0 }));
   keep('catenary', new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.45, roughness: 0.55 }));
   keep('bracket', new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.3, roughness: 0.5 }));
@@ -790,6 +849,10 @@ const BRK = {
   tunnel: { top: 6.2, pipeBot: 5.55, msgY: 5.85, wireY: 5.1 },
 };
 const brkDX = (b) => Math.sqrt(Math.max(0.04, 1.1 * 1.1 - (b.pipeBot - b.wireY) ** 2));
+/* き電線・配電線: 柱から外へ 0.45 / 0.9m、高さ7.4m(がいしの上)。径間で0.55mたるむ */
+const FEEDER_DX = [0.45, 0.9], FEEDER_Y = 7.4, FEEDER_SAG = 0.55;
+/* ターミナルの外側の線路(駅の担当の TR_L / TR_R と同じ: ホームのうしろ+へり) */
+const TERM_TR = { tl: 5.0 + 1.58, tr: -8.8 - 1.58 };
 
 /* 門型ビーム(柱2本+ワーレントラスの梁)。x=横(+左), y=上, z=線路方向 */
 function gantryGeo(xL, xR) {
@@ -812,6 +875,13 @@ function gantryGeo(xL, xR) {
   }
   /* 梁の両端の取付け板 */
   for (const x of [x0, x1]) accBar(acc, V3(x, yb - 0.05, 0), V3(x, yt + 0.05, 0), 0.06, 0.56, AX, dark);
+  /* 柱の上の腕(外向き1m)と、き電線・配電線をささえる茶色のがいし2個 */
+  const ins = new THREE.Color(0x6b3f2a);
+  for (const x of [xL, xR]) {
+    const side = Math.sign(x) || 1;
+    accBar(acc, V3(x, 7.18, 0), V3(x + side * 1.0, 7.18, 0), 0.08, 0.08, AZ, steel);
+    for (const d of FEEDER_DX) accCyl(acc, V3(x + side * d, 7.22, 0), V3(x + side * d, FEEDER_Y, 0), 0.065, ins, true, 6);
+  }
   return accToGeometry(acc);
 }
 
@@ -866,6 +936,18 @@ export function buildCatenary(rs, o = {}) {
   const nearCross = (s) => (rs.crossSpots || []).some((c) => Math.abs(c - s) < 9);
   /* トンネルの中と、坑口の外3mまで。坑口の面ちょうどの支持点を門型にすると、梁が坑口に埋まって柱だけ口の中に立つ */
   const inTunnel3 = (s) => rs.line.sections.tunnel.some((t) => s > t.from - 3 && s < t.to + 3);
+  /* 階段のある駅(橋上駅舎・跨線橋): 階段の上のほう(屋根が梁の高さに届くところ)には門型ビームを立てない */
+  const sty = stationStyles(rs);
+  const stairAt = (s) => {
+    for (let i = 0; i < rs.line.stations.length; i++) {
+      const st = rs.line.stations[i];
+      /* 近いほうへ逃がす(となりの支持点との間が60mをこえると架線が張れないので、ずらすのは9mまで) */
+      if (sty[i].kind !== 'house' && s > st.s - STAIR.top - 2 && s < st.s - STAIR.foot - 4.5) {
+        return s < st.s - 136 ? st.s - STAIR.top - 4 : st.s - STAIR.foot + 1.6;
+      }
+    }
+    return null;
+  };
   /* 1) 支持点(約45mごと) */
   const sup = [];
   for (let s0 = 20; s0 < L - 20; s0 += 45) {
@@ -878,6 +960,7 @@ export function buildCatenary(rs, o = {}) {
     } else if (inTunnel3(s0)) type = 'tunnel';
     else if (T && s0 > T.a && s0 < T.b) { type = 'terminal'; dy = 0.5; }
     else if (nearCross(s0)) s = s0 + 12;
+    if (type === 'gantry') { const sa = stairAt(s); if (sa !== null) s = sa; }
     sup.push({ s, type, dy, k: sup.length });
   }
   /* 2) 門型ビームと、線路ごとのブラケット */
@@ -885,14 +968,18 @@ export function buildCatenary(rs, o = {}) {
   const m4 = new THREE.Matrix4(), bx = new THREE.Vector3(), by = new THREE.Vector3(), bz = new THREE.Vector3(), pp = new THREE.Vector3();
   const gList = { double: [], station: [], quad: [] };
   const bList = { normal: [], tunnel: [] }, bS = { normal: [], tunnel: [] };
-  const offOf = (key, s) => (key === 'own' ? 0 : key === 'up' ? -3.8 : quadOffAt(s, key === 'q0' ? 0 : 1, qi));
+  const offOf = (key, s) => (key === 'own' ? 0 : key === 'up' ? -3.8 : key === 'tl' || key === 'tr' ? TERM_TR[key] : quadOffAt(s, key === 'q0' ? 0 : 1, qi));
   sup.forEach((sp) => {
     frameInto(F, step, sp.s, fr);
     const keys = ['own', 'up'];
     if (sp.type !== 'terminal') { if (quadSep(sp.s, 0, qi) >= 2.5) keys.push('q0'); if (quadSep(sp.s, 1, qi) >= 2.5) keys.push('q1'); }
+    /* ターミナル: 外側の2線(発車を待つ電車のパンタグラフの上)にも架線を張る */
+    else keys.push('tl', 'tr');
     if (sp.type === 'gantry') {
-      const v = gantryVariant(sp.s, inStation(sp.s), qi);
-      gList[sameSpan && v === 'station' ? 'double' : v].push({ m: m4.makeBasis(fr.left, UPV, fr.t).setPosition(fr.p).clone(), s: sp.s });
+      const v0 = gantryVariant(sp.s, inStation(sp.s), qi);
+      const v = sameSpan && v0 === 'station' ? 'double' : v0;
+      sp.v = v;   // き電線の位置(柱の位置)に使う
+      gList[v].push({ m: m4.makeBasis(fr.left, UPV, fr.t).setPosition(fr.p).clone(), s: sp.s });
     }
     const bv = sp.type === 'tunnel' ? 'tunnel' : 'normal';
     const B = BRK[bv], DX = brkDX(B);
@@ -975,6 +1062,22 @@ export function buildCatenary(rs, o = {}) {
         pc = c; pm = m;
       }
     });
+    /* き電線・配電線(左右の柱の上の腕から2本ずつ。門型ビームどうしの径間だけ) */
+    if (a.type === 'gantry' && b.type === 'gantry' && a.v && b.v) {
+      for (let side = 0; side < 2; side++) {
+        const out = side ? -1 : 1;
+        for (let k = 0; k < FEEDER_DX.length; k++) {
+          const xa = GANTRY_POLES[a.v][side] + out * FEEDER_DX[k], xb = GANTRY_POLES[b.v][side] + out * FEEDER_DX[k];
+          let prev = null;
+          for (let t4 = 0; t4 <= 4; t4++) {
+            const t = t4 / 4;
+            const cur = pt(a.s + (b.s - a.s) * t, xa + (xb - xa) * t, FEEDER_Y - FEEDER_SAG * 4 * t * (1 - t)).toArray();
+            if (prev) arr.push(...prev, ...cur);
+            prev = cur;
+          }
+        }
+      }
+    }
   }
   chunks.forEach((arr) => {
     if (!arr.length) return;
@@ -999,6 +1102,8 @@ export function buildTunnel(rs, o = {}) {
   });
   rs._exitGlow = { mat: glowMat, items: [], key: null };
   const portalParts = [];
+  const qi = quadInfo(rs.line);
+  const cols = [];
   const fr = newFrame(), m4 = new THREE.Matrix4(), nl = new THREE.Vector3(), nt = new THREE.Vector3();
   rs.line.sections.tunnel.forEach((t) => {
     const i0 = Math.max(0, Math.floor(t.from / step)), i1 = Math.min(N, Math.ceil(t.to / step));
@@ -1009,9 +1114,20 @@ export function buildTunnel(rs, o = {}) {
     const sEnd = Math.min(t.to, N * step);
     FT[i1] = Object.assign(frameInto(F, step, sEnd, newFrame()), { s: sEnd });
     /* 壁(型枠の目地・ケーブル受け)と天井 */
-    add(wallStrip(FT, i0, i1, WL, -0.5, H, 4, step), M.tunnelWall);
-    add(wallStrip(FT, i0, i1, WR, -0.5, H, 4, step), M.tunnelWall);
-    add(flatStrip(FT, i0, i1, (WL + WR) / 2, WL - WR + 0.6, H, 6, step), rs.M.tunnel);
+    add(wallStrip(FT, i0, i1, WL, -0.5, H, TUN_WALL_UV, step), M.tunnelWall);
+    add(wallStrip(FT, i0, i1, WR, -0.5, H, TUN_WALL_UV, step), M.tunnelWall);
+    add(flatStrip(FT, i0, i1, (WL + WR) / 2, WL - WR + 0.6, H, 6, step), M.tunnelCeil || rs.M.tunnel);
+    /* 柱の列(5mごと): 自線と上り線のあいだ(-1.9m)と、複々線の線路のあいだ(排水溝と同じ線)。
+     * 地下駅のホーム(駅の担当が別に柱を立てる)と、坑口から12mの内側は立てない */
+    const tunSt = rs.line.stations.filter((st) => st.s > t.from && st.s < t.to);
+    for (let s = Math.ceil((t.from + 12) / 5) * 5; s < t.to - 12; s += 5) {
+      if (tunSt.some((st) => s > st.s - 165 && s < st.s + 25)) continue;
+      const e0 = quadOffAt(s, 0, qi), e1 = quadOffAt(s, 1, qi);
+      cols.push([s, -1.9]);
+      /* 車体(半幅1.475m)どうしのあいだに柱(0.35m)+すき間が入るときだけ */
+      if (e0 > 3.7) cols.push([s, e0 / 2]);
+      if (e1 - e0 > 3.7) cols.push([s, (e0 + e1) / 2]);
+    }
     /* 土かぶり(トンネルの上の盛り土)と、出入口の掘割 */
     const hAt = (s) => (s < t.from ? 6.8 * sstep(t.from - RAMP, t.from, s) : s > t.to ? 6.8 * (1 - sstep(t.to, t.to + RAMP, s)) : 6.8);
     const vc = () => bankCol;
@@ -1066,6 +1182,20 @@ export function buildTunnel(rs, o = {}) {
       rs._exitGlow.items.push({ mesh: glow, from: t.from, to: t.to });
     });
   });
+  /* 柱の列: 1つの InstancedMesh(world 直下・noSplit なし → 700mマスに分けて見えるところだけ描く) */
+  if (cols.length) {
+    const cg = new THREE.BoxGeometry(0.35, H + 0.5, 0.5).translate(0, (H + 0.5) / 2 - 0.25, 0);
+    const im = new THREE.InstancedMesh(cg, M.tunnelCeil || rs.M.tunnel, cols.length);
+    const q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
+    cols.forEach(([s, lat], k) => {
+      frameInto(F, step, s, fr);
+      q.setFromAxisAngle(UPV, Math.atan2(fr.t.x, fr.t.z));
+      im.setMatrixAt(k, m4.compose(p.copy(fr.p).addScaledVector(fr.left, lat), q, one));
+    });
+    im.castShadow = false; im.receiveShadow = true;
+    im.computeBoundingSphere();
+    rs.world.add(im);
+  }
   if (portalParts.length) {
     const acc = newAcc();
     portalParts.forEach((g) => accGeo(acc, g, new THREE.Matrix4(), null));
@@ -1126,7 +1256,10 @@ export function updateExitGlow(rs) {
   if (key !== eg.key) {
     if (!indoor && rs.scene.fog && rs.scene.fog.color) {
       eg.key = key;
-      eg.mat.color.copy(rs.scene.fog.color).multiplyScalar(1.3);
+      /* トンネルの中はポストエフェクトの道(リニアの明るさ)なので、外の霧(リニア)の4.5倍にして
+       * 屋内のにじみ(ブルーム)の しきい値をこえさせる=出口が白く光って見える */
+      if (rs._fogPost && rs._fogPost.isColor) eg.mat.color.copy(rs._fogPost).multiplyScalar(4.5);
+      else eg.mat.color.copy(rs.scene.fog.color).multiplyScalar(1.3);
     } else if (eg.key === null) {
       eg.mat.color.setHex(GLOW_FALLBACK[rs.timeOfDay] || GLOW_FALLBACK.day).multiplyScalar(1.3);
       eg.key = -1;

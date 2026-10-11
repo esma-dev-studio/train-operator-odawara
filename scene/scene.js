@@ -14,13 +14,13 @@ import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/addons/OutputPass.js';
 import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
-import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople } from './stations.js';
+import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle } from './stations.js';
 import { Cockpit } from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree } from './town.js';
 import { TrainKit } from './trains.js';
 import { WeatherFx } from './weatherfx.js';
-import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper } from './trackbed.js';
+import { QUAD_OFF, quadInfo, quadOffAt, quadSep, fenceOffL, bedRuns, rowRanges, frameInto, newFrame, smoothstep, buildTrackBed, buildCatenary, buildTunnel, buildRiver, updateExitGlow, updateCatenaryLod, mergeRibbons, texPCSleeper, STAIR } from './trackbed.js';
 
 THREE.Cache.enabled = true;
 const UP = new THREE.Vector3(0, 1, 0);
@@ -1905,14 +1905,41 @@ export class RailScene {
     this._plantTrees(list, makeRng(4711));
   }
 
-  /* ---------- 駅舎(駅名看板つき) ---------- */
+  /* ---------- 駅舎(駅名看板つき) ----------
+   * 駅ごとの型(stationStyle): 'house' = 地上の駅舎(右がわ) / 'over' = 線路の上の駅舎(橋上駅舎) /
+   * 'foot' = 跨線橋。over・foot は ホームの奥(st.s-147)で線路をまたぎ、入ってくる運転台のほうへ駅名を出す
+   * (外壁は街の事務所ビルと同じ材質で、まとめて1回の描画。柱と階段は駅の形に焼きこみ済み) */
   _buildStationHouses() {
     const F = this.frames;
     const roofMat = new THREE.MeshStandardMaterial({ color: 0x3d4a56, roughness: 0.8 });
     const bodies = [];
-    this.line.stations.forEach((st) => {
+    const signOf = (st) => new THREE.MeshBasicMaterial({
+      map: boardTexture([
+        [`${st.name} 駅`, 36, 34],
+        [STATION_KANA[st.name] || '', 70, 18, 'normal'],
+      ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 96 }),
+    });
+    this.line.stations.forEach((st, si) => {
       if (this._inTunnel(st.s)) return;
       if (st.name === '新宿') return;   // 新宿は大屋根ターミナルがあるので省略
+      const sty = stationStyle(this, st, si);
+      if (sty.kind === 'over' || sty.kind === 'foot') {
+        /* 線路をまたぐ駅舎・跨線橋(下は門型ビームの上 7.9m)。右は駅前まで、左は柵の外まで */
+        const over = sty.kind === 'over';
+        const sc = st.s - STAIR.c, f = frameAt(F, this.step, sc);
+        const a = -16, b = Math.max(7.5, fenceOffL(sc, this._qi) + 1.5);
+        const sz = over ? 12 : 3.4, sy = over ? 4.4 : 3.0;
+        const p = f.p.clone().addScaledVector(f.left, (a + b) / 2);
+        bodies.push({ x: p.x, y: f.p.y + 7.9, z: p.z, yaw: Math.atan2(f.t.x, f.t.z), sx: b - a, sy, sz });
+        /* 駅名の看板: 入ってくる運転台のほうの面(線路の真上) */
+        const fs = frameAt(F, this.step, sc - sz / 2 - 0.06);
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3), signOf(st));
+        sign.position.copy(fs.p);
+        sign.position.y += 7.9 + Math.min(2.2, sy - 0.75);
+        sign.lookAt(sign.position.clone().addScaledVector(fs.t, -10));
+        this.world.add(sign);
+        return;
+      }
       const f = frameAt(F, this.step, st.s - 55);
       const g = new THREE.Group();
       /* 2階建ての駅舎(ガラスの外壁は街と同じ外壁シェーダ。全駅で1回の描画) */
@@ -1927,13 +1954,7 @@ export class RailScene {
       canopy.position.set(0, 3.15, 4.1);
       canopy.castShadow = true;
       g.add(canopy);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3),
-        new THREE.MeshBasicMaterial({
-          map: boardTexture([
-            [`${st.name} 駅`, 36, 34],
-            [STATION_KANA[st.name] || '', 70, 18, 'normal'],
-          ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 96 }),
-        }));
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.3), signOf(st));
       sign.position.set(0, 4.15, 3.29);
       g.add(sign);
       g.position.copy(p);

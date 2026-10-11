@@ -23,6 +23,30 @@ export function poolTexture() {
   return t;
 }
 
+/* ホームの屋根の灯り用の「帯」(64x128)。横(u)は中央が明るい山形、縦(v)は 0.5-0.5cos(2πv) の窓。
+ * 縦の長さの半分ずつずらして並べると、重なったところの明るさの和がちょうど1になる(つぎ目のない帯) */
+export function poolStripTexture() {
+  const W = 64, H = 128;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  const img = c.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const v = (y + 0.5) / H;
+    const a1 = 0.5 - 0.5 * Math.cos(2 * Math.PI * v);
+    for (let x = 0; x < W; x++) {
+      const u = ((x + 0.5) / W - 0.5) * 2;
+      const o = (y * W + x) * 4;
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = 255;
+      img.data[o + 3] = Math.round(255 * a1 * Math.exp(-4 * u * u));
+    }
+  }
+  c.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 /* 加算合成の材質の霧: 霧の色を混ぜる代わりに、遠いほど光を弱める */
 export function fixAdditiveFog(mat, key) {
   mat.onBeforeCompile = (sh) => {
