@@ -1172,6 +1172,7 @@ export class RailScene {
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
     this._flushStale();
+    this._warmDone = { sig: this._warmSig(), gen: this._worldGen };
   }
 
   /* 運転台を別に重ね描きする(renderOverlay がある)ときは、その部品をシーン本体のコンパイルから外す
@@ -1181,13 +1182,45 @@ export class RailScene {
     const ovl = ck && typeof ck.renderOverlay === 'function' && ck.scene && ck.scene.isScene && ck.root ? ck : null;
     let par = null;
     if (ovl && ovl.root.parent && ovl.root.parent !== ovl.scene) { par = ovl.root.parent; par.remove(ovl.root); }
+    /* いま使っていない夕焼け・夜空の箱と ほかの天気の粒は作らない(分けて作る準備 _warmReps と同じ決まり。
+     * 時間帯・天気を変えると かならず準備しなおすので、そのときに作る)。
+     * シーンから外さずに、それらをとばして たどる入れ物を渡す(光はシーンの側から集める) */
+    const sc = this.scene, skip = this._warmSkipTop();
+    const root = !skip.size ? sc : {
+      traverse: (cb) => { cb(sc); const ch = sc.children; for (let i = 0; i < ch.length; i++) if (!skip.has(ch[i])) ch[i].traverse(cb); },
+      traverseVisible: () => { /* 光はシーンの側から集める */ },
+    };
     try {
-      if (async && typeof r.compileAsync === 'function') return r.compileAsync(this.scene, this.camera);
-      r.compile(this.scene, this.camera);
+      if (async && typeof r.compileAsync === 'function') return r.compileAsync(root, this.camera, sc);
+      r.compile(root, this.camera, sc);
       return null;
     } finally {
       if (par) par.add(ovl.root);
     }
+  }
+
+  /* 準備(シェーダを作る)で とばす、本体のシーンの直下の物: いま見えていない夕焼け・夜空の箱と、
+   * いまの天気ではない雨・雪の粒。ほかの物(見えていない物も)は ぜんぶ準備する
+   * (トンネルで かくれている いまの天気の粒・あとから足される物が 走っている途中で作られないように) */
+  _warmSkipTop() {
+    const skip = new Set();
+    if (this.eveSky && !this.eveSky.visible) skip.add(this.eveSky);
+    if (this.nightSky && !this.nightSky.visible) skip.add(this.nightSky);
+    const fx = this.weatherFx;
+    if (fx) {
+      if (fx.rain && fx.mode !== 'rain') skip.add(fx.rain);
+      if (fx.snow && fx.mode !== 'snow') skip.add(fx.snow);
+    }
+    return skip;
+  }
+
+  /* シェーダの種類に かかわる見え方の目印(時間帯・天気・環境光と背景の形式・ぬれの部品を付けた材質の数)。
+   * 準備のあいだに晴れの空が届いて差しかわっても、これが同じなら シェーダは同じ(準備しなおさない) */
+  _warmSig() {
+    const sc = this.scene;
+    const t = (x) => (!x ? '-' : x.isColor ? 'c' : x.isTexture ? x.mapping + ':' + (x.image && x.image.height ? x.image.height : 0) + (x.isCubeTexture ? 'C' : 'T') : '?');
+    return this.timeOfDay + '|' + this.weather + '|' + t(sc.environment) + '|' + t(sc.background) + '|' +
+      (this._envMats ? this._envMats.size : 0);
   }
 
   /* 運転開始・起動・タイトルへ戻るときの暗転中に使う版。ほかの処理(画面の しゅっぱつカード・路線の帯)を止めない。
@@ -1241,7 +1274,19 @@ export class RailScene {
         if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
       } else {
         sliced = true;
+        const sig0 = this._warmSig();
         await this._warmSliced(gen, tell);
+        /* 準備のあいだに 晴れの空(HDR)が届いて差しかわるなどで _needPrewarm がまた立った:
+         * 見え方の目印(_warmSig)が同じなら シェーダは同じなので そのまま下ろす。ちがえば もう1回だけ分けて準備する
+         * (立てたままにすると、つぎの render が いっきに準備して止まる) */
+        if (this._needPrewarm && gen === this._worldGen && !this.glLost) {
+          this._needPrewarm = false;
+          if (this._warmSig() !== sig0) {
+            this._placeView();
+            await this._warmSliced(gen, tell);
+          }
+          env0 = this.scene.environment;
+        }
       }
     } finally {
       this._warming = Math.max(0, (this._warming || 0) - 1);
@@ -1257,7 +1302,11 @@ export class RailScene {
     r.setRenderTarget(rt0);
     this._flushStale();
     if (this.scene.environment === env0) this._needPrewarm = false;
-    if (gen === this._worldGen) this._worldNew = false;
+    if (gen === this._worldGen) {
+      this._worldNew = false;
+      /* 準備が そろったときの見え方の目印(render が 同じ見え方で いっきに準備しなおさないように) */
+      if (!this._needPrewarm) this._warmDone = { sig: this._warmSig(), gen };
+    }
     tell(1);
     try { this.render(0); } catch (e) { /* noop */ }
     /* 仕上げの絵をGPUが描き終えるまで待ってから返す(呼び出し側が暗転を明けたときに絵ができている。
@@ -1338,7 +1387,13 @@ export class RailScene {
       } else if (it.k === 'C') {
         it.p.draw();
       } else {
-        this._warmOne(it.o, null, true);
+        /* 影の深度: ふつうの描画(render)の中で影の地図を描かせる(render の外で shadowMap.render を呼ぶと
+         * 光の状態がなくて何も作られない)。カメラは WARM_LAYER だけなので、影も本体も その1つだけ */
+        this._warmOne(it.o, () => {
+          this.scene.background = null;
+          r.setRenderTarget(mainRT);
+          r.render(this.scene, cam);
+        }, true);
       }
     };
     const prog = () => (r.info.programs ? r.info.programs.length : 0);
@@ -1397,21 +1452,19 @@ export class RailScene {
 
   /* 準備で描く代表(材質・物の種類・形の並びが同じなら1つだけ)。ワールドの中の見えていない物
    * (遠いセル・トンネルで点く灯りなど。走っているうちに見えてくる)も入れる。
-   * 本体のシーンの直下で見えていない物(使っていない夕焼け・夜空の箱、ほかの天気の粒)は入れない:
+   * 本体のシーンの直下の、いま使っていない夕焼け・夜空の箱と ほかの天気の粒(_warmSkipTop)は入れない:
    * 時間帯・天気が変わるときは必ず準備しなおすので、そのときに作る(いま作ると重いシェーダのぶん待たされる)。
-   * ただし いまの天気の雨・雪の粒は入れる(トンネル・屋内では かくれているだけで、外に出たとたんに見える)。
-   * 運転台の重ね描きのシーン(root が本体のシーンでない)は、見えていなくても全部入れる
+   * ほかの物は見えていなくても入れる(トンネル・屋内で かくれている いまの天気の粒は、外に出たとたんに見える)。
+   * 運転台の重ね描きのシーン(root が本体のシーンでない)も、見えていなくても全部入れる
    * (タイトルのデモは外の視点から始まり、とちゅうで運転台の視点に切りかわる。そこで作ると止まる)。
    * skip(運転台の重ね描きの根)の中は入れない */
   _warmReps(root, skip) {
     const reps = [], seen = new Set();
-    const world = this.world;
     const top = root === this.scene;
-    const fx = this.weatherFx;
-    const fxKeep = top && fx ? (fx.mode === 'rain' ? fx.rain : fx.mode === 'snow' ? fx.snow : null) : null;
+    const skipTop = top ? this._warmSkipTop() : null;
     const walk = (o) => {
       if (o === skip) return;
-      if (top && o.parent === root && o !== world && o !== fxKeep && !o.visible) return;
+      if (skipTop && o.parent === root && skipTop.has(o)) return;
       if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material && o.geometry) {
         const g = o.geometry;
         let gk = '';
@@ -1465,7 +1518,7 @@ export class RailScene {
         o.onBeforeShadow = function (rr, ob, cm, sc, geo, dm, grp) { dm.needsUpdate = true; obs.call(this, rr, ob, cm, sc, geo, dm, grp); };
         const sm = this.renderer.shadowMap;
         sm.needsUpdate = true;
-        sm.render([this.sun], this.scene, this.camera);
+        if (draw) draw();
         sm.needsUpdate = false;
       } else if (draw) {
         draw();
@@ -3658,7 +3711,13 @@ export class RailScene {
     /* 走っている間に届いた空(HDR)は、止まっているときに使いはじめる */
     if (this._lateN && (sim.ended || sim.v < 0.05)) this._promoteEnv(true);
     /* 時間帯・天気が変わった直後は、描く前に使うシェーダをまとめて準備 */
-    if (this._needPrewarm) this.prewarm(true);
+    if (this._needPrewarm) {
+      /* 同じ路線・時間帯・天気・空の形式のまま(タイトルへ もどる・同じ条件で もう一回 など)で
+       * 前の準備が そろっているなら シェーダは同じ。いっきに準備しなおさない(iPadで止まる) */
+      const W = this._warmDone;
+      if (W && W.gen === this._worldGen && !this._worldNew && W.sig === this._warmSig()) this._needPrewarm = false;
+      else this.prewarm(true);
+    }
     this._updateShadow(dt);
     /* 遠景クリップより遠いセルは描かない */
     this._cullTick(false);
