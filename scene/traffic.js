@@ -52,6 +52,8 @@ class AiTrain {
       this.model = rs.makeTrainModel(this.nCars, { kind: this.kind, dest: this.dest });
     }
     this.model.group.userData.aiTag = `${this.kind}|${this.dest}`;
+    /* 毎フレーム動く(ワールドの行列を固める _freezeStatic の対象にしない) */
+    this.model.group.userData.dyn = true;
     rs.world.add(this.model.group);
     rs.setTrainLights(this.model, { head: true, tail: true });
     this.v = this.v0 || 0;
@@ -144,6 +146,7 @@ export class Traffic {
     const dest = rs.line.meta.direction === 'up' ? '新宿' : '新百合ヶ丘';
     this.own = rs.makeTrainModel(8, { kind: sim ? sim.serviceKey : 'local', dest, own: true });
     this.own.group.visible = false;
+    this.own.group.userData.dyn = true;   // 外から見るときに毎フレーム動く(行列を固めない)
     rs.world.add(this.own.group);
     rs.setTrainLights(this.own, { head: true, tail: true });
     this.reset(sim);
