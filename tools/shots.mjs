@@ -145,6 +145,8 @@ for (const sc of pick) {
         if (next == null) return null;
         for (let i = 0; i < 3000 && !sim.ended && sim.pos < next - m; i++) __test.advance(0.5);
         S._camPos = null;
+        /* 一気に近づいたので、遮断機・警報灯を いまの位置の状態まで すすめておく(下りきった腕) */
+        if (typeof S._updateCrossings === 'function') { for (let k = 0; k < 4; k++) S._updateCrossings(2); }
         return { crossing: Math.round(next), pos: Math.round(sim.pos) };
       }, sc.toCrossing);
       if (!r) errors.push(`${sc.name}: この先に踏切がない`);
@@ -205,14 +207,14 @@ for (const sc of pick) {
     });
   }
   await page.waitForTimeout(sc.wait || 2500);
+  /* シェーダの準備(prewarmAsync)が まだ続いていれば 終わるまで(ソフト描画では 出発の10秒の待ちを こえることがある) */
+  await page.waitForFunction(() => { const S = __test.app.scene; return !S || !S._warming; }, null, { timeout: 180000, polling: 250 })
+    .catch(() => errors.push(`${sc.name}: シェーダの準備が終わらない`));
   /* 運転開始の暗転(#fade)が ソフト描画では なかなか明けないので、明けきるまで待つ */
   await page.waitForFunction(() => {
     const f = document.querySelector('#fade');
     return !f || parseFloat(getComputedStyle(f).opacity) < 0.01;
   }, null, { timeout: 30000, polling: 200 }).catch(() => errors.push(`${sc.name}: 暗転が明けない`));
-  /* シェーダの準備(prewarmAsync)が まだ続いていれば 終わるまで(ソフト描画では 出発の10秒の待ちを こえることがある) */
-  await page.waitForFunction(() => { const S = __test.app.scene; return !S || !S._warming; }, null, { timeout: 180000, polling: 250 })
-    .catch(() => errors.push(`${sc.name}: シェーダの準備が終わらない`));
   /* 画面の部品の登場アニメ・切りかえ(ブレーキめやす・「8」の目印など)が おわるまで(くりかえしのアニメは のぞく)。
    * ソフト描画では CSS の時計が おくれるので */
   await page.waitForFunction(() => document.getAnimations().every((a) => {
