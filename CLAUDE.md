@@ -26,6 +26,16 @@
 - 3Dステージは1つだけ（タイトル・選択画面の背景でも自動運転のデモ列車が走る）。路線(方向)が変わると
   `RailScene.setWorld()` でワールドを作り直す。全線ぶんの InstancedMesh・帯は `_splitInstances`/`_splitRibbons`
   で約700m単位に分割している（視錐台カリングのため。新しい沿線物も world 直下に足せば自動で分割される）。
+  分割したセルは遠いと描かない(`userData.cullCell`)ので、自分で見え隠れを切り替える物は `cullCell=false` か
+  `material.visible` で切り替える。作ったあと動かす物には `userData.dyn = true`（静的な物は行列を凍結している）。
+  ワールドは `setWorldAsync` で小分けに作り、シェーダは `prewarmAsync` で暗転のあいだに先に作る。
+- シェーダ数は少なく保つ（q=mid で 80 以下）: `onBeforeCompile` には必ず固定の `customProgramCacheKey`。
+  ぬれ・雪は `scene/look.js` の共通部品だけで扱い、時間帯×天気の光・霧・ブルームの数値も look.js の表に集める。
+  材質を物ごとに clone しない。
+- 古いiPad Safari のため `?.` / `??` / `||=` は使わない。新しいCSS(color-mix など)には代わりの値を用意する。
+- 画面の作りは5つの係に分かれている: 街 `town.js`/`facade.js`/`cars.js`/`shopsign.js`/`roadtraffic.js`、
+  駅と線路 `stations.js`/`signage.js`/`trackbed.js`/`lightpool.js`、光 `look.js`/`weatherfx.js`、
+  運転台 `cockpit.js`+`cab/cab.js`、画面とHUD `main.js`/`ui/`。scene.js は組み立て・描画の流れ・カメラ。
 - `sw.js` の `VERSION` は公開のたびに上げる（上げないとホーム画面版のiPadが古いまま）。ファイルを増やしたら `CORE` にも足し、
   `node tools/check-sw.mjs` で漏れがないか確認する（漏れるとオフライン起動が読み込み中で止まる）。
 
@@ -38,6 +48,8 @@
   ソフトウェア描画(swiftshader)はブルームが極端に遅いので `q=low` で確認し、見た目確認は実GPUで。
   ヘッドレスEdgeは `--enable-gpu --use-angle=d3d11` で**実GPU描画**になる
   （スクショの見た目確認・fps計測はこちら。`--enable-unsafe-swiftshader` は保険）。
+- 見た目の確認: `node tools/shots.mjs <出力先> [場面名の一部...]` で決まった40場面を撮り、
+  `calls.json` の draw call(≤230)・三角形(≤40万)・シェーダ数(≤80) も見る。
 - 音は `tools/audio-test.html`（試聴台）。
 - 色の注意: three.js r152+ は色管理が有効。`setRGB`/頂点色は**リニア解釈**なので、
   見た目(sRGB)で指定したい時は `THREE.SRGBColorSpace` を渡すか `pow(x, 2.2)` する。
