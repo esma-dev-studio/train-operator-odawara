@@ -84,10 +84,17 @@ export class RoadTraffic {
   _spawn(rs, car, eye) {
     const runs = rs._roadRuns, pos = rs.sim.pos;
     car.on = false;
+    /* 近くの側道だけから選ぶ(全部の中から選ぶと、ほとんどが遠くて出せない) */
+    let nNear = 0;
+    for (let k = 0; k < runs.length; k++) if (Math.min(runs[k].s1 - 6, pos + NEAR) - Math.max(runs[k].s0 + 6, pos - NEAR) >= 20) nNear++;
+    if (!nNear) return false;
     for (let tries = 0; tries < 6; tries++) {
-      const r = runs[Math.floor(this._rnd() * runs.length)];
+      let pickN = Math.floor(this._rnd() * nNear), r = null;
+      for (let k = 0; k < runs.length && !r; k++) {
+        if (Math.min(runs[k].s1 - 6, pos + NEAR) - Math.max(runs[k].s0 + 6, pos - NEAR) >= 20 && pickN-- === 0) r = runs[k];
+      }
+      if (!r) continue;
       const a = Math.max(r.s0 + 6, pos - NEAR), b = Math.min(r.s1 - 6, pos + NEAR);
-      if (b - a < 20) continue;
       const s = a + (b - a) * this._rnd();
       const dir = this._rnd() < 0.5 ? 1 : -1;
       frameAt(rs.frames, rs.step, s, _fr);

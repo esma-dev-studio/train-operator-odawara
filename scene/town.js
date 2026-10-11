@@ -1332,7 +1332,7 @@ function buildBuildings(rs, T) {
         if (rng() > skipP && rng() < qk + (row === 0 ? 0.25 : 0)) {
           let h;
           if (hub) {
-            /* 駅前の街: 4〜10階(マンション・雑居ビル・事務所) */
+            /* 駅前の街: 4〜10階(マンション・雑居ビル) */
             h = 12 + rng() * 20;
           } else if (low) {
             /* 3〜5階が中心。大きな駅の前だけ6〜8階 */
@@ -1350,7 +1350,8 @@ function buildBuildings(rs, T) {
             /* 線路ぎわは中層の谷(超高層は80mより外) */
             if (kind === 0) h = Math.min(h, lat < 45 ? 24 : lat < 80 ? 42 : 999);
           }
-          const type = hub ? (rng() < 0.4 ? 'mansion' : rng() < 0.6 ? 'zakkyo' : 'office') : pickType(kind, h, rng);
+          /* 駅前の街: 線路ぎわの2列は店の入った雑居ビルとマンション、奥はマンション(外壁の種類をふやしすぎない=描画の回数) */
+          const type = hub ? (row <= 1 ? (rng() < 0.6 ? 'zakkyo' : 'mansion') : (rng() < 0.55 ? 'mansion' : 'corridor')) : pickType(kind, h, rng);
           const D = FACADE[type];
           w = Math.max(2, Math.round(w / D.bay)) * D.bay;
           d = Math.max(2, Math.round(d / D.bay)) * D.bay;
@@ -2085,12 +2086,13 @@ export function buildHillsP1(rs) {
       lists[vi].push(it);
       /* 稜線の木(上のほうの頂点に。稜線の形をでこぼこにする) */
       const pg = GEO.hills[vi].attributes.position, top = GEO.hills[vi].userData.top;
-      const nT = Math.floor((rb / 4.5) * (T ? T.q : 1));
+      /* 本数は三角形の予算に合わせて控えめに(遠い木はいつも軽い形。針葉樹のほうが軽い) */
+      const nT = Math.floor((rb / 6) * (T ? T.q : 1));
       _q.setFromAxisAngle(Y_AXIS, it.yaw);
       for (let i = 0; i < nT && top.length; i++) {
         const vi2 = top[Math.floor(rng() * top.length)];
         v.set(pg.getX(vi2) * it.sx, pg.getY(vi2) * it.sy, pg.getZ(vi2) * it.sz).applyQuaternion(_q);
-        trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4, z: it.z + v.z, s, sc: 1.8 + rng() * 1.2, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.5 });
+        trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4, z: it.z + v.z, s, sc: 1.8 + rng() * 1.2, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.55 });
       }
     }
   }
@@ -2102,7 +2104,7 @@ export function buildHillsP1(rs) {
     /* すその林(頂上のまわりは空ける: 観覧車の脚が立つ所) */
     const pg = GEO.hills[0].attributes.position;
     _q.setFromAxisAngle(Y_AXIS, it.yaw);
-    for (let i = 0, n = 0; i < 400 && n < Math.floor((h.rb / 3) * (T ? T.q : 1)); i++) {
+    for (let i = 0, n = 0; i < 400 && n < Math.floor((h.rb / 4) * (T ? T.q : 1)); i++) {
       const vi2 = Math.floor(rng() * pg.count);
       const ux = pg.getX(vi2), uz = pg.getZ(vi2), uy = pg.getY(vi2);
       if (Math.hypot(ux, uz) < 0.45 || uy < 0.08) continue;
