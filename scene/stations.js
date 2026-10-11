@@ -12,17 +12,35 @@
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
 import { placeTrain } from './traffic.js';
-import { poolTexture, makePoolMaterial, addPools } from './lightpool.js';
+import { poolTexture, poolStripTexture, makePoolMaterial, addPools } from './lightpool.js';
 import {
   newFrame, frameInto, frameOf, flatT, canvasTexture, redrawWhenFonts, fitText, kanaOf,
   texStationSign, texSignPlaceholder, SIGN_UV, Baker, bakerFor, flushSigns, makeSign, finishAtlas,
-  buildBoards as buildBoardsAt, buildSignals as buildSignalsAt, updateSignals, texLed,
+  buildBoards as buildBoardsAt, buildSignals as buildSignalsAt, updateSignals, texLed, lineBaker, lineBoard,
 } from './signage.js';
+import { stationStyles, STAIR, quadOffAt, fenceOffL, TUN_LAMP } from './trackbed.js';
 
 export { updateSignals };
 export const PLAT = { L: { edge: 1.58, back: 5.0 }, R: { edge: -5.38, back: -8.8 } };
+/* 停止位置目標「8」の位置(停止位置 st.s から前へ)。止まった運転台の左の窓柱のよこに見える。
+ * 予告(300/200/100/50m)もここから測る。P6 は rs._stop8Ahead で光の目印をそろえる */
+export const STOP8_AHEAD = 1.6;
 const P_A = 155, P_B = 15;              // ホームの範囲: st.s-155 〜 st.s+15
-const ROOF_A = 125, ROOF_B = 8;          // 屋根: st.s-125 〜 st.s+8(停止位置の運転台の上まで)
+/* 屋根: st.s-roofA(駅ごと 95/125/140) 〜 st.s+10(停止位置の運転台の上と、その先の発車標まで)。
+ * 屋根の先の端とホームの先の端(st.s+P_B)は同じ5mの目に丸めるので、屋根はいつもホームの端の5m手前で終わる */
+const ROOF_B = 10;
+/* 8両の電車のドアの位置(各車両の先頭からの距離。先頭車の先頭 = 停止位置) */
+const DOOR_OFF = [2.9, 7.7, 12.4, 17.2];
+/* 乗る人(動く12人のうち4人)が待つドア(停止位置からの距離)。止まっている人の列は ここには並べない */
+const BOARD_DOORS = [17.2, 22.9, 27.7, 32.4];
+/* 降りる人(動く12人のうち2人)が歩くところ(停止位置からの距離。運転台から見える先のほう) */
+const ALIGHT_S = [6.5, 10.2];
+
+/* 駅の見た目の型: { kind: 'over'|'foot'|'house', roofCol, roofA }(駅名から毎回同じに決まる) */
+export function stationStyle(rs, st, si) {
+  const all = stationStyles(rs);
+  return all[si] || { kind: 'house', roofCol: 0x3d4a56, roofA: 125 };
+}
 const UPV = new THREE.Vector3(0, 1, 0);
 const DS = THREE.DoubleSide;
 const mid = (P) => (P.edge + P.back) / 2;
@@ -306,11 +324,13 @@ function texNoriba(no) {
   return t;
 }
 
-/* 天井の帯だけ自発光(頂点属性 stE)。地下駅用は全体をうっすら自発光 */
+/* 自発光は頂点属性 stE の割合だけ(天井の照明の帯=1、屋根の下の床=0.22、屋根のない床=0.1)。
+ * 自発光にも絵(アトラス)を使うので、明るい舗装は明るく・へりの下のすき間は暗いまま光る。
+ * 地下駅用は全体をうっすら自発光 */
 function stationMaterial(tex, ug) {
   const m = new THREE.MeshStandardMaterial({
     map: tex, vertexColors: true, alphaTest: 0.5, side: DS, roughness: 0.9,
-    emissive: ug ? 0xffffff : 0xfff1d6, emissiveMap: ug ? tex : null, emissiveIntensity: ug ? 0.25 : 0,
+    emissive: ug ? 0xffffff : 0xfff1d6, emissiveMap: tex, emissiveIntensity: ug ? 0.25 : 0,
   });
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
@@ -329,12 +349,15 @@ function stationMats() {
   const atlas = texStationAtlas();
   const st = stationMaterial(atlas, false);
   const stUG = stationMaterial(atlas, true);
-  const ptex = poolTexture();
-  const pool = makePoolMaterial(ptex, { color: 0xffe6c0 });
+  const ptex = poolTexture(), stex = poolStripTexture();
   const poolIn = makePoolMaterial(ptex, { color: 0xffffff });
-  const strip = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff2d8).multiplyScalar(3), side: DS });
+  /* 屋根の灯りの帯(夜・夕方・雨): 6mごとに12mの帯を重ねて、つぎ目のない明るい床に(LEDの白) */
+  const poolStrip = makePoolMaterial(stex, { color: 0xeef0ea });
+  /* 屋内(地下駅・ターミナル)の床の帯: いつも点灯。強さはインスタンス色で */
+  const poolStripIn = makePoolMaterial(stex, { color: 0xffffff });
+  const strip = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff2d8).multiplyScalar(2.4), side: DS });
   strip.userData.noWeather = true;
-  const fixture = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 3.4, 3.0) });
+  const fixture = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.8, 1.9, 1.7) });
   fixture.userData.noWeather = true;
   const clockCv = document.createElement('canvas');
   clockCv.width = clockCv.height = 128;
@@ -343,7 +366,7 @@ function stationMats() {
   clockTex.anisotropy = 4;
   drawClock(clockCv.getContext('2d'), 10, 0);
   const clock = new THREE.MeshBasicMaterial({ map: clockTex, alphaTest: 0.5, color: new THREE.Color(0.95, 0.95, 0.95) });
-  const out = { atlas, st, stUG, pool, poolIn, strip, fixture, clock, clockTex };
+  const out = { atlas, st, stUG, poolStrip, poolIn, poolStripIn, strip, fixture, clock, clockTex };
   Object.keys(out).forEach((k) => { if (out[k].isMaterial) out[k].name = 'st-' + k; });
   return out;
 }
@@ -386,6 +409,186 @@ export function inPlatform(rs, s) {
   return rs.line.stations.some((st) => s >= snapS(rs, st.s - P_A) && s <= snapS(rs, st.s + P_B));
 }
 
+/* ---------- ホームの端(スロープ・柵・とびらの棒・「この さき はいれません」) ----------
+ * sEnd: ホームの端の位置 / out: 外への向き(+1 = s がふえる側の端、-1 = へる側の端) */
+const _pe = { f0: newFrame(), f1: newFrame(), ff: newFrame(), m4: new THREE.Matrix4(), q: new THREE.Quaternion(), c: new THREE.Vector3(), n: new THREE.Vector3(), nb: new THREE.Vector3() };
+let _gateGeo = null;
+/* 柵の板(ホームを横切る向き)。アトラスの柵のマス(アルファ抜き)を使う: u=下→上の高さ、v=横の長さ/6m */
+function fenceQuad(f, latA, latB, y0, y1) {
+  const pos = [], nor = [], uv = [];
+  const tn = flatT(f, new THREE.Vector3());
+  const v1 = Math.abs(latB - latA) / 6;
+  [[latA, y0, AT.fence(0.01), 0], [latB, y0, AT.fence(0.01), v1], [latB, y1, AT.fence(0.99), v1], [latA, y1, AT.fence(0.99), 0]].forEach(([l, y, u, v]) => {
+    pos.push(f.p.x + f.left.x * l, f.p.y + y, f.p.z + f.left.z * l);
+    nor.push(tn.x, tn.y, tn.z);
+    uv.push(u, v);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  return g;
+}
+function platformEnd(rs, B, sEnd, sg, out) {
+  const P = sideOf(sg), T = _pe;
+  frameInto(rs, sEnd, T.f0);
+  frameInto(rs, sEnd + out * 5, T.f1);
+  /* (a) 係員用のスロープ: ホームのうしろ寄り1m、端から外へ5mで地面近くまで下る */
+  const li = P.back - 1.05 * sg, lo = P.back - 0.05 * sg;
+  const pt = (f, lat, y) => [f.p.x + f.left.x * lat, f.p.y + y, f.p.z + f.left.z * lat];
+  const a1 = pt(T.f0, li, 1.05), a2 = pt(T.f0, lo, 1.05), b1 = pt(T.f1, li, 0.15), b2 = pt(T.f1, lo, 0.15);
+  const a1d = pt(T.f0, li, -0.4), a2d = pt(T.f0, lo, -0.4), b1d = pt(T.f1, li, -0.4), b2d = pt(T.f1, lo, -0.4);
+  const tri = [];
+  const quad = (p, q, r, s) => tri.push(...p, ...q, ...r, ...p, ...r, ...s);
+  quad(a1, a2, b2, b1);       // 坂
+  quad(a1, b1, b1d, a1d);     // 線路がわの側面
+  quad(a2, a2d, b2d, b2);     // うしろの側面
+  quad(b1, b2, b2d, b1d);     // 先の小口
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(tri, 3));
+  g.computeVertexNormals();
+  B.geo(g, { white: true, col: 0x9e9b94 });
+  /* (b) 端の柵(へりから0.35m 〜 スロープの手前。高さ1.1m) */
+  const ff = frameInto(rs, sEnd - out * 0.3, T.ff);
+  const la = P.edge + 0.35 * sg, lb = P.back - 1.1 * sg;
+  B.geo(fenceQuad(ff, la, lb, 1.05, 2.15));
+  /* (c) スロープの入口の黄色い棒(黒い帯3本)と、ちょうつがいの柱 */
+  const g0 = P.back - 1.1 * sg, g1 = P.back - 0.05 * sg, gm = (g0 + g1) / 2, gl = Math.abs(g1 - g0);
+  if (!_gateGeo) _gateGeo = { bar: new THREE.BoxGeometry(1, 0.05, 0.05), band: new THREE.BoxGeometry(0.12, 0.058, 0.058) };
+  T.q.setFromAxisAngle(UPV, Math.atan2(ff.t.x, ff.t.z));      // 箱の x = 線路の左右
+  T.c.copy(ff.p).addScaledVector(ff.left, gm); T.c.y = ff.p.y + 2.0;
+  B.geo(_gateGeo.bar, { m: T.m4.compose(T.c, T.q, T.n.set(gl, 1, 1)), col: 0xe2b91c, white: true });
+  [-0.3, 0, 0.3].forEach((k) => {
+    T.c.copy(ff.p).addScaledVector(ff.left, gm + k * gl * sg); T.c.y = ff.p.y + 2.0;
+    B.geo(_gateGeo.band, { m: T.m4.compose(T.c, T.q, T.n.set(1, 1, 1)), col: 0x1c1d1f, white: true });
+  });
+  B.post(ff.p.x + ff.left.x * g0, ff.p.y + 1.05, ff.p.z + ff.left.z * g0, 1.0, 0x6f777d, 1.4);
+  /* (d) 「この さき はいれません」: 柵の上に、ホームの内がわ・外がわの両方へ向けて */
+  flatT(ff, T.n).multiplyScalar(-out);                          // ホームの内がわ向き
+  T.c.copy(ff.p).addScaledVector(ff.left, (la + lb) / 2); T.c.y = ff.p.y + 1.05 + 0.66;
+  makeSign(rs, 'noent', 0.42, 0.42, { c: T.c.clone().addScaledVector(T.n, 0.012), n: T.n.clone(), postH: 0 });
+  T.nb.copy(T.n).negate();
+  makeSign(rs, 'noent', 0.42, 0.42, { c: T.c.clone().addScaledVector(T.nb, 0.012), n: T.nb.clone(), postH: 0 });
+}
+
+/* ---------- 発車する側のホームの端: 運転士用のモニター(ITV)とミラー(左ホームだけ) ----------
+ * sEnd: ホームの先の端。端の柵の1.2m手前(止まった運転台から見て発車標の右うしろ) */
+let _itvGeo = null;
+function itvMonitor(rs, B, st, ob, sEnd) {
+  const sI = sEnd - 1.2;
+  const f = frameOf(rs, sI);
+  const lat = PLAT.L.edge + 0.5, yb = f.p.y + 1.05;
+  if (!_itvGeo) {
+    const A = lineBoard(rs, 'itv').uv;
+    const scr = new THREE.PlaneGeometry(0.42, 0.32);
+    const uv = scr.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) ? A[2] : A[0], uv.getY(i) ? A[3] : A[1]);
+    _itvGeo = {
+      house: new THREE.BoxGeometry(1.0, 0.62, 0.3), scr, cap: new THREE.BoxGeometry(1.08, 0.06, 0.4),
+      arm: new THREE.BoxGeometry(0.06, 0.06, 1), mirror: new THREE.CircleGeometry(0.28, 18), rim: new THREE.RingGeometry(0.28, 0.33, 18),
+    };
+  }
+  const G = _itvGeo;
+  B.post(f.p.x + f.left.x * lat, yb, f.p.z + f.left.z * lat, 2.45, 0x4f575d, 1.8);
+  ob.push({ s: sI, lat, r: 0.2 });
+  const n = flatT(f, new THREE.Vector3()).negate();               // 入ってくる運転台のほう
+  const q = new THREE.Quaternion().setFromAxisAngle(UPV, Math.atan2(n.x, n.z));
+  q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(10)));   // 10°下向き
+  const hc = f.p.clone().addScaledVector(f.left, lat + 0.1); hc.y = f.p.y + 3.65;
+  const one = new THREE.Vector3(1, 1, 1), m4 = new THREE.Matrix4(), mm = new THREE.Matrix4();
+  m4.compose(hc, q, one);
+  B.geo(G.house, { m: m4, col: 0x24292e, white: true });
+  B.geo(G.cap, { m: mm.makeTranslation(0, 0.33, 0.02).premultiply(m4), col: 0x3a4146, white: true });
+  const LB = lineBaker(rs);
+  [-0.235, 0.235].forEach((x) => LB.geo(G.scr, { m: mm.makeTranslation(x, -0.01, 0.152).premultiply(m4), e: 1 }));
+  /* 凸面ミラー(モニターのホームがわのとなり。少し線路のほうへ向ける) */
+  const mq = new THREE.Quaternion().setFromAxisAngle(UPV, Math.atan2(n.x, n.z) + 0.45);
+  const mc = f.p.clone().addScaledVector(f.left, lat + 1.07); mc.y = f.p.y + 3.3;
+  m4.compose(mc, mq, one);
+  B.geo(G.mirror, { m: m4, col: 0xd9dee2, white: true });
+  B.geo(G.rim, { m: m4, col: 0x17191b, white: true });
+  B.geo(G.mirror, { m: mm.makeTranslation(0, 0, -0.03).premultiply(m4), col: 0x2a2e31, white: true });
+  /* ミラーの腕(柱から横へ) */
+  const ac = f.p.clone().addScaledVector(f.left, lat + 0.52); ac.y = f.p.y + 3.3;
+  B.geo(G.arm, { m: m4.compose(ac, new THREE.Quaternion().setFromAxisAngle(UPV, Math.atan2(f.left.x, f.left.z)), new THREE.Vector3(1, 1, 1.0)), col: 0x4f575d, white: true });
+}
+
+/* ---------- 階段(橋上駅舎・跨線橋へ): 各ホームに1つ。駅の形に焼きこむ ----------
+ * 下(ホーム面)は st.s-128.6、上(高さ7.9m)は st.s-141。跨線橋は上に踊り場をつけて橋につなぐ */
+let _stairGeo = null;
+function buildStairs(rs, B, st, S, ob) {
+  const rise = 7.9 - 1.05, run = STAIR.foot - STAIR.top, len = Math.hypot(rise, run), ang = Math.atan2(rise, run);
+  if (!_stairGeo) {
+    _stairGeo = {
+      slab: new THREE.BoxGeometry(1.8, 0.3, len), wall: new THREE.BoxGeometry(0.08, 1.1, len),
+      roof: new THREE.BoxGeometry(2.1, 0.12, len), land: new THREE.BoxGeometry(1.8, 0.3, 1),
+      lwall: new THREE.BoxGeometry(0.08, 1.1, 1), lroof: new THREE.BoxGeometry(2.1, 0.12, 1), col: new THREE.BoxGeometry(0.3, 1, 0.3),
+    };
+  }
+  const G = _stairGeo;
+  const sm = st.s - (STAIR.foot + STAIR.top) / 2, f = frameOf(rs, sm);
+  const one = new THREE.Vector3(1, 1, 1), m4 = new THREE.Matrix4(), mm = new THREE.Matrix4(), c = new THREE.Vector3();
+  const q = new THREE.Quaternion().setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
+  q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ang));   // +t へ下る
+  const qf = new THREE.Quaternion().setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
+  [1, -1].forEach((sg) => {
+    const lat = mid(sideOf(sg)) + 0.15 * sg;
+    c.copy(f.p).addScaledVector(f.left, lat); c.y = f.p.y + (1.05 + 7.9) / 2 - 0.15;
+    m4.compose(c, q, one);
+    B.geo(G.slab, { m: m4, col: 0xb4b2ab, white: true });
+    [-0.94, 0.94].forEach((x) => B.geo(G.wall, { m: mm.makeTranslation(x, 0.7, 0).premultiply(m4), col: 0xcfd3d5, white: true }));
+    B.geo(G.roof, { m: mm.makeTranslation(0, 2.55, 0).premultiply(m4), col: S.roofCol, white: true });
+    /* 屋根の足(階段の下の端) */
+    const fb = frameOf(rs, st.s - STAIR.foot + 0.3);
+    [-0.98, 0.98].forEach((x) => {
+      const l = lat + x;
+      B.post(fb.p.x + fb.left.x * l, fb.p.y + 1.05, fb.p.z + fb.left.z * l, 2.75, 0x8d959b, 1.5);
+    });
+    /* 跨線橋: 階段の上から橋までの踊り場(屋根つき)と、それをささえる柱 */
+    if (S.kind === 'foot') {
+      const s0 = st.s - STAIR.c + 1.7, s1 = st.s - STAIR.top, L = s1 - s0;
+      const fl = frameOf(rs, (s0 + s1) / 2);
+      c.copy(fl.p).addScaledVector(fl.left, lat); c.y = fl.p.y + 7.9 - 0.15;
+      m4.compose(c, qf, one);
+      B.geo(G.land, { m: mm.makeScale(1, 1, L).premultiply(m4), col: 0xb4b2ab, white: true });
+      [-0.94, 0.94].forEach((x) => B.geo(G.lwall, { m: mm.makeScale(1, 1, L).premultiply(new THREE.Matrix4().makeTranslation(x, 0.7, 0)).premultiply(m4), col: 0xe9e8e3, white: true }));
+      B.geo(G.lroof, { m: mm.makeScale(1, 1, L).premultiply(new THREE.Matrix4().makeTranslation(0, 2.55, 0)).premultiply(m4), col: S.roofCol, white: true });
+      c.copy(fl.p).addScaledVector(fl.left, lat); c.y = fl.p.y + 1.05 + (7.6 - 1.05) / 2;
+      B.geo(G.col, { m: m4.compose(c, qf, new THREE.Vector3(1, 7.6 - 1.05, 1)), col: 0xc4c6c4, white: true });
+    }
+    ob.push({ s0: st.s - P_A - 5, s1: st.s - STAIR.foot + 2.5 });     // 階段より奥には人・ベンチを置かない
+  });
+}
+
+/* 橋上駅舎・跨線橋の柱(門型ビームの梁をよける) */
+function concourseColumns(rs, B, st, S, ob) {
+  const sc = st.s - STAIR.c;
+  const gS = (rs._catSupports || []).filter((sp) => sp.type === 'gantry').map((sp) => sp.s);
+  const clear = (s) => {
+    for (let k = 0; k < gS.length; k++) if (Math.abs(s - gS[k]) < 0.8) return gS[k] + (s < gS[k] ? -0.8 : 0.8);
+    return s;
+  };
+  const e0 = quadOffAt(sc, 0), e1 = quadOffAt(sc, 1);
+  const left = Math.max(7.5, fenceOffL(sc) + 1.5);
+  const lats = [[-13.0, -0.5], [left - 0.8, -0.5]];
+  if (e1 - e0 > 3.7) lats.push([(e0 + e1) / 2, -0.5]);
+  if (S.kind === 'over') { lats.push([mid(PLAT.L), 1.05]); lats.push([mid(PLAT.R), 1.05]); }
+  const ss = [sc];
+  const geo = _stairGeo ? _stairGeo.col : new THREE.BoxGeometry(0.3, 1, 0.3);
+  const m4 = new THREE.Matrix4(), c = new THREE.Vector3(), q = new THREE.Quaternion();
+  ss.forEach((s0) => {
+    const s = clear(s0), f = frameOf(rs, s);
+    q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
+    lats.forEach(([lat, y0]) => {
+      const h = 7.9 - y0;
+      c.copy(f.p).addScaledVector(f.left, lat); c.y = f.p.y + y0 + h / 2;
+      B.geo(geo, { m: m4.compose(c, q, new THREE.Vector3(1.4, h, 1.4)), col: 0xb7b9b8, white: true });
+      if (y0 > 0) ob.push({ s, lat, r: 0.45 });
+    });
+  });
+}
+
 /* ---------- 駅(全駅) ---------- */
 export function buildStations(rs) {
   /* 世界ごとの作り置きをリセット */
@@ -393,12 +596,17 @@ export function buildStations(rs) {
   rs._atlas = null; rs._signs = null;
   rs.stationLamps = null;           // 旧: 屋根の照明箱(→光る帯+光だまりに置きかえ)
   rs._ledBoards = null;
+  rs._stop8Ahead = STOP8_AHEAD;     // P6: 停止位置の光の目印を「8」にそろえる
+  _itvGeo = null;
   const M = stationMats();
   const W = rs._stw = {
-    M, signMats: [], look: undefined, clockMin: -1, termBld: null, indoorPools: [],
+    M, signMats: [], look: undefined, clockMin: -1, termBld: null, indoorPools: [], indoorStrips: [],
     /* 駅名標の画像は近くの駅(6駅)だけ本物を持ち、遠くの駅は小さな代わりの画像(メモリ節約) */
     signInfo: [], signPool: [], signPH: texSignPlaceholder(), poolCenter: -1,
+    obst: [],                        // 駅ごとの床のじゃまもの({s,lat,r} / {s0,s1}=その範囲ぜんぶ)。待つ人を置かない
+    led: null,
   };
+  const sty = stationStyles(rs);
   const F = rs.frames, step = rs.step, N = F.length - 1;
   const T = rs.terminal;
   const up = rs.line.meta.direction === 'up';
@@ -414,14 +622,62 @@ export function buildStations(rs) {
   /* 丸柱+45°の方杖2本 */
   const colGeo = [new THREE.CylinderGeometry(0.11, 0.11, 3.0, 10, 1, true).translate(0, 1.5, 0)];
   [1, -1].forEach((sx) => colGeo.push(new THREE.BoxGeometry(0.9, 0.06, 0.06).rotateZ((sx * Math.PI) / 4).translate(sx * 0.43, 2.68, 0)));
+  const sosGeo = new THREE.BoxGeometry(0.22, 0.3, 0.12);
+  const ugColGeo = new THREE.BoxGeometry(0.5, 5.15, 0.5).translate(0, 5.15 / 2, 0);
+  const lampGeo = { head: new THREE.BoxGeometry(0.5, 0.12, 0.25), cap: new THREE.BoxGeometry(0.58, 0.06, 0.32) };
   const rimGeo = new THREE.CylinderGeometry(0.315, 0.315, 0.07, 18, 1, true).rotateX(Math.PI / 2);
   const rail = new THREE.BoxGeometry(1.94, 0.03, 0.05);
+  const housGeo = new THREE.BoxGeometry(2.4, 0.55, 0.15);
   const clockB = bakerFor(rs, M.clock, M.clock);
   const stripB = bakerFor(rs, M.strip, M.strip, { build: { recv: false } });
+  /* 発車標(オレンジのLED): 全線で画像2枚(この電車の向き / 反対の向き)・描画2回 */
+  const ledMat = (tex) => {
+    const m = new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(2.2, 2.2, 2.2) });
+    m.userData.noWeather = true; m.name = 'st-led';
+    return m;
+  };
+  const ledOwn = texLed(), ledOpp = texLed();
+  const LO = bakerFor(rs, 'ledOwn', ledMat(ledOwn), { build: { recv: false } });
+  const LP = bakerFor(rs, 'ledOpp', ledMat(ledOpp), { build: { recv: false } });
+  W.led = { own: ledOwn, opp: ledOpp, key: null };
+  const gS = (rs._catSupports || []).filter((sp) => sp.type === 'gantry').map((sp) => sp.s);
+  const clearOfGantry = (s, half) => {
+    for (let k = 0; k < gS.length; k++) if (Math.abs(s - gS[k]) < half) return gS[k] + (s < gS[k] ? -half : half);
+    return s;
+  };
+  /* 発車標(両面)+つり下げの柱2本 */
+  const ledBoard = (B, LB, s, lat, y, ceil) => {
+    frameInto(rs, s, f);
+    flatT(f, n);
+    c.copy(f.p).addScaledVector(f.left, lat);
+    c.y = f.p.y + y;
+    B.geo(housGeo, { m: m4.compose(c, q.setFromAxisAngle(UPV, Math.atan2(n.x, n.z)), one), col: 0x15181b, white: true });
+    LB.quad(c.clone().addScaledVector(n, 0.078), n, 2.24, 0.49, [0, 0, 1, 1]);
+    const nb = n.clone().negate();
+    LB.quad(c.clone().addScaledVector(nb, 0.078), nb, 2.24, 0.49, [0, 0, 1, 1]);
+    tf.crossVectors(UPV, n);
+    [-0.9, 0.9].forEach((k) => B.post(c.x + tf.x * k, c.y + 0.27, c.z + tf.z * k, f.p.y + ceil - (c.y + 0.27), 0x6f777d));
+  };
+  /* 時計(両面・つり下げ) */
+  const clockAt = (B, s, lat, ceilY) => {
+    frameInto(rs, s, f);
+    flatT(f, n).negate();
+    c.copy(f.p).addScaledVector(f.left, lat);
+    c.y = f.p.y + 3.62;
+    clockB.quad(c.clone().addScaledVector(n, 0.037), n, 0.62, 0.62, [0, 0, 1, 1]);
+    const nb = n.clone().negate();
+    clockB.quad(c.clone().addScaledVector(nb, 0.037), nb, 0.62, 0.62, [0, 0, 1, 1]);
+    B.geo(rimGeo, { m: m4.compose(c, q.setFromAxisAngle(UPV, Math.atan2(n.x, n.z)), one), col: 0x2a3036, white: true });
+    B.post(c.x, c.y + 0.3, c.z, f.p.y + ceilY - (c.y + 0.3), 0x6f777d);
+  };
 
   rs.line.stations.forEach((st, si) => {
     const isTerm = !!T && st.name === '新宿';
     const under = rs._inTunnel(st.s);
+    const S = sty[si];
+    const roofA = S.roofA;
+    const stairs = S.kind !== 'house' && !under && !isTerm;
+    const ob = W.obst[si] = [];
     const i0 = iOf(st.s - P_A), i1 = iOf(st.s + P_B);
     /* この駅の動かない部品(ホーム・柵・屋根・柱・支柱・ベンチ・自販機・時計のふち)をまとめる */
     const B = bakerFor(rs, 'st' + si, under || isTerm ? M.stUG : M.st, { white: WHITE, e: true, build: { cast: true } });
@@ -429,7 +685,7 @@ export function buildStations(rs) {
     const prev = rs.line.stations[si - 1], next = rs.line.stations[si + 1];
     const num = up ? nSt - si : si + 1;
     W.signInfo.push({ st, prev, next, num });
-    /* 駅名標は内照式(中から光る看板): ライトの影響を受けない材質にして、夜は少し暗めに */
+    /* 駅名標は内照式(中から光る看板): ライトの影響を受けない材質 */
     const smat = new THREE.MeshBasicMaterial({ map: W.signPH, color: new THREE.Color(0.95, 0.95, 0.95) });
     smat.name = 'st-sign';
     W.signMats.push(smat);
@@ -437,25 +693,36 @@ export function buildStations(rs) {
     const SB = bakerFor(rs, smat, smat);
 
     if (!isTerm) {
-      /* ホーム(左右)と両端のふた */
+      /* ホーム(左右)と両端のふた。床の自発光: 屋根の下 0.22・屋根のない端 0.1(夜も床が見える) */
       [1, -1].forEach((sg) => {
         const prof = sideProfile(sg);
-        B.geo(profileStrip(F, i0, i1, prof), { e: under ? 1 : 0 });
+        if (under) B.geo(profileStrip(F, i0, i1, prof), { e: 1 });
+        else {
+          const ra = Math.max(i0, iOf(st.s - roofA)), rb = Math.min(i1, iOf(st.s + ROOF_B));
+          B.geo(profileStrip(F, i0, ra, prof), { e: 0.1 });
+          B.geo(profileStrip(F, ra, rb, prof), { e: 0.22 });
+          B.geo(profileStrip(F, rb, i1, prof), { e: 0.1 });
+        }
         [i0, i1].forEach((ii) => B.geo(endCap(F[ii], prof, AT.plat(0.97))));
+        /* ホームの端: スロープ・柵・黄色い棒・「この さき はいれません」 */
+        platformEnd(rs, B, i0 * step, sg, -1);
+        platformEnd(rs, B, i1 * step, sg, 1);
       });
+      /* 発車する側の端: 運転士用モニターとミラー */
+      itvMonitor(rs, B, st, ob, i1 * step);
       /* うしろの柵(右は駅舎への出入り口をあける) */
       [1, -1].forEach((sg) => {
         const x = sideOf(sg).back - 0.05 * sg;
         const prof = [[x, 1.05, AT.fence(0.01)], [x, 2.15, AT.fence(0.99)]];
-        if (sg < 0 && !under) {
+        if (sg < 0 && !under && !stairs) {
           B.geo(profileStrip(F, i0, iOf(st.s - 65), prof));
           B.geo(profileStrip(F, iOf(st.s - 45), i1, prof));
         } else B.geo(profileStrip(F, i0, i1, prof));
       });
 
       if (!under) {
-        /* 屋根: 明るい天井(中央に照明の帯)+波板の上面+鼻隠し+両端のふた */
-        const ra = iOf(st.s - ROOF_A), rb = iOf(st.s + ROOF_B);
+        /* 屋根: 明るい天井(中央に照明の帯)+波板の上面+鼻隠し+両端のふた。長さと色は駅ごと */
+        const ra = iOf(st.s - roofA), rb = iOf(st.s + ROOF_B);
         [1, -1].forEach((sg) => {
           const P = sideOf(sg), e0 = P.edge - 0.15 * sg, b0 = P.back + 0.4 * sg;
           const u0 = P.edge - 0.05 * sg, u1 = P.back + 0.3 * sg;
@@ -464,24 +731,49 @@ export function buildStations(rs) {
           B.geo(profileStrip(F, ra, rb, [[u0, 4.05, AT.under(0.004)], [la, 4.05, AT.under(LAMP_U[0])]]), { e: 0.15 });
           B.geo(profileStrip(F, ra, rb, [[la, 4.05, AT.under(LAMP_U[0])], [lb, 4.05, AT.under(LAMP_U[1])]]), { e: 1 });
           B.geo(profileStrip(F, ra, rb, [[lb, 4.05, AT.under(LAMP_U[1])], [u1, 4.05, AT.under(0.996)]]), { e: 0.15 });
-          B.geo(profileStrip(F, ra, rb, [[e0, 4.47, AT.top(0.05)], [b0, 4.27, AT.top(0.95)]]));
-          const fas = { white: true, col: 0xe6e4de };
+          B.geo(profileStrip(F, ra, rb, [[e0, 4.47, AT.top(0.05)], [b0, 4.27, AT.top(0.95)]]), { col: S.roofCol });
+          const fas = { white: true, col: S.roofCol };
           B.geo(profileStrip(F, ra, rb, [[e0, 3.98, 0], [e0, 4.5, 0]]), fas);
           B.geo(profileStrip(F, ra, rb, [[b0, 3.98, 0], [b0, 4.3, 0]]), fas);
           [ra, rb].forEach((ii) => B.geo(capGeo(F[ii], [[e0, 3.98], [e0, 4.5], [b0, 4.3], [b0, 3.98]]), fas));
-          /* 柱(10mごと・ホームの中心線) */
+          /* 柱(10mごと・ホームの中心線)。3本に1本は赤い「非常停止」の箱 */
           const lat = mid(P);
-          for (let s = st.s - 120; s <= st.s + 2; s += 10) {
+          let k = 0;
+          for (let s = st.s - 10 * Math.floor((roofA - 5) / 10); s <= st.s + 2; s += 10, k++) {
             frameInto(rs, s, f);
             q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
             m4.compose(f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.05), q, one);
             colGeo.forEach((g) => B.geo(g, { m: m4, col: 0xd3d6d8, white: true }));
+            ob.push({ s, lat, r: 0.3 });
+            if (k % 3 === 1) {
+              m4.compose(f.p.clone().addScaledVector(f.left, lat - sg * 0.17).setY(f.p.y + 1.05 + 1.9), q, one);
+              B.geo(sosGeo, { m: m4, col: 0xc8281e, white: true });
+            }
           }
-          /* 夜の光だまり(6mごと。絶対位置にそろえて天井の器具と合わせる) */
-          for (let s = Math.ceil((st.s - ROOF_A + 2) / 6) * 6 + 3; s < st.s + ROOF_B - 1; s += 6) {
+          /* 夜の灯りの帯(6mごとに12mの帯。絶対位置にそろえて天井の器具と合わせる) */
+          for (let s = Math.ceil((st.s - roofA + 2) / 6) * 6 + 3; s < st.s + ROOF_B - 1; s += 6) {
             frameInto(rs, s, f);
-            pools.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: qFloor(f), sx: 2.8, sy: 5.0 });
+            pools.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: qFloor(f), sx: Math.abs(P.back - P.edge) + 0.4, sy: 12 });
           }
+          /* ホームの両はしの灯り(柱4m+灯具)。屋根のない端も夜に明るく */
+          const nearS = stairs ? st.s - 153 : Math.max(st.s - (roofA + 15), st.s - P_A + 4);
+          /* 先の端の灯り: 屋根の先(いつもホームの端の5m手前)とホームの端のまんなか(モニターは端の1.2m手前)。
+           * 先端の駅名標(st.s+11)の板に柱がささらないよう、近いときは板のうしろ(まだ屋根の外)へ */
+          let farS = i1 * step - 2.5;
+          if (Math.abs(farS - (st.s + 11)) < 0.6) farS = st.s + 10.4;
+          [farS, nearS].forEach((s) => {
+            frameInto(rs, s, f);
+            c.copy(f.p).addScaledVector(f.left, lat);
+            B.post(c.x, f.p.y + 1.05, c.z, 4.0, 0x6f777d, 1.6);
+            q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
+            c.y = f.p.y + 1.05 + 4.0;
+            /* 灯具は駅の形に焼きこむ(自発光1=夜は屋根の照明の帯と同じ明るさ。昼は消えた灯具。描画回数はふえない) */
+            B.geo(lampGeo.head, { m: m4.compose(c, q, one), white: true, col: 0xfffaf0, e: 1 });
+            c.y += 0.08;
+            B.geo(lampGeo.cap, { m: m4.compose(c, q, one), col: 0x3a4045, white: true });
+            pools.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: qFloor(f), sx: Math.abs(P.back - P.edge) + 0.4, sy: 7 });
+            ob.push({ s, lat, r: 0.25 });
+          });
           /* のりば番号の札(いちばん前の柱。くだりで左=1、右=2。のぼりは入れかわる) */
           frameInto(rs, st.s, f);
           flatT(f, n).negate();
@@ -489,14 +781,26 @@ export function buildStations(rs) {
           c.y = f.p.y + 1.05 + 2.55;
           makeSign(rs, `nori:${(sg > 0) !== up ? 1 : 2}`, 0.3, 0.3, { c, n, postH: 0 });
         });
+        /* 階段と、橋上駅舎・跨線橋の柱 */
+        if (stairs) {
+          buildStairs(rs, B, st, S, ob);
+          concourseColumns(rs, B, st, S, ob);
+        }
       } else {
-        /* 地下駅: 天井の光る帯(各ホーム2本)+床の光だまり */
+        /* 地下駅: 天井の光る帯(各ホーム2本)+床の灯りの帯+ホームの柱(10mごと) */
         [1, -1].forEach((sg) => {
-          const m0 = mid(sideOf(sg));
+          const P = sideOf(sg), m0 = mid(P);
           [-0.75, 0.75].forEach((d) => stripB.geo(profileStrip(F, i0 + 1, i1 - 1, [[m0 + d - 0.16, 6.1, 0], [m0 + d + 0.16, 6.1, 1]])));
           for (let s = Math.ceil((st.s - P_A + 4) / 6) * 6 + 3; s < st.s + P_B - 2; s += 6) {
             frameInto(rs, s, f);
-            W.indoorPools.push({ p: f.p.clone().addScaledVector(f.left, m0).setY(f.p.y + 1.062), q: qFloor(f), sx: 3.0, sy: 5.5, k: 0.6 });
+            W.indoorStrips.push({ p: f.p.clone().addScaledVector(f.left, m0).setY(f.p.y + 1.062), q: qFloor(f), sx: Math.abs(P.back - P.edge) + 0.4, sy: 12, k: 0.42 });
+          }
+          for (let s = st.s - 150; s <= st.s + 10; s += 10) {
+            frameInto(rs, s, f);
+            q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
+            m4.compose(f.p.clone().addScaledVector(f.left, m0).setY(f.p.y + 1.05), q, one);
+            B.geo(ugColGeo, { m: m4, col: 0xc9ccce, white: true });
+            ob.push({ s, lat: m0, r: 0.45 });
           }
         });
       }
@@ -540,6 +844,7 @@ export function buildStations(rs) {
         c.y = yb + 1.25 + 0.325;
         twoFaced(c, n, 1.9, 0.65, true);
         legs(c, n, yb, 1.25 + 0.65 + 0.03, 0.82);
+        ob.push({ s0: st.s + ds - 1.1, s1: st.s + ds + 1.1, lat, r: 0.3 });
       });
       /* ホームの先端: 線路に直角、入ってくる運転台のほうを向く(停車中の運転台から読める大きさ) */
       frameInto(rs, st.s + 11, f);
@@ -550,37 +855,44 @@ export function buildStations(rs) {
       c.y = yb + 1.2 + hh / 2;
       twoFaced(c, n, ww, hh, false);
       legs(c, n, yb, 1.2 + hh + 0.03, 1.08);
+      ob.push({ s0: st.s + 10.6, s1: st.s + 11.4, lat: mid(P), r: 1.45 });   // 板の下は頭がぶつかる
     });
 
-    /* ---- 停止位置目標「8」: 白い板に黒い8、へりから0.35mの柱(2.0m)の上 ---- */
-    frameInto(rs, st.s + 4.5, f);
+    /* ---- 停止位置目標「8」: 白い板に黒い8、へりから0.35mの柱(2.0m)の上。
+     * 止まった運転台の左の窓柱のよこ(st.s + STOP8_AHEAD) ---- */
+    frameInto(rs, st.s + STOP8_AHEAD, f);
     flatT(f, n).negate();
     {
       const yb = f.p.y + 1.05;
       c.copy(f.p).addScaledVector(f.left, PLAT.L.edge + 0.35);
       c.y = yb + 2.0 + 0.25;
       makeSign(rs, 'stop8', 0.5, 0.5, { c, n, postH: 2.0 + 0.4, yBase: yb });
+      ob.push({ s: st.s + STOP8_AHEAD, lat: PLAT.L.edge + 0.35, r: 0.3 });
     }
 
-    /* ---- 駅の時計(両面・つり下げ): 左ホームは停止位置のすぐ先(運転台から見える)、右は中ほど ---- */
+    /* ---- 発車標と時計 ----
+     * 左ホームの発車標は停止位置の7.5m先・へり寄り(止まった運転台から見て「8」の右どなり。
+     * 「8」にかくれず、モニターはホームの端の1.2m手前でその右うしろ)。屋根の先の端より手前につるす。
+     * 時計は止まった運転台の右の窓から見える右ホームの先と、両ホームの中ほど。右ホームの発車標は中ほど。
+     * 中ほどのものは、ホームの中心線の柱(st.s から10mごと)のあいだ(st.s-65 / -75)につるす */
     const ceilY = isTerm ? 7.4 : under ? 6.2 : 4.05;
-    [[1, st.s + (isTerm ? 14 : 6.5)], [-1, st.s - (isTerm ? 75 : 60)]].forEach(([sg, s]) => {
-      frameInto(rs, s, f);
-      flatT(f, n).negate();
-      c.copy(f.p).addScaledVector(f.left, mid(sideOf(sg)));
-      c.y = f.p.y + 3.62;
-      clockB.quad(c.clone().addScaledVector(n, 0.037), n, 0.62, 0.62, [0, 0, 1, 1]);
-      const nb = n.clone().negate();
-      clockB.quad(c.clone().addScaledVector(nb, 0.037), nb, 0.62, 0.62, [0, 0, 1, 1]);
-      B.geo(rimGeo, { m: m4.compose(c, q.setFromAxisAngle(UPV, Math.atan2(n.x, n.z)), one), col: 0x2a3036, white: true });
-      B.post(c.x, c.y + 0.3, c.z, f.p.y + ceilY - (c.y + 0.3), 0x6f777d);
-    });
+    if (!isTerm) {
+      const sL = under ? st.s + 7.5 : Math.min(st.s + 7.5, iOf(st.s + ROOF_B) * step - 0.45);
+      ledBoard(B, LO, sL, 3.05, under ? 5.4 : 3.55, ceilY);
+      clockAt(B, sL, mid(PLAT.R), ceilY);
+      clockAt(B, st.s - 65, mid(PLAT.L), ceilY);
+      ledBoard(B, LP, clearOfGantry(st.s - 75, 0.7), mid(PLAT.R) + 0.1, under ? 5.4 : 3.55, ceilY);
+      clockAt(B, st.s - 65, mid(PLAT.R), ceilY);
+    } else {
+      [[1, st.s + 14], [-1, st.s - 75]].forEach(([sg, s]) => clockAt(B, s, mid(sideOf(sg)), ceilY));
+    }
   });
-  /* 光だまり(屋根の下。夜・夕方・雨の日だけ) */
-  addPools(rs, pools, M.pool);
+  /* 灯りの帯(屋根の下とホームの端。夜・夕方・雨の日だけ) */
+  addPools(rs, pools, M.poolStrip);
 }
 
-/* ---------- トンネル照明: 壁の灯具(12mごと)+壁と床の光だまり ---------- */
+/* ---------- トンネル照明: 壁の灯具(12mごと・絶対位置 s=12k+6)+道床の灯りの帯 ----------
+ * 壁を照らす光は壁の材質(trackbed.js の 'tunwall')が同じ位置に描くので、ここでは灯具と床の帯だけ */
 export function buildTunnelLights(rs) {
   const W = rs._stw;
   if (!W) return;
@@ -589,34 +901,34 @@ export function buildTunnelLights(rs) {
   const f = newFrame(), tf = new THREE.Vector3();
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
   const FB = bakerFor(rs, M.fixture, M.fixture, { build: { recv: false } });
-  const fixGeo = new THREE.BoxGeometry(0.12, 0.1, 1.2);
+  const fixGeo = new THREE.BoxGeometry(0.08, 0.06, 1.2);
+  const P = TUN_LAMP.pitch, PH = TUN_LAMP.phase;
   rs.line.sections.tunnel.forEach((t) => {
-    for (let s = t.from + 6; s < t.to - 4; s += 12) {
+    for (let s = Math.ceil((t.from + 4 - PH) / P) * P + PH; s < t.to - 4; s += P) {
       frameInto(rs, s, f);
       flatT(f, tf);
       [[wl, -1], [wr, 1]].forEach(([w, inward]) => {
         /* 灯具(壁の高さ4.2m) */
         q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
-        FB.geo(fixGeo, { m: m4.compose(f.p.clone().addScaledVector(f.left, w + inward * 0.08).setY(f.p.y + 4.2), q, one), white: true });
-        /* 壁の光(6x4m。線路のほうを向く) */
-        const nrm = f.left.clone().multiplyScalar(inward);
-        const xAx = tf.clone().multiplyScalar(inward > 0 ? -1 : 1);
-        W.indoorPools.push({ p: f.p.clone().addScaledVector(f.left, w + inward * 0.03).setY(f.p.y + 3.3), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(xAx, UPV, nrm)), sx: 8, sy: 3.6, k: 0.2 });
-        /* 床(道床)の光(5x7m) */
-        W.indoorPools.push({ p: f.p.clone().addScaledVector(f.left, w + inward * 2.6).setY(f.p.y + 0.07), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: 4.5, sy: 8, k: 0.3 });
+        FB.geo(fixGeo, { m: m4.compose(f.p.clone().addScaledVector(f.left, w + inward * 0.06).setY(f.p.y + TUN_LAMP.y), q, one), white: true });
+        /* 道床の低い灯りの帯(24mの帯を12mごとに重ねる=つぎ目のない帯) */
+        W.indoorStrips.push({ p: f.p.clone().addScaledVector(f.left, w + inward * 3.0).setY(f.p.y + 0.07), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: 6.5, sy: 2 * P, k: 0.08 });
       });
     }
   });
 }
 
-/* 屋内(トンネル・地下駅・ターミナル)の光だまり: いつも点灯。強さはインスタンス色で */
+/* 屋内(トンネル・地下駅・ターミナル)の光だまりと灯りの帯: いつも点灯。強さはインスタンス色で */
 function flushIndoorPools(rs) {
   const W = rs._stw;
-  if (!W || !W.indoorPools.length) return;
-  const im = addPools(rs, W.indoorPools, W.M.poolIn);
+  if (!W) return;
   const col = new THREE.Color();
-  W.indoorPools.forEach((a, i) => { col.setRGB(0.93 * a.k, 0.96 * a.k, 0.9 * a.k); im.setColorAt(i, col); });
-  W.indoorPools = [];
+  [[W.indoorPools, W.M.poolIn], [W.indoorStrips, W.M.poolStripIn]].forEach(([list, mat]) => {
+    if (!list.length) return;
+    const im = addPools(rs, list, mat);
+    list.forEach((a, i) => { col.setRGB(0.93 * a.k, 0.96 * a.k, 0.9 * a.k); im.setColorAt(i, col); });
+  });
+  W.indoorPools = []; W.indoorStrips = [];
 }
 
 /* ---------- 新宿ターミナル ---------- */
@@ -683,6 +995,7 @@ export function buildTerminal(rs) {
     const mat = new THREE.MeshStandardMaterial({ map: texTermColumn(label), roughness: 0.55 });
     const ss = [];
     for (let s = pa + 8; s < pb - 4; s += 10) ss.push(s);
+    if (W.obst[si]) ss.forEach((s) => W.obst[si].push({ s, lat, r: 0.5 }));
     const im = new THREE.InstancedMesh(geo, mat, ss.length);
     ss.forEach((s, i) => {
       frameInto(rs, s, f);
@@ -701,12 +1014,12 @@ export function buildTerminal(rs) {
     const sx = snap(x);
     stripB.geo(profileStrip(F, i0 + 1, i1 - 1, [[sx - 0.16, H - 0.05, 0], [sx + 0.16, H - 0.05, 1]]));
   });
-  /* ホームの床の光だまり(屋内なので いつも) */
+  /* ホームの床の灯りの帯(屋内なので いつも。つぎ目のない帯) */
   [mid(PLAT.L), mid(PLAT.R)].forEach((lat) => {
     for (let s = Math.ceil((pa + 4) / 6) * 6 + 3; s < pb - 2; s += 6) {
       frameInto(rs, s, f);
       flatT(f, tf);
-      W.indoorPools.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: 3.0, sy: 5.5, k: 0.55 });
+      W.indoorStrips.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: Math.abs(PLAT.L.back - PLAT.L.edge) + 0.4, sy: 12, k: 0.36 });
     }
   });
 
@@ -789,7 +1102,8 @@ export function buildTerminal(rs) {
     NB.build(rs);
   });
 
-  /* 発車標(オレンジのLED): 各ホームに2台。両面 */
+  /* 発車標(オレンジのLED): 各ホームに2台。両面。前の台は停止位置の9m先
+   * (止まった運転台から見て、停止位置目標「8」(1.6m先)にかくれない) */
   const ledL = texLed(), ledR = texLed();
   const housB = new Baker(new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.5, metalness: 0.4 }));
   const housGeo = new THREE.BoxGeometry(2.4, 0.55, 0.15);
@@ -797,7 +1111,7 @@ export function buildTerminal(rs) {
     const mat = new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(2.2, 2.2, 2.2) });
     mat.userData.noWeather = true;
     const LB = new Baker(mat);
-    [6, -60].forEach((d) => {
+    [9, -60].forEach((d) => {
       frameInto(rs, phys(d), f);
       flatT(f, n);
       c.copy(f.p).addScaledVector(f.left, mid(sideOf(sg)));
@@ -846,31 +1160,51 @@ export function buildTerminal(rs) {
 
 /* 発車標の文字(種別・行き先・時刻・両数)。種別が変わるたびに書き直す */
 const KIND_KANA = { local: 'かくえきていしゃ', exp: 'きゅうこう', rapid: 'かいそくきゅうこう' };
+/* ゲーム内の秒 → 「10:24」(時間帯ごとの始発の時刻から) */
+function hm(rs, sec) {
+  const base = rs.timeOfDay === 'night' ? 19 : rs.timeOfDay === 'evening' ? 16 : 10;
+  const tot = Math.floor(sec) + base * 3600;
+  return `${Math.floor(tot / 3600) % 24}:${String(Math.floor((tot % 3600) / 60)).padStart(2, '0')}`;
+}
 export function updateLedBoards(rs) {
   const B = rs._ledBoards, sim = rs.sim;
   if (!B || !sim || !sim.timetable || !sim.timetable.length) return;
-  const base = rs.timeOfDay === 'night' ? 19 : rs.timeOfDay === 'evening' ? 16 : 10;
-  const hm = (sec) => {
-    const tot = Math.floor(sec) + base * 3600;
-    return `${Math.floor(tot / 3600) % 24}:${String(Math.floor((tot % 3600) / 60)).padStart(2, '0')}`;
-  };
   const tt = sim.timetable;
   const yuri = kanaOf('新百合ヶ丘');
   if (!B.up) {
     const dep = tt[0].dep;
     const dest = kanaOf(sim.stops[sim.stops.length - 1].name);
-    B.left.userData.set(`${KIND_KANA[sim.serviceKey] || KIND_KANA.local} ${dest}`, hm(dep), '8りょう');
-    B.right.userData.set(`${KIND_KANA.exp} ${yuri}`, hm(dep + 240), '8りょう');
+    B.left.userData.set(`${KIND_KANA[sim.serviceKey] || KIND_KANA.local} ${dest}`, hm(rs, dep), '8りょう');
+    B.right.userData.set(`${KIND_KANA.exp} ${yuri}`, hm(rs, dep + 240), '8りょう');
   } else {
     const arr = tt[tt.length - 1].arr;
-    B.left.userData.set(`${KIND_KANA.rapid} ${yuri}`, hm(arr + 180), '10りょう');
-    B.right.userData.set(`${KIND_KANA.exp} ${yuri}`, hm(arr + 420), '8りょう');
+    B.left.userData.set(`${KIND_KANA.rapid} ${yuri}`, hm(rs, arr + 180), '10りょう');
+    B.right.userData.set(`${KIND_KANA.exp} ${yuri}`, hm(rs, arr + 420), '8りょう');
   }
+}
+
+/* 途中の駅の発車標: この電車(左ホーム)と、反対の向きの各停(右ホーム)。
+ * 次の駅・ドア・時間帯が変わったときだけ書き直す(毎フレームの絵の処理はしない) */
+export function updateStationLed(rs) {
+  const W = rs._stw, sim = rs.sim;
+  if (!W || !W.led || !sim || !sim.timetable || !sim.timetable.length || !sim.stops || !sim.stops.length) return;
+  const L = W.led;
+  if (L.sim === sim && L.idx === sim.stopIdx && L.door === !!sim.doorOpen && L.tod === rs.timeOfDay && L.kind === sim.serviceKey) return;
+  L.sim = sim; L.idx = sim.stopIdx; L.door = !!sim.doorOpen; L.tod = rs.timeOfDay; L.kind = sim.serviceKey;
+  const tt = sim.timetable;
+  /* ドア開放中は いま停まっている駅(stopIdx はもう次の駅を指している) */
+  const i = Math.max(0, Math.min(tt.length - 1, sim.doorOpen ? sim.stopIdx - 1 : sim.stopIdx));
+  const dep = tt[i].dep != null ? tt[i].dep : tt[i].arr;
+  const last = sim.stops[sim.stops.length - 1];
+  const cars = 8;     // 自分の電車はいつも8両(traffic.js)
+  L.own.userData.set(`${KIND_KANA[sim.serviceKey] || KIND_KANA.local} ${kanaOf(last.name)}`, hm(rs, dep || 0), `${cars}りょう`);
+  const oppDest = rs.line.meta.direction === 'up' ? kanaOf('新百合ヶ丘') : kanaOf('新宿');
+  L.opp.userData.set(`${KIND_KANA.local} ${oppDest}`, hm(rs, (dep || 0) + 180), '8りょう');
 }
 
 /* ---------- 線路わきの標識(制限・解除・予告・キロ程) ---------- */
 export function buildBoards(rs) {
-  buildBoardsAt(rs, PLAT, (s) => inPlatform(rs, s));
+  buildBoardsAt(rs, PLAT, (s) => inPlatform(rs, s), STOP8_AHEAD);
 }
 
 /* ---------- 信号機(種別が変わるたびに作り直す) ---------- */
@@ -878,12 +1212,16 @@ export function buildSignals(rs) {
   const T = rs.terminal;
   /* 信号の上にある天井の高さ(レール面から): トンネル・地下駅は天井の光る帯 6.1 /
    * ホームの屋根は鼻隠しの下端 3.98 / なにもなければ Infinity。灯器がこの下に収まるようにする */
+  const sty = stationStyles(rs);
   const cover = (s) => {
     if (rs._inTunnel(s)) return 6.1;
-    return rs.line.stations.some((st) => !(T && st.name === '新宿') && !rs._inTunnel(st.s)
-      && s > snapS(rs, st.s - ROOF_A) - 1 && s < snapS(rs, st.s + ROOF_B) + 1) ? 3.98 : Infinity;
+    return rs.line.stations.some((st, si) => !(T && st.name === '新宿') && !rs._inTunnel(st.s)
+      && s > snapS(rs, st.s - sty[si].roofA) - 1 && s < snapS(rs, st.s + ROOF_B) + 1) ? 3.98 : Infinity;
   };
-  buildSignalsAt(rs, (s) => inPlatform(rs, s), cover);
+  /* 反対の線路(上り)の信号機の裏: 坑口の近く・トンネル・ターミナルには立てない */
+  const nearPortal = (s) => rs.line.sections.tunnel.some((t) => Math.abs(s - t.from) < 15 || Math.abs(s - t.to) < 15);
+  const backOk = (s) => !rs._inTerminal(s, 10) && !nearPortal(s) && !rs._inTunnel(s);
+  buildSignalsAt(rs, (s) => inPlatform(rs, s), cover, backOk);
   updateLedBoards(rs);
 }
 
@@ -919,10 +1257,13 @@ export function buildStopBeam(rs) {
   rs.world.add(rs.stopBeam);
 }
 
-/* ---------- ホームの備品(ベンチ・自販機)。駅の形に焼きこむ ---------- */
+/* ---------- ホームの備品(ベンチ・自販機・ごみ箱)。駅の形に焼きこむ ----------
+ * 門型ビームの柱・駅名標の足・階段・駅舎への出入り口・予告の標識をよけて、線路方向へずらして置く */
 export function buildFurniture(rs) {
   const T = rs.terminal;
+  const W = rs._stw;
   const vendCols = [0xc23b2e, 0x2e5fc2, 0xe8e6e0];
+  const binCols = [0x5c6670, 0x2f6d9e, 0x3c8a55];
   const f = newFrame();
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
   /* 3人がけベンチ(座面・背もたれ・脚) */
@@ -940,37 +1281,71 @@ export function buildFurniture(rs) {
     rs._benchParts = parts;
     rs._vendGeo = new THREE.BoxGeometry(0.85, 1.7, 0.68);
     rs._vendFront = new THREE.BoxGeometry(0.6, 1.1, 0.05);
+    rs._binGeo = new THREE.BoxGeometry(0.38, 0.9, 0.38);
   }
   rs._vendFrontMat = new THREE.MeshStandardMaterial({ color: 0xdfe6ea, roughness: 0.35, metalness: 0.2 });
   const VF = bakerFor(rs, rs._vendFrontMat, rs._vendFrontMat);
-  /* 門型ビームの柱(線路方向±0.12m)にかぶらないよう、備品を線路方向へずらす(継電箱と同じ考え方) */
   const gS = (rs._catSupports || []).filter((sp) => sp.type === 'gantry').map((sp) => sp.s);
-  const clearOfPoles = (s, half) => {
-    for (const g of gS) {
-      const d = s - g;
-      if (Math.abs(d) < half + 0.35) return g + (d < 0 ? -1 : 1) * (half + 0.35);
-    }
-    return s;
-  };
+  const sty = stationStyles(rs);
   rs.line.stations.forEach((st, si) => {
     if (T && st.name === '新宿') return;    // ターミナルは島式ホーム(ベンチは置かない)
     const B = stationBaker(rs, si);
     if (!B) return;
-    /* 左ホームの -45.5/-95.5m には停止位置の予告(50/100)が立つので、ベンチはずらす */
-    [[1, 4.45, [-54, -86]], [-1, -8.25, [-45, -95]]].forEach(([dir, off, benchS]) => {
-      benchS.forEach((ds) => {
-        frameInto(rs, clearOfPoles(st.s + ds, 0.75), f);
-        q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));   // 線路のほうを向く
+    const ob = (W && W.obst[si]) || [];
+    const house = sty[si].kind === 'house' && !rs._inTunnel(st.s);
+    const appr = [STOP8_AHEAD - 50, STOP8_AHEAD - 100].map((d) => st.s + d);
+    /* [横の位置, 置いたもの(線路方向の中心・半分の長さ)] */
+    [[1, 4.45], [-1, -8.4]].forEach(([dir, off]) => {
+      const placed = [];
+      const hit = (s, half) => {
+        if (s < st.s - P_A + 3 + half || s > st.s + 8) return true;
+        for (let k = 0; k < gS.length; k++) if (Math.abs(s - gS[k]) < half + 0.35) return true;
+        for (let k = 0; k < appr.length; k++) if (Math.abs(s - appr[k]) < half + 0.5) return true;
+        if (dir < 0 && house && s > st.s - 66 - half && s < st.s - 44 + half) return true;   // 駅舎への出入り口
+        for (let k = 0; k < placed.length; k++) if (Math.abs(s - placed[k][0]) < half + placed[k][1] + 0.3) return true;
+        for (let k = 0; k < ob.length; k++) {
+          const o = ob[k];
+          if (o.s0 != null) {
+            if ((o.lat == null || Math.abs(o.lat - off) < o.r + 0.5) && s > o.s0 - half && s < o.s1 + half) return true;
+          } else if (Math.abs(o.lat - off) < o.r + 0.5 && Math.abs(s - o.s) < o.r + half) return true;
+        }
+        return false;
+      };
+      /* 近くの空いているところ(なければ置かない) */
+      const spot = (s0, half) => {
+        for (let k = 0; k <= 40; k++) {
+          const s = s0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.5;
+          if (!hit(s, half)) { placed.push([s, half]); ob.push({ s, lat: off, r: half + 0.15 }); return s; }
+        }
+        return null;
+      };
+      const face = () => q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));   // 線路のほうを向く
+      /* 自販機(本体は駅の形に、光る前面は全線まとめて) */
+      const sv = spot(st.s - 68, 0.43);
+      if (sv !== null) {
+        frameInto(rs, sv, f); face();
+        m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05 + 0.85), q, one);
+        B.geo(rs._vendGeo, { m: m4, col: vendCols[(si + (dir > 0 ? 0 : 1)) % vendCols.length], white: true });
+        m4.compose(p.copy(f.p).addScaledVector(f.left, off - dir * 0.36).setY(f.p.y + 1.05 + 0.93), q, one);
+        VF.geo(rs._vendFront, { m: m4 });
+      }
+      /* ごみ箱3つ(もえる・びん缶・ペットボトルの色) */
+      const sb = spot(st.s - 62, 0.65);
+      if (sb !== null) {
+        [-0.42, 0, 0.42].forEach((d, k) => {
+          frameInto(rs, sb + d, f); face();
+          m4.compose(p.copy(f.p).addScaledVector(f.left, off + dir * 0.05).setY(f.p.y + 1.05 + 0.45), q, one);
+          B.geo(rs._binGeo, { m: m4, col: binCols[k], white: true });
+        });
+      }
+      /* ベンチ4つ */
+      [-30, -54, -86, -118].forEach((ds) => {
+        const s = spot(st.s + ds, 0.78);
+        if (s === null) return;
+        frameInto(rs, s, f); face();
         m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05), q, one);
         rs._benchParts.forEach(([g, col]) => B.geo(g, { m: m4, col, white: true }));
       });
-      /* 自販機(本体は駅の形に、光る前面は全線まとめて) */
-      frameInto(rs, clearOfPoles(st.s - 68, 0.43), f);
-      q.setFromAxisAngle(UPV, Math.atan2(-dir * f.left.x, -dir * f.left.z));
-      m4.compose(p.copy(f.p).addScaledVector(f.left, off).setY(f.p.y + 1.05 + 0.85), q, one);
-      B.geo(rs._vendGeo, { m: m4, col: vendCols[(si + (dir > 0 ? 0 : 1)) % vendCols.length], white: true });
-      m4.compose(p.copy(f.p).addScaledVector(f.left, off - dir * 0.36).setY(f.p.y + 1.05 + 0.93), q, one);
-      VF.geo(rs._vendFront, { m: m4 });
     });
   });
 }
@@ -978,16 +1353,17 @@ export function buildFurniture(rs) {
 /* ---------- 人の形(腕・脚・くつ・首・髪) ---------- */
 const SKIN = 0xd8b49a;
 function crowdRes(rs) {
-  if (rs._crowdRes && rs._crowdRes.v3) return rs._crowdRes;
-  const torso = () => new THREE.CylinderGeometry(0.19, 0.16, 0.6, 7).scale(1, 1, 0.62).translate(0, 1.12, 0);
-  const arm = (sx) => new THREE.CylinderGeometry(0.045, 0.04, 0.56, 5, 1, true).translate(0, -0.28, 0).rotateZ(sx * 0.08).translate(sx * 0.23, 1.38, 0);
-  const leg = (sx) => new THREE.CylinderGeometry(0.06, 0.055, 0.78, 5, 1, true).translate(sx * 0.08, 0.43, 0);
+  if (rs._crowdRes && rs._crowdRes.v4) return rs._crowdRes;
+  /* 1人約170三角形(ホームに人が多いので、形は軽めに) */
+  const torso = () => new THREE.CylinderGeometry(0.19, 0.16, 0.6, 6).scale(1, 1, 0.62).translate(0, 1.12, 0);
+  const arm = (sx) => new THREE.CylinderGeometry(0.045, 0.04, 0.56, 4, 1, true).translate(0, -0.28, 0).rotateZ(sx * 0.08).translate(sx * 0.23, 1.38, 0);
+  const leg = (sx) => new THREE.CylinderGeometry(0.06, 0.055, 0.78, 4, 1, true).translate(sx * 0.08, 0.43, 0);
   const shoe = (sx) => new THREE.BoxGeometry(0.1, 0.06, 0.24).translate(sx * 0.08, 0.03, 0.04);
   const head = () => [
-    [new THREE.CylinderGeometry(0.05, 0.055, 0.1, 6, 1, true).translate(0, 1.46, 0), SKIN],
-    [new THREE.SphereGeometry(0.115, 7, 5).translate(0, 1.6, 0), SKIN],
+    [new THREE.CylinderGeometry(0.05, 0.055, 0.1, 4, 1, true).translate(0, 1.46, 0), SKIN],
+    [new THREE.SphereGeometry(0.115, 6, 4).translate(0, 1.6, 0), SKIN],
   ];
-  const hair = () => new THREE.SphereGeometry(0.118, 7, 3, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(1.05, 1.0, 1.08).translate(0, 1.618, -0.018);
+  const hair = () => new THREE.SphereGeometry(0.118, 6, 2, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(1.05, 1.0, 1.08).translate(0, 1.618, -0.018);
   /* 待つ人: 服(インスタンス色)+脚・くつ・頭・髪(頂点色)+リュック/肩かけかばん(3人に1人ずつ) */
   const crowd = mergeColored([
     [torso(), 0xffffff, { stCloth: 1 }], [arm(1), 0xffffff, { stCloth: 1 }], [arm(-1), 0xffffff, { stCloth: 1 }],
@@ -995,7 +1371,6 @@ function crowdRes(rs) {
     ...head(), [hair(), 0x1d1915],
     [new THREE.BoxGeometry(0.28, 0.36, 0.14).translate(0, 1.15, -0.19), 0x23272d, { stBag: 1 }],
     [new THREE.BoxGeometry(0.08, 0.26, 0.3).translate(0.27, 0.92, 0), 0x6b4a32, { stBag: 2 }],
-    [new THREE.BoxGeometry(0.03, 0.62, 0.03).rotateZ(-0.62).translate(0.06, 1.18, 0.0), 0x4a3424, { stBag: 2 }],
   ], ['stCloth', 'stBag']);
   /* 頂点の処理: 服の部分だけインスタンス色、かばんは インスタンス番号で3種に */
   const vsPars = '#include <common>\nattribute float stCloth;\nattribute float stBag;';
@@ -1008,9 +1383,14 @@ function crowdRes(rs) {
   #endif
 #endif`;
   const matCrowd = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.88 });
+  /* uStLit: ホームの灯りに照らされた明るさ(夜・夕方)。自分の色(服・はだ)のまま明るくする */
+  const uLit = { value: 0 };
   matCrowd.onBeforeCompile = (sh) => {
+    sh.uniforms.uStLit = uLit;
     sh.vertexShader = sh.vertexShader.replace('#include <common>', vsPars).replace('#include <begin_vertex>', vsBag)
       .replace('#include <color_vertex>', '#include <color_vertex>\n#if defined( USE_INSTANCING_COLOR ) && defined( USE_COLOR )\n  vColor.xyz = mix( color.xyz, vColor.xyz, stCloth );\n#endif');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uStLit;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * uStLit;');
   };
   matCrowd.customProgramCacheKey = () => 'st-crowd';
   matCrowd.name = 'st-crowd';
@@ -1021,20 +1401,26 @@ function crowdRes(rs) {
   };
   depth.customProgramCacheKey = () => 'st-crowd-d';
   /* 動く人(12人)用: 部品ごとの形(肩・股関節がまわる中心) */
+  /* 動く人も待つ人と同じ材質(同じプログラム): 服の部分(stCloth=1)だけインスタンス色 */
+  const CL = { stCloth: 1 }, EXN = ['stCloth', 'stBag'];
   const fig = {
-    torso: mergeColored([[torso(), 0xffffff]]),
-    head: mergeColored([...head(), [hair(), 0x1d1915]]),
+    torso: mergeColored([[torso(), 0xffffff, CL]], EXN),
+    head: mergeColored([...head(), [hair(), 0x1d1915]], EXN),
     leg: mergeColored([
-      [new THREE.CylinderGeometry(0.06, 0.055, 0.78, 6, 1, true).translate(0, -0.39, 0), 0xffffff],
-      [new THREE.BoxGeometry(0.1, 0.06, 0.24).translate(0, -0.79, 0.04), 0x404044],
-    ]),
-    arm: mergeColored([[new THREE.CylinderGeometry(0.045, 0.04, 0.56, 5, 1, true).translate(0, -0.28, 0), 0xffffff]]),
+      [new THREE.CylinderGeometry(0.06, 0.055, 0.78, 6, 1, true).translate(0, -0.39, 0), 0xffffff, CL],
+      [new THREE.BoxGeometry(0.1, 0.06, 0.24).translate(0, -0.79, 0.04), 0x2e2f33],
+    ], EXN),
+    arm: mergeColored([[new THREE.CylinderGeometry(0.045, 0.04, 0.56, 5, 1, true).translate(0, -0.28, 0), 0xffffff, CL]], EXN),
   };
-  const matFig = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.88 });
-  matFig.name = 'st-fig';
-  matFig.userData.noWeather = true;
-  const R = rs._crowdRes = { v3: true, crowd, matCrowd, depth, fig, matFig };
-  rs._keep.add(matCrowd); rs._keep.add(matFig); rs._keep.add(depth);
+  const matFig = matCrowd;
+  /* 遠くの駅の人(箱3つ・36三角形)。頂点属性は同じなので matCrowd のプログラムをそのまま使う */
+  const crowdLite = mergeColored([
+    [new THREE.BoxGeometry(0.36, 0.62, 0.24).translate(0, 1.12, 0), 0xffffff, { stCloth: 1 }],
+    [new THREE.BoxGeometry(0.26, 0.82, 0.18).translate(0, 0.41, 0), 0x2c3138],
+    [new THREE.BoxGeometry(0.2, 0.26, 0.21).translate(0, 1.58, 0), 0x6b5444],
+  ], ['stCloth', 'stBag']);
+  const R = rs._crowdRes = { v4: true, crowd, crowdLite, matCrowd, depth, fig, matFig, uLit };
+  rs._keep.add(matCrowd); rs._keep.add(depth);
   return R;
 }
 
@@ -1047,25 +1433,112 @@ export function buildCrowds(rs) {
   const cloth = [0x3e5a78, 0x7a4a42, 0x4a6b4e, 0x6b5a7c, 0x8a6d3b, 0x455a64, 0xa05a6e, 0x37657a, 0x94502e, 0xd8d4c8, 0x2b2f36, 0x714a71, 0xc9a24a, 0x5d7f9a];
   const f = newFrame();
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), col = new THREE.Color(), p = new THREE.Vector3();
-  rs.line.stations.forEach((st) => {
+  const W = rs._stw;
+  const T = rs.terminal;
+  const sty = stationStyles(rs);
+  const tn = new THREE.Vector3(), dc = new THREE.Vector3(), mk = new THREE.Matrix4();
+  rs._crowdMeshes = [];
+  /* ドアの印の ▲▲(上から見た三角形2つ。+z が線路のほう) */
+  const arrow = new THREE.BufferGeometry();
+  arrow.setAttribute('position', new THREE.Float32BufferAttribute([
+    -0.24, 0, -0.16, -0.06, 0, -0.16, -0.15, 0, 0.17, 0.06, 0, -0.16, 0.24, 0, -0.16, 0.15, 0, 0.17,
+  ], 3));
+  arrow.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+  rs.line.stations.forEach((st, si) => {
+    const isTerm = !!T && st.name === '新宿';
+    const ob = (W && W.obst[si]) || [];
+    const SBk = stationBaker(rs, si);
+    const stairs = sty[si].kind !== 'house' && !isTerm && !rs._inTunnel(st.s);
+    /* ホームのはし(ターミナルは島式ホームの範囲) */
+    const sMin = isTerm ? st.s - (T.up ? 150 : 163) : st.s - (stairs ? STAIR.foot - 2.5 : P_A - 5);
+    const sMax = isTerm ? st.s + (T.up ? 24 : 12) : st.s + P_B - 3;
+    const busy = isTerm ? 0.55 : 0.45;
+    const free = (s, lat, r) => {
+      if (s < sMin || s > sMax) return false;
+      for (let k = 0; k < ob.length; k++) {
+        const o = ob[k];
+        if (o.s0 != null) {
+          if (s > o.s0 - r && s < o.s1 + r && (o.lat == null || Math.abs(lat - o.lat) < o.r + r)) return false;
+        } else if (Math.hypot(s - o.s, lat - o.lat) < o.r + r) return false;
+      }
+      return true;
+    };
     const items = [];
+    const put = (s, lat, side, yawJ) => {
+      frameInto(rs, Math.max(2, s), f);
+      const yaw = Math.atan2(-side * f.left.x, -side * f.left.z) + yawJ;
+      items.push({ s, p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.05), yaw, sc: 0.88 + rnd() * 0.2, col: cloth[Math.floor(rnd() * cloth.length)] });
+      ob.push({ s, lat, r: 0.22 });
+    };
     [1, -1].forEach((side) => {
-      const nP = 8 + Math.floor(rnd() * 10);
-      for (let i = 0; i < nP; i++) {
-        const ss = st.s - 150 + rnd() * 158;
-        /* 停車位置まわりの乗り降りする人(アニメ)とは重ならないように */
-        if (Math.abs(ss - st.s) < 50 && side > 0 && rnd() < 0.7) continue;
-        /* 運転台の窓のすぐ横(停止位置の前後)には立たせない(視界をふさがない) */
-        if (side > 0 && ss > st.s - 16 && ss < st.s + 14) continue;
-        const u = 2.85 + rnd() * 1.85;                 // 左: 2.85〜4.7 / 右: -3.8 を軸に左右対称
-        const lat = side > 0 ? u : -3.8 - u;
-        frameInto(rs, Math.max(2, ss), f);
-        /* 多くは線路の方を向き、少しばらつかせる */
-        const yaw = Math.atan2(-side * f.left.x, -side * f.left.z) + (rnd() - 0.5) * 1.6;
-        items.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.05), yaw, sc: 0.88 + rnd() * 0.2, col: cloth[Math.floor(rnd() * cloth.length)] });
+      const P = sideOf(side);
+      /* ドアの位置の足もとの印(▲▲)と、ドアの前に2列で並ぶ人。
+       * 左(この電車)は停止位置 st.s から後ろへ。右は反対向きの電車(ホームの奥 st.s-150 に先頭が止まる)の
+       * ドアなので、奥から手前へならぶ(止まった運転台の右の窓からも見える) */
+      const upSide = side < 0 && !isTerm;
+      for (let cI = 0; cI < 8; cI++) {
+        DOOR_OFF.forEach((off) => {
+          const ds = upSide ? st.s - P_A + 5 + 20 * cI + off : st.s - 20 * cI - off;
+          if (ds < st.s - P_A + 2 || ds > st.s + P_B - 2) return;
+          /* 足もとの印: へりから1.45m(点字ブロックのすぐうしろ)。うすい板+水色の ▲▲(駅の形に焼きこむ) */
+          frameInto(rs, ds, f);
+          flatT(f, tn).multiplyScalar(-side);
+          dc.copy(f.p).addScaledVector(f.left, P.edge + 1.45 * side);
+          dc.y = f.p.y + 1.05 + 0.006;
+          if (SBk) {
+            SBk.quadFlat(dc, tn, 0.55, 0.45, null, 0xdfe6ea);
+            dc.y += 0.002;
+            /* ▲ の先を線路のほうへ: 箱の z = 線路のほう(左ホームは -left、右ホームは +left) */
+            mk.makeBasis(tn, UPV, dc.clone().set(f.left.x * -side, 0, f.left.z * -side)).setPosition(dc);
+            SBk.geo(arrow, { m: mk, col: 0x3d8fd6, white: true });
+          }
+          /* 運転台の窓の横(停止位置の前後)・乗る人(動く)が使うドアには並べない */
+          if (side > 0 && ds > st.s - 16 && ds < st.s + 14) return;
+          if (side > 0 && BOARD_DOORS.some((b) => Math.abs(st.s - b - ds) < 0.5)) return;
+          if (rnd() > busy) return;
+          const r = rnd();
+          const nP = r < 0.55 ? 1 : r < 0.85 ? 2 : r < 0.95 ? 3 : 4;      // 平均 約1.6人
+          const rows = [2.9, 3.45];
+          for (let k = 0; k < nP; k++) {
+            const u = rows[k >> 1] + (rnd() - 0.5) * 0.08;
+            const lat = side > 0 ? u : -3.8 - u;
+            const s = ds + (k & 1 ? 0.33 : -0.33) + (rnd() - 0.5) * 0.1;
+            if (free(s, lat, 0.2)) put(s, lat, side, (rnd() - 0.5) * 0.5);
+          }
+        });
+      }
+      /* 乗る人(動く4人)が待つ場所をあけておく */
+      if (side > 0) {
+        BOARD_DOORS.forEach((b) => ob.push({ s: st.s - b - 0.33, lat: 2.9, r: 0.25 }));
+        ALIGHT_S.forEach((a) => ob.push({ s0: st.s + a - 0.5, s1: st.s + a + 0.5, lat: 2.9, r: 1.5 }));
+      }
+      /* 列にならばない人(ばらばらの向き)。左はホームのうしろ寄り、右は列のあいだ
+       * (右のうしろ寄り -7.8m は停車中に歩く人の通り道) */
+      const nFree = (isTerm ? 15 : 0) + 6 + Math.floor(rnd() * 5);
+      for (let i = 0, tries = 0; i < nFree && tries < 80; tries++) {
+        const s = sMin + rnd() * (sMax - sMin);
+        if (side > 0 && s > st.s - 16 && s < st.s + 14) continue;
+        const lat = side > 0 ? 3.7 + rnd() * 0.9 : -6.75 - rnd() * 0.5;
+        if (!free(s, lat, 0.3)) continue;
+        put(s, lat, side, (rnd() - 0.5) * 2.2);
+        i++;
+      }
+      /* ホームの先のほう(止まった運転台の前に見えるところ)にも数人。
+       * 左は窓のすぐ横ではなく 7.5m 以上先の うしろ寄り(視界をふさがない) */
+      /* 新宿(島式ホーム)は人が多い: 発車を待つ運転台の前の島にも */
+      const nFront = isTerm ? 6 + Math.floor(rnd() * 3) : 3 + Math.floor(rnd() * 2);
+      const frontLen = isTerm ? sMax - st.s - 4 : 9.5;
+      for (let i = 0, tries = 0; i < nFront && tries < 60; tries++) {
+        const s = side > 0 && !isTerm ? st.s + 7.5 + rnd() * 6 : st.s + 4 + rnd() * frontLen;
+        const lat = isTerm ? (side > 0 ? 2.7 + rnd() * 1.2 : -6.5 - rnd() * 1.2) : side > 0 ? 3.95 + rnd() * 0.65 : -6.6 - rnd() * 0.7;
+        if (!free(s, lat, 0.3)) continue;
+        put(s, lat, side, (rnd() - 0.5) * 2.6);
+        i++;
       }
     });
     if (!items.length) return;
+    /* 前(s が大きい)から順に並べる: 前を向いたカメラのうしろの人は count を減らして描かない */
+    items.sort((x, y) => y.s - x.s);
     const im = new THREE.InstancedMesh(R.crowd, R.matCrowd, items.length);
     items.forEach((it, i) => {
       q.setFromAxisAngle(UPV, it.yaw); sc.setScalar(it.sc);
@@ -1077,11 +1550,11 @@ export function buildCrowds(rs) {
     im.userData.noSplit = true; im.userData.st = true;
     im.computeBoundingSphere();
     rs.world.add(im);
+    /* 遠近の切りかえ(updatePeople): カメラから160m以内の駅だけ細かい形+影 */
+    rs._crowdMeshes.push({ im, a: st.s - P_A - 10, b: st.s + P_B + 10, lite: false, n: items.length, sArr: Float32Array.from(items.map((it) => it.s)) });
   });
 
   /* 屋根から下がる駅名(表も裏も読める。なまえの部分だけ) */
-  const W = rs._stw;
-  const T = rs.terminal;
   const n = new THREE.Vector3(), c = new THREE.Vector3(), tf = new THREE.Vector3();
   const rail = new THREE.BoxGeometry(1.94, 0.03, 0.05);
   rs.line.stations.forEach((st, si) => {
@@ -1089,8 +1562,10 @@ export function buildCrowds(rs) {
     const SB = bakerFor(rs, W.signMats[si], W.signMats[si]);
     const B = stationBaker(rs, si);
     const under = rs._inTunnel(st.s);
+    /* 屋根の下だけにつるす(屋根の短い駅は奥の1枚を手前に) */
+    const far = under ? -112 : -Math.min(112, sty[si].roofA - 13);
     [1, -1].forEach((sg) => {
-      [-28, -112].forEach((ds) => {
+      [-28, far].forEach((ds) => {
         frameInto(rs, st.s + ds, f);
         flatT(f, n).negate();
         c.copy(f.p).addScaledVector(f.left, mid(sideOf(sg)));
@@ -1152,6 +1627,7 @@ export function buildPeople(rs) {
     P.arm.setColorAt(i * 2, col); P.arm.setColorAt(i * 2 + 1, col);
     col.setHex(pants[i % pants.length]);
     P.leg.setColorAt(i * 2, col); P.leg.setColorAt(i * 2 + 1, col);
+    P.head.setColorAt(i, col.setRGB(1, 1, 1));   // 頭はインスタンス色なし(白)=待つ人と同じプログラム
     rs.people.push({ pos: new THREE.Vector3(), yaw: 0, ph: i * 1.7, legA: 0, armA: 0, bob: 0, vis: false, sc: 0.88 + (i % 5) * 0.05 });
   }
   hideAllPeople(rs);
@@ -1226,6 +1702,8 @@ export function updatePeople(rs, dt) {
   updateClock(rs);
   updateSignPool(rs);
   if (rs._ledTod !== rs.timeOfDay) { rs._ledTod = rs.timeOfDay; updateLedBoards(rs); }
+  updateStationLed(rs);
+  updateCrowdLod(rs);
   if (!rs.people || !rs._ppl) return;
   const sim = rs.sim;
   /* ドア開放中は「いま停まっている駅」(到着でstopIdxはもう次を指している) */
@@ -1236,14 +1714,14 @@ export function updatePeople(rs, dt) {
   const P = rs._ppl, fr = P.fr, dir = P.dir, pos = P.tmp;
   const f01 = sim.doorOpen ? Math.min(1, Math.max(0, 1 - (rs._departOf() - sim.t) / 20)) : 0;
   const edge = PLAT.L.edge + 0.12;
-  /* 自ホーム(進行左側)の6人: 0-1=降りる人(すこし先), 2-5=乗る人(後方寄り) */
+  /* 自ホーム(進行左側)の6人: 0-1=降りる人(運転台の すこし先), 2-5=乗る人(ドアの前の列の先頭) */
   for (let i = 0; i < 6; i++) {
     const fig = rs.people[i];
-    const s = i < 2 ? next.stopAt + 14 + i * 9 : next.stopAt + 2 - (i - 2) * 13;
+    const s = i < 2 ? next.stopAt + ALIGHT_S[i] : next.stopAt - BOARD_DOORS[i - 2] - 0.33;
     frameInto(rs, Math.max(2, s), fr);
     let lat, walking = 0, dw = null;
     if (!sim.doorOpen) {
-      lat = 3.0 + (i % 3) * 0.35;
+      lat = 2.9;
       if (i < 2) { fig.vis = false; continue; }
     } else if (i < 2) {
       const pk = Math.min(1, Math.max(0, f01 * 1.7 - i * 0.25));
@@ -1251,7 +1729,7 @@ export function updatePeople(rs, dt) {
       if (pk > 0 && pk < 1) { walking = 1; dw = dir.copy(fr.left); }
     } else {
       const pk = Math.min(1, Math.max(0, f01 * 1.6 - (i - 2) * 0.18));
-      const w0 = 3.0 + (i % 3) * 0.35;
+      const w0 = 2.9;
       lat = w0 - pk * (w0 - edge);
       if (pk >= 1) { fig.vis = false; continue; }
       if (pk > 0) { walking = 1; dw = dir.copy(fr.left).negate(); }
@@ -1273,11 +1751,42 @@ export function updatePeople(rs, dt) {
     }
     frameInto(rs, Math.max(2, s), fr);
     const dw = walking ? dir.copy(fr.t).negate() : null;
-    pos.copy(fr.p).addScaledVector(fr.left, -6.6 - (i % 3) * 0.35);
+    /* 列(-6.7/-7.25m)のうしろの通り道を歩く */
+    pos.copy(fr.p).addScaledVector(fr.left, -7.82 + (i % 2) * 0.06);
     pos.y += 1.05;
     placeFig(rs, fig, pos, dw, dt, walking);
   }
   writePeople(rs);
+}
+
+/* 待つ人の遠近: カメラから160m以内の駅は細かい形+影、それより遠い駅は箱3つの形(影なし)。
+ * 変わったときだけ形を差しかえる(材質・プログラムは同じ) */
+const _lodDir = new THREE.Vector3(), _lodFr = newFrame();
+function updateCrowdLod(rs) {
+  const list = rs._crowdMeshes, R = rs._crowdRes;
+  if (!list || !R || !R.crowdLite) return;
+  const cs = rs._camS != null ? rs._camS : rs.sim ? rs.sim.pos : 0;
+  /* カメラが線路の前(s がふえる向き)を向いているか(運転台・うしろ・上空・よこ)。線路わきのカメラは反対を向く */
+  let fwd = 0;
+  if (rs.camera && rs.frames) {
+    rs.camera.getWorldDirection(_lodDir);
+    frameInto(rs, cs, _lodFr);
+    fwd = _lodDir.x * _lodFr.t.x + _lodDir.z * _lodFr.t.z;
+  }
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    const d = cs < e.a ? e.a - cs : cs > e.b ? cs - e.b : 0;
+    const lite = d > 160;
+    if (lite !== e.lite) {
+      e.lite = lite;
+      e.im.geometry = lite ? R.crowdLite : R.crowd;
+      e.im.castShadow = !lite;
+    }
+    /* 前を向いているときは、カメラより8m以上うしろの人は描かない(見えない・影も落とさない) */
+    let cnt = e.n;
+    if (fwd > 0.35 && !lite) { cnt = 0; while (cnt < e.n && e.sArr[cnt] >= cs - 8) cnt++; }
+    if (e.im.count !== cnt) e.im.count = cnt;
+  }
 }
 
 /* 駅名標の画像を、カメラに近い駅へ割りあてなおす(いちばん近い駅が変わったときだけ) */
@@ -1339,15 +1848,17 @@ function stationLook(rs) {
     night = W.tod === 'night'; eve = W.tod === 'evening'; wet = W.wx !== 'clear';
   }
   const M = W.M;
-  M.st.emissiveIntensity = night ? 1.6 : eve ? 0.8 : wet ? 0.5 : 0;     // 屋根の照明の帯
-  M.pool.visible = night || eve || wet;
-  M.pool.opacity = night ? 1 : eve ? 0.35 : 0.15;
-  /* 内照式の駅名標・時計: 夜は光りすぎない明るさに(にじみ過ぎない) */
-  const lit = night ? 0.62 : eve ? 0.8 : 0.95;
+  M.st.emissiveIntensity = night ? 1.6 : eve ? 0.8 : wet ? 0.5 : 0;     // 屋根の照明の帯・ホームの床
+  M.poolStrip.visible = night || eve || wet;
+  M.poolStrip.opacity = night ? 0.7 : eve ? 0.25 : 0.12;
+  /* 内照式の駅名標・時計: 夜は少しだけ1をこえて、ほんのりにじむ(いちばん明るい看板) */
+  const lit = night ? 1.15 : eve ? 1.0 : 0.95;
   M.clock.color.setScalar(lit);
   W.signMats.forEach((m) => m.color.setScalar(lit));
   if (rs._atlas) rs._atlas.mat.emissiveIntensity = night || eve ? 0.5 : 0.12;   // 停止位置「8」などの標識
   if (W.termBld) W.termBld.emissiveIntensity = night ? 1.0 : eve ? 0.35 : 0;
+  /* ホームの人: 夜・夕方はホームの灯りに照らされた明るさを足す(黒い影絵にならない) */
+  if (rs._crowdRes && rs._crowdRes.uLit) rs._crowdRes.uLit.value = night ? 0.32 : eve ? 0.12 : 0;
   /* 信号の灯: 昼はあざやかな色(明るすぎると白っぽくなる)、夜は明るくしてにじませる */
   if (rs._sigRes && rs._sigRes.glowMat) rs._sigRes.glowMat.color.setScalar(night ? 1.3 : eve ? 0.95 : 0.5);
 }

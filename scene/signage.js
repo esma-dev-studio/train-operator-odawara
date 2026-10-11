@@ -215,6 +215,23 @@ export class Baker {
     this.n += 4;
     return this;
   }
+  /* 床に寝かせた四角(上向き)。c=中心, t=横(u)の向き(水平), w=t方向の長さ, d=奥行き(v。t の左手側が +v) */
+  quadFlat(c, t, w, d, uv, col, e = 0) {
+    _r.copy(t).setY(0).normalize();
+    _q.crossVectors(UPV, _r);              // t の左手(上から見て反時計まわり90°)
+    const base = this.n;
+    if (col != null) _bcol.set(col); else _bcol.setRGB(1, 1, 1);
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([sx, sy]) => {
+      this.P.push(c.x + _r.x * (sx * w) / 2 + _q.x * (sy * d) / 2, c.y, c.z + _r.z * (sx * w) / 2 + _q.z * (sy * d) / 2);
+      this.N.push(0, 1, 0);
+      if (uv) this.U.push(sx < 0 ? uv[0] : uv[2], sy < 0 ? uv[1] : uv[3]); else this.U.push(this.white[0], this.white[1]);
+      this.C.push(_bcol.r, _bcol.g, _bcol.b);
+      this.E.push(e);
+    });
+    this.I.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    this.n += 4;
+    return this;
+  }
   /* 細い支柱(根元x,y,z・高さh) */
   post(x, y, z, h, col = 0x9da3a8, r = 1) {
     if (!(h > 0.02)) return this;
@@ -321,6 +338,55 @@ const boardDraw = (bg, fg, text, size, weight = 900, border = '#111') => (c, s) 
   fitText(c, text, s / 2, s / 2 + 4 * k, s - 20 * k, size * k, weight);
 };
 
+/* 停止位置の予告: 上に紺の帯「とまる まで」、下に大きな数字と小さな m(速度制限の黄色い板と見まちがえない) */
+const drawAppr = (val) => (c, s) => {
+  const k = s / 128;
+  c.fillStyle = '#f6f6f2'; c.fillRect(0, 0, s, s);
+  c.fillStyle = '#1f3a5f'; c.fillRect(0, 0, s, 27 * k);
+  c.strokeStyle = '#1f3a5f'; c.lineWidth = 6 * k; c.strokeRect(3 * k, 3 * k, s - 6 * k, s - 6 * k);
+  c.fillStyle = '#ffffff'; fitText(c, 'とまる まで', s / 2, 15 * k, s - 18 * k, 18 * k, 700);
+  const maxW = s - 14 * k, gap = 2 * k, ms = 30 * k;
+  let ns = 64 * k;
+  c.font = `900 ${ns}px ${FONT}`;
+  let nw = c.measureText(val).width;
+  c.font = `700 ${ms}px ${FONT}`;
+  const mw = c.measureText('m').width;
+  if (nw + gap + mw > maxW) { ns = Math.floor((ns * (maxW - gap - mw)) / nw); c.font = `900 ${ns}px ${FONT}`; nw = c.measureText(val).width; }
+  const x0 = s / 2 - (nw + gap + mw) / 2, yb = 104 * k;
+  c.fillStyle = '#111111'; c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+  c.font = `900 ${ns}px ${FONT}`; c.fillText(val, x0, yb);
+  c.font = `700 ${ms}px ${FONT}`; c.fillText('m', x0 + nw + gap, yb);
+};
+/* ホームの端の柵の札「この さき はいれません」(白地に赤いふち) */
+const drawNoEntry = (c, s) => {
+  const k = s / 128;
+  c.fillStyle = '#ffffff'; c.fillRect(0, 0, s, s);
+  c.strokeStyle = '#c8281e'; c.lineWidth = 10 * k; c.strokeRect(5 * k, 5 * k, s - 10 * k, s - 10 * k);
+  c.fillStyle = '#1a1d20'; fitText(c, 'この さき', s / 2, 44 * k, s - 30 * k, 26 * k, 900);
+  c.fillStyle = '#c8281e'; fitText(c, 'はいれません', s / 2, 84 * k, s - 26 * k, 25 * k, 900);
+};
+/* 運転士用モニターの画面: 停まっている電車の横とホーム(遠近)・黄色い線・人が3人 */
+const drawItv = (c, s) => {
+  const k = s / 128;
+  c.fillStyle = '#0d1620'; c.fillRect(0, 0, s, s);
+  const x0 = 6 * k, y0 = 6 * k, w = s - 12 * k, h = s - 12 * k;
+  c.fillStyle = '#4b5d6e'; c.fillRect(x0, y0, w, h);                         // 屋根の下のかべ
+  c.fillStyle = '#9fa5a8';                                                    // ホーム(手前が広い)
+  c.beginPath(); c.moveTo(x0 + w * 0.42, y0 + h * 0.42); c.lineTo(x0 + w, y0 + h * 0.42); c.lineTo(x0 + w, y0 + h); c.lineTo(x0, y0 + h); c.closePath(); c.fill();
+  c.fillStyle = '#c9cdd0';                                                    // 電車の横
+  c.beginPath(); c.moveTo(x0, y0 + h * 0.12); c.lineTo(x0 + w * 0.42, y0 + h * 0.36); c.lineTo(x0 + w * 0.42, y0 + h * 0.48); c.lineTo(x0, y0 + h * 0.86); c.closePath(); c.fill();
+  c.fillStyle = '#2b3a48';
+  for (let i = 0; i < 4; i++) { const t0 = i * 0.24 + 0.02, t1 = t0 + 0.12; c.fillRect(x0 + w * 0.42 * t0, y0 + h * (0.3 + 0.12 * (1 - t0)) - 4 * k, w * 0.42 * (t1 - t0), 9 * k * (1.4 - t0)); }
+  c.strokeStyle = '#e0c03a'; c.lineWidth = 4 * k;                             // 黄色い線
+  c.beginPath(); c.moveTo(x0 + w * 0.44, y0 + h * 0.46); c.lineTo(x0 + w * 0.18, y0 + h); c.stroke();
+  c.fillStyle = '#2a2f36';
+  [[0.62, 0.62, 1], [0.78, 0.55, 0.8], [0.55, 0.8, 1.3]].forEach(([u, v, z]) => {
+    c.fillRect(x0 + w * u - 3 * k * z, y0 + h * v - 16 * k * z, 6 * k * z, 16 * k * z);
+    c.beginPath(); c.arc(x0 + w * u, y0 + h * v - 19 * k * z, 3.2 * k * z, 0, 7); c.fill();
+  });
+  c.fillStyle = 'rgba(255,255,255,0.08)'; c.fillRect(x0, y0, w, h * 0.5);    // 画面の映りこみ
+};
+
 export function lineBoard(rs, key) {
   if (!rs._texCache) rs._texCache = new Map();
   const hit = rs._texCache.get(key);
@@ -331,12 +397,14 @@ export function lineBoard(rs, key) {
   if (kind === 'lim') fn = boardDraw('#e8bf1f', '#111111', val, val.length > 2 ? 72 : 88);
   else if (kind === 'kai') fn = boardDraw('#f4f4f0', '#111111', '解', 78);
   else if (kind === 'stop8') fn = boardDraw('#ffffff', '#111111', '8', 96, 900, '#111');
-  else if (kind === 'appr') fn = boardDraw('#f4f4f0', '#111111', val, val.length > 2 ? 72 : 90, 900, '#1d2a36');
+  else if (kind === 'appr') fn = drawAppr(val);
+  else if (kind === 'noent') fn = drawNoEntry;
+  else if (kind === 'itv') fn = drawItv;
   else if (kind === 'km') { fn = boardDraw('#f2f2ee', '#16283a', val, val.length > 1 ? 70 : 84, 900, '#16283a'); small = true; }
   else if (kind === 'nori') { fn = boardDraw('#20272d', '#ffffff', val, 88, 900, '#f2c230'); small = true; }
   else fn = boardDraw('#ffffff', '#111111', val || key, 60);
   const uv = A.cell(key, fn, small);
-  A.text += (val || '') + '解8';
+  A.text += (val || '') + '解8' + (kind === 'appr' ? 'とまるでm' : kind === 'noent' ? 'このさきはいれません' : '');
   const ent = { tex: A.tex, mat: A.mat, uv };
   rs._texCache.set(key, ent);
   return ent;
@@ -364,8 +432,9 @@ export function makeSign(rs, key, w, h, o) {
 const _bn = new THREE.Vector3(), _bc = new THREE.Vector3();
 
 /* ---------- 線路わきの標識の配置(制限・解除・予告・キロ程) ----------
- * plat: { L:{edge,back} } / inPlat(s): ホームの範囲か */
-export function buildBoards(rs, plat, inPlat) {
+ * plat: { L:{edge,back} } / inPlat(s): ホームの範囲か / ahead: 停止位置目標「8」の停止位置からの位置 */
+export function buildBoards(rs, plat, inPlat, ahead) {
+  const A8 = typeof ahead === 'number' ? ahead : 4.5;
   const L = rs.line.meta.length;
   const f = newFrame(), n = new THREE.Vector3(), c = new THREE.Vector3();
   const face = (s, lat, yBase, key, w, postGap, noPost) => {
@@ -381,13 +450,14 @@ export function buildBoards(rs, plat, inPlat) {
     face(s1, 2.3, inPlat(s1) ? 1.05 : 0, `lim:${z.v}`, 0.7, 1.25);
     face(s2, 2.3, inPlat(s2) ? 1.05 : 0, 'kai', 0.55, 1.25);
   });
-  /* 停止位置の予告(300/200/100/50m手前): ブレーキをかけはじめる目安 */
+  /* 停止位置の予告(「8」まで 300/200/100/50m): ブレーキをかけはじめる目安。
+   * ホームの上では「8」と同じ列(へりから0.45m)に立てて、100 → 50 → 8 が一直線に見えるように */
   rs.line.stations.forEach((st) => {
     [300, 200, 100, 50].forEach((d) => {
-      const s = st.s + 4.5 - d;
+      const s = st.s + A8 - d;
       if (s < 20 || rs._inTerminal(s, 4)) return;
       const on = inPlat(s);
-      face(s, on ? plat.L.back - 0.4 : 2.4, on ? 1.05 : 0, `appr:${d}`, 0.5, 1.3);
+      face(s, on ? plat.L.edge + 0.45 : 2.4, on ? 1.05 : 0, `appr:${d}`, 0.85, 1.1);
     });
   });
   /* キロ程(100mごとの白い杭と50mごとの短い杭。1kmごとに数字の札) */
@@ -497,7 +567,7 @@ function plateAtlas(labels) {
 }
 
 function signalRes(rs) {
-  if (rs._sigRes && rs._sigRes.v3) return rs._sigRes;
+  if (rs._sigRes && rs._sigRes.v4) return rs._sigRes;
   const white = [0.98, 0.5];
   const parts = [];
   const P = (geo, color, extra = {}) => parts.push({ geo, color, white, ...extra });
@@ -532,6 +602,16 @@ function signalRes(rs) {
   const face = new THREE.PlaneGeometry(0.32, 0.42).translate(0, 3.7, 0.1215);
   parts.push({ geo: face, color: 0xffffff, pk: true, uvRect: [0, 0, 1, 1] });
   const geo = mergeParts(parts);
+  /* 反対の線路(上り)の信号機を裏から見た形: 基礎・柱・はしご・灯器の箱・背板(フード・レンズ・番号札なし。約90三角形) */
+  const bparts = [];
+  const BP = (g, color, extra = {}) => bparts.push({ geo: g, color, white, ...extra });
+  BP(new THREE.BoxGeometry(0.6, 0.3, 0.6).translate(0, 0.15, 0), 0x9a9893);
+  BP(new THREE.CylinderGeometry(0.075, 0.09, 4.0, 6, 1, true).translate(0, 0.3 + 2.0, 0), 0x6d757c);
+  [-0.17, 0.17].forEach((x) => BP(new THREE.BoxGeometry(0.03, 3.7, 0.03).translate(x, 0.45 + 1.85, -0.12), 0x5d656b));
+  BP(new THREE.BoxGeometry(0.46, 1.55, 0.24).translate(0, HEAD_Y, 0), 0x1f2428);
+  BP(plate, 0x0f1113);
+  BP(plate.clone().translate(0, 0, -0.006), 0x22272b, { flip: true });
+  const backGeo = mergeParts(bparts);
   /* 灯器はつや消しの黒(空の映りこみで点いた灯が白っぽく見えないように) */
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.1, envMapIntensity: 0.35 });
   mat.onBeforeCompile = (s) => {
@@ -567,8 +647,9 @@ function signalRes(rs) {
     beacon.setAttribute('color', new THREE.BufferAttribute(col, 3));
   }
   const R = rs._sigRes = {
-    v3: true,
+    v4: true,
     geo,
+    backGeo,
     mat,
     glowGeo: new THREE.PlaneGeometry(0.72, 0.72),
     glowMat: fixAdditiveFog(new THREE.MeshBasicMaterial({ map: glowT, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }), 'stglow'),
@@ -587,14 +668,25 @@ const _m4 = new THREE.Matrix4(), _m4b = new THREE.Matrix4(), _zero = new THREE.M
 /* 信号機を(種別ごとに)作り直す。inPlat(s): ホームの上か(柱の根元をホーム面に)
  * coverAt(s): 上にある天井・屋根の高さ(なければ Infinity。灯器をその下に収める)
  * 描画は全線で 本体(+影) / 灯 / ATS地上子 の4回 */
-export function buildSignals(rs, inPlat, coverAt = () => Infinity) {
+export function buildSignals(rs, inPlat, coverAt = () => Infinity, backOk = null) {
   const R = signalRes(rs);
   if (rs._sigGroup) {
     rs.world.remove(rs._sigGroup);
     rs._sigGroup.traverse((o) => { if (o.isInstancedMesh) o.dispose(); });
   }
+  /* 前回の「反対の線路の信号機の裏」(world 直下。700mマスに分けられていることもある) */
+  const olds = rs.world.children.filter((o) => (o.userData && o.userData.sigBack) ||
+    (o.isGroup && o.children.length && o.children[0].userData && o.children[0].userData.sigBack));
+  olds.forEach((o) => {
+    rs.world.remove(o);
+    o.traverse((x) => { if (x.isInstancedMesh) x.dispose(); });
+  });
   /* 前回ぶんの形・番号札の画像(材質は使い回すので、画像だけ捨てる) */
-  if (rs._sigBuilt) { rs._sigBuilt.geo.dispose(); rs._sigBuilt.plateTex.dispose(); rs._sigBuilt = null; }
+  if (rs._sigBuilt) {
+    rs._sigBuilt.geo.dispose(); rs._sigBuilt.plateTex.dispose();
+    if (rs._sigBuilt.backGeo) rs._sigBuilt.backGeo.dispose();
+    rs._sigBuilt = null;
+  }
   rs._sigGroup = new THREE.Group();
   rs._sigGroup.userData.st = true;
   rs.world.add(rs._sigGroup);
@@ -670,6 +762,43 @@ export function buildSignals(rs, inPlat, coverAt = () => Infinity) {
   bim.userData.noSplit = true; bim.userData.st = true;
   bim.computeBoundingSphere();
   rs._sigGroup.add(bim);
+
+  /* 反対の線路(上り)の信号機: 自分の信号の35m先、上り線の右(-6.4m)に、裏(背板)をこちらへ向けて。
+   * ホームの上・屋根やトンネルの下・ターミナル・坑口の近く・橋・踏切には立てない */
+  const L2 = rs.line.meta.length;
+  const rivers = rs.line.sections.river, cross = rs.crossSpots || [];
+  const backs = [];
+  sigs.forEach((sig) => {
+    const s2 = sig.s + 35;
+    if (s2 < 10 || s2 > L2 - 10) return;
+    if (backOk && !backOk(s2)) return;
+    if (inPlat(s2) || inPlat(s2 - 6) || inPlat(s2 + 6) || coverAt(s2) < 99) return;
+    if (rivers.some((r) => s2 > r.from - 12 && s2 < r.to + 12) || cross.some((c) => Math.abs(c - s2) < 16)) return;
+    backs.push(s2);
+  });
+  if (backs.length) {
+    /* 700mごとのまとまりに分けて world 直下へ(見えるまとまりだけ描く。数が少ないので P6 の分割にはかからない) */
+    const cells = new Map();
+    backs.forEach((s2) => { const k = Math.floor(s2 / 700); if (!cells.has(k)) cells.set(k, []); cells.get(k).push(s2); });
+    let maxN = 1;
+    cells.forEach((list) => { maxN = Math.max(maxN, list.length); });
+    const bgeo = R.backGeo.clone();
+    bgeo.setAttribute('stPlate', new THREE.InstancedBufferAttribute(new Float32Array(maxN * 2), 2));
+    rs._sigBuilt.backGeo = bgeo;
+    cells.forEach((list) => {
+      const bk = new THREE.InstancedMesh(bgeo, R.mat, list.length);
+      list.forEach((s2, i) => {
+        frameInto(rs, s2, f);
+        q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));          // 表は上り列車のほう(こちらには裏)
+        p.copy(f.p).addScaledVector(f.left, -6.4);
+        bk.setMatrixAt(i, _m4.compose(p, q, one));
+      });
+      bk.castShadow = true;
+      bk.userData.sigBack = true; bk.userData.st = true; bk.userData.noSplit = true;
+      bk.computeBoundingSphere();
+      rs.world.add(bk);
+    });
+  }
 
   rs._sigState = { sigs, n, asp: new Int8Array(n).fill(-1), base, glows, R };
 }
