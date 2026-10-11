@@ -1100,26 +1100,53 @@ export class RailScene {
       if (!bs || !(bs.radius >= 0)) return;
       v.copy(bs.center).applyMatrix4(o.matrixWorld);
       const sc = o.matrixWorld.getMaxScaleOnAxis();
-      this._cellReg.push({ obj: o, cx: v.x, cz: v.z, r: bs.radius * sc });
+      const r = bs.radius * sc;
+      /* keep: 遠くても描く(大きな丘・目印の建物・とても大きなかたまり) / cs0: もともと影を落とすか */
+      this._cellReg.push({ obj: o, cx: v.x, cz: v.z, r, keep: !!(o.userData && o.userData.keepFar) || r > 600, cs0: !!o.castShadow });
     };
     added.forEach(reg);
     this.world.traverse((o) => { if (o.userData && o.userData.cullCell) reg(o); });
     this._cullX = 1e9; this._cullFar = -1;
   }
 
-  /* 遠景クリップ(camera.far)より遠いセルは描かない(視錐台の判定も影の判定もしない)。
-   * 8フレームに1回か、視点が40m以上動いたとき・遠景クリップが変わったときだけ */
+  /* 遠いセルは描かない(視錐台の判定も影の判定もしない)。
+   * ・遠景クリップ(camera.far)より遠いもの
+   * ・視点ごとの描く距離(_drawFar: 霧で84%以上かすむ所)より遠いもの(大きな丘・目印 keep は除く)
+   * 出入りのくり返しでチラつかないよう、消すのは 40m 先・出すのはその手前(ヒステリシス)。
+   * 影を落とすのは近いセルだけ(影の箱のあたり。castShadow の切りかえはシェーダを作り直さない)。
+   * 8フレームに1回か、視点が40m以上動いたとき・遠景クリップや視点が変わったときだけ。
+   * force(準備の前): 影の深度シェーダをすべての種類で作れるよう、影はもとの設定にもどす(次の回で また間引く) */
   _cullTick(force) {
     const reg = this._cellReg;
     if (!reg.length) return;
-    const eye = this.camera.position, far = this.camera.far;
+    const eye = this.camera.position, far = this.camera.far, mode = this.camMode;
     const dx = eye.x - this._cullX, dz = eye.z - this._cullZ;
-    if (!force && (this._frame & 7) !== 0 && dx * dx + dz * dz < 1600 && far === this._cullFar) return;
-    this._cullX = eye.x; this._cullZ = eye.z; this._cullFar = far;
-    const lim = far + 50, ex = eye.x, ez = eye.z;
+    if (!force && (this._frame & 7) !== 0 && dx * dx + dz * dz < 1600 && far === this._cullFar && mode === this._cullMode) return;
+    this._cullX = eye.x; this._cullZ = eye.z; this._cullFar = force ? -1 : far; this._cullMode = mode;
+    /* 視点ごとの描く距離(中画質の値。高は +250・低は -180)。昼の霧(30〜1300m)で 84% かすむのが約980m。
+     * 霧が遠い時間帯(夕方)は、その時間帯の霧で 84% かすむ距離まで延ばす(遠くの物がいきなり現れない) */
+    const base = mode === 'cab' ? 980 : mode === 'drone' ? 1250 : 1100;
+    const qa = this.quality === 'high' ? 250 : this.quality === 'low' ? -180 : 0;
+    const fg = this.scene.fog;
+    const f84 = fg && this.camMode !== 'drone' ? fg.near + 0.75 * (fg.far - fg.near) : 0;
+    this._drawFar = (Math.max(base, f84) + qa) * (this._drawFarK || 1);
+    const limK = far + 50, limD = Math.min(limK, this._drawFar), ex = eye.x, ez = eye.z;
+    /* 影を落とすセル: 影の箱の中心(太陽の真下の点)のまわり。低い太陽(夕方)の長い影のために、
+     * 太陽の側へ広げる(高さ15mの物の影の長さの半分だけ中心を太陽の側へずらし、そのぶん半径も足す) */
+    const tg = this.sun ? this.sun.target.position : eye;
+    const sd = this._curSunDir || this._sunDir || UP;
+    const sh = Math.hypot(sd.x, sd.z), sy = Math.max(0.09, sd.y);
+    const shift = sh > 1e-3 ? Math.min(150, 7.5 * sh / sy) : 0;
+    const gx = tg.x + (sh > 1e-3 ? sd.x / sh * shift : 0), gz = tg.z + (sh > 1e-3 ? sd.z / sh * shift : 0);
+    const shR = (mode === 'drone' ? 340 : 260) + shift;
     for (let i = 0; i < reg.length; i++) {
-      const c = reg[i];
-      c.obj.visible = Math.hypot(c.cx - ex, c.cz - ez) - c.r < lim;
+      const c = reg[i], o = c.obj;
+      const d = Math.hypot(c.cx - ex, c.cz - ez) - c.r;
+      const lim = c.keep ? limK : limD;
+      if (force) o.visible = d < lim + (o.visible ? 40 : 0);
+      else if (o.visible) { if (d > lim + 40) o.visible = false; }
+      else if (d < lim) o.visible = true;
+      if (c.cs0) o.castShadow = force || Math.hypot(c.cx - gx, c.cz - gz) - c.r < shR;
     }
   }
 
@@ -1204,7 +1231,10 @@ export class RailScene {
     /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
     if (act || force) this._shadowHold = 4;
     else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
-    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!this._shadowLite || (this._frame & 1) === 0 || !act)));
+    /* 中画質(と軽量化の段階)では、動いている間の描きなおしは1フレームおき(1秒30回)。
+     * 止まっている物の影は、描いたときの影の行列で見るので ずれない(自列車の影だけ1フレーム遅れる) */
+    const alt = this._shadowLite || this.quality !== 'high';
+    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!alt || (this._frame & 1) === 0 || !act)));
     r.shadowMap.needsUpdate = want;
     if (this._shadowHold > 0) this._shadowHold--;
     this._shadowDirty = false;
@@ -1326,9 +1356,19 @@ export class RailScene {
     this._duskU = U;
     const tmp = new THREE.Scene();
     tmp.add(mesh);
+    /* 環境光(建物の日かげを照らす空の光)は、見える空より青い値で作る。
+     * 壁は地平線近くの空の光をいちばん受けるので、見える空の だいだい・ばら色のままだと日かげが全部ピンクになる。
+     * 日かげは青紫・日なたは太陽で だいだい、にする(見える空の色は作ったあとで元にもどす) */
+    const keep = ['uHor', 'uMid', 'uAnti', 'uZen'].map((k) => [k, U[k].value.clone()]);
+    const lin = THREE.LinearSRGBColorSpace;
+    U.uHor.value.setRGB(0.70, 0.34, 0.22, lin);
+    U.uMid.value.setRGB(0.20, 0.19, 0.30, lin);
+    U.uAnti.value.setRGB(0.16, 0.16, 0.27, lin);
+    U.uZen.value.multiplyScalar(1.6);
     try {
       this.env.evening = { ibl: this._pmrem.fromScene(tmp, 0.02).texture, sky: mesh };
     } catch (e) { /* 失敗しても晴れの環境で代用 */ }
+    keep.forEach(([k, c]) => U[k].value.copy(c));
     tmp.remove(mesh);
     mesh.visible = false;
     this.eveSky = mesh;
@@ -1459,26 +1499,23 @@ export class RailScene {
     this.M.railHead.roughness = wet ? 0.12 : 0.3;
     this.M.water.roughness = night ? 0.22 : wet ? 0.38 : 0.3;
     this.M.water.color.setHex(night ? 0x141c26 : wet ? 0x49525a : eve ? 0x6a5a58 : 0x455e6d);
-    const lightsOn = night || eve || this._inTunnelNow;
-    /* 夜・夕方: ビル・住宅を窓明かりテクスチャへ切替(夕方は控えめに灯る) */
-    if (this._bldMats) {
-      this._bldMats.forEach(({ m, day, night: nt }) => {
-        const lit = night || eve;
-        m.map = night ? nt : day;
-        m.emissiveMap = lit ? nt : null;
-        m.emissive.setHex(night ? 0x9a8968 : eve ? 0x3a3020 : 0x000000);
-        m.needsUpdate = true;
-      });
-    }
-    /* 駅ホームの照明・自販機 */
-    if (this.stationLamps) this.stationLamps.visible = lightsOn || wet;
+    /* (昼夜で材質のテクスチャを差しかえる旧方式 _bldMats・旧ホーム照明 stationLamps は使わなくなった。
+     * 街・駅の明かりは それぞれの部品が look.rev を見て値だけ書きかえる) */
+    /* 自販機 */
     if (this._vendFrontMat) this._vendFrontMat.emissive.setHex(night || eve ? 0xcfe0ee : 0x000000);
     if (this.weatherFx) this.weatherFx.set(this.weather, tod);
     if (this.trainKit) this.trainKit.setNight(night || eve || wet || !!this._inTunnelNow);
     /* 空の映りこみの強さ(LOOK.env)が変わるので、次の _applyLightLevel で全材質に書き直す */
     this._kEnv = -1;
-    /* 状態が変わったので、次に描く前に使うシェーダをまとめて準備する */
-    this._needPrewarm = true;
+    /* 使うシェーダの組が本当に変わったときだけ、次に描く前にまとめて準備する。
+     * 変わるのは: 夜空・夕焼けの空の表示、ぬれ、背景が画像か色か、環境光(空の映りこみ)の差しかえ。
+     * 同じ時間帯・天気のままタイトルへもどるときなどは準備しない(数秒止まるのを防ぐ)。
+     * 下ろすのは準備(prewarm)だけ(ワールドの作り直しで立てた印は消さない) */
+    const env0 = this.scene.environment;
+    const pk = (night ? 'n' : '-') + (eveSky ? 'e' : '-') + (wet ? 'w' : '-') +
+      (this.scene.background && this.scene.background.isTexture ? 'b' : '-') + '|' + (env0 ? env0.uuid : '');
+    if (pk !== this._progKey) this._needPrewarm = true;
+    this._progKey = pk;
   }
 
   /* 目の慣れ k(屋外1・トンネルの奥0.1)で決まるもの。毎フレーム呼ぶので値の書きかえだけ(new しない)。
@@ -1491,12 +1528,15 @@ export class RailScene {
     const post = this._usePost();
     const kE = this._kE != null ? this._kE : k;
     const boost = Math.min(2, 1 + 0.9 * (1 - kE));
-    this.sun.intensity = L.sun[0] * k;
+    /* 太陽: ターミナルの中から見る外は、屋根の下より明るい(まぶしい出口)。影がある画質では、太陽は弱めない
+     * (屋根の影で中には日が入らない。目の慣れで露出が上がるぶん、外が白くにじむ)。影のない画質は今までどおり */
+    const kSun = (this._termCam || this._termSun) && this.renderer.shadowMap.enabled ? 1 : k;
+    this.sun.intensity = L.sun[0] * kSun;
     /* 空の光: トンネル・ターミナルの中は灯りの照り返しのような灰色の明かりを足す(壁・天井が真っ黒につぶれない。
      * 出口で急に消えないよう k だけで決める。ターミナルは天井の灯りが多いので控えめに)。
-     * 晴れの夜は、都心はビルで空がかくれて少し暗く、郊外は空が広くて明るい(_glowK: 0=都心 1=郊外) */
+     * 晴れの夜の空の光は、郊外ほど暗い(街灯・看板の照り返しが少ない。_glowK: 0=都心 1=郊外) */
     const fill = k < 1 ? (this._inTerminal(this._camS, 30) ? 0.35 : 0.7) * (1 - k) : 0;
-    const open = L.key === 'night' ? 0.85 + 0.4 * this._glowK : 1;
+    const open = L.key === 'night' ? 1.05 - 0.2 * this._glowK : 1;
     this.hemi.intensity = L.hemi[0] * k * open + fill;
     this.hemi.color.copy(this._hemiSky).lerp(this._hemiInSky, 1 - k);
     this.hemi.groundColor.copy(this._hemiGnd).lerp(this._hemiInGnd, 1 - k);
@@ -1509,9 +1549,22 @@ export class RailScene {
     fog.far = I.fog[2] + (L.fog[2] - I.fog[2]) * kf;
     /* 上空から: 街の外の何もない地面がかすみに溶けこむよう、霧を近くから濃く */
     if (this.camMode === 'drone') { fog.near = Math.min(fog.near, 20); fog.far = Math.min(fog.far, 1050); }
-    /* 霧の照り返し(夕方・ブルーム経由だけ。直接描く霧はトーンマップ後の色なので足さない) */
-    if (L.key === 'eve' && post) this.U.uFogSun.value.set(0.9 * kf, 0.1 * kf, 0);
+    /* ターミナルの中から出口の先を見ると、外は明るい空の色に白っぽくかすむ(暗い所から見る外はまぶしい)。
+     * 霧を出口の少し先から濃くする(屋根の下は変わらない)。出たあとは目の慣れ(k)にあわせて元の霧へもどす */
+    const tw = this._termW || 0;
+    if (tw > 0) {
+      const n0 = Math.max(fog.near, (this._termD || 0) + 5);
+      fog.near += (n0 - fog.near) * tw;
+      fog.far += (n0 + 300 - fog.far) * tw;
+      fog.color.multiplyScalar(1 + tw);
+    }
+    /* 霧の照り返し(夕方・ブルーム経由だけ。直接描く霧はトーンマップ後の色なので足さない)。
+     * 太陽の側だけ明るく(せまい範囲)、反対側は地平線と同じ青みの灰色へ(_duskU.uHorAnti) */
+    const eveP = L.key === 'eve' && post;
+    if (eveP) this.U.uFogSun.value.set(0.55 * kf, 0.12 * kf, 0.02 * kf);
     else this.U.uFogSun.value.set(0, 0, 0);
+    this.U.uFogDir.value = eveP ? kf : 0;
+    if (eveP && this._duskU && this._duskU.uHorAnti) this.U.uFogAnti.value.copy(this._duskU.uHorAnti.value);
     /* 遠景クリップ = 霧の終わり+60m(夜は対向列車の灯りが消えないよう1300m以上) */
     const far = Math.round(Math.max(fog.far + 60, this.timeOfDay === 'night' ? 1300 : 0));
     if (far !== this.camera.far) {
@@ -1525,8 +1578,11 @@ export class RailScene {
     const kw = this._kWx;
     this.U.uWet.value = L.wet * kw;
     this.U.uSnow.value = L.snow * kw;
-    /* 夜の色のうすさ(灯りのあるトンネルの中では弱める) */
+    /* 夜の色のうすさ(灯りのあるトンネルの中では弱める)。色をぬくのは暗い所だけ:
+     * ブルーム経由はトーンマップ前のリニアの明るさ、直接描く(低画質)はトーンマップ後の明るさで判定 */
     this.U.uNightDs.value = (L.desat || 0) * k;
+    this.U.uDsLo.value = post ? 0.01 : 0.08;
+    this.U.uDsHi.value = post ? 0.12 : 0.45;
     /* 前照灯(昼の屋外は0、トンネルでは点ける) */
     if (this.headlight) this.headlight.intensity = L.head + (I.head - L.head) * (1 - k);
     /* ブルーム: 明るさの境目(しきい値)は表どおり。屋内(昼)は k に合わせてじわっと効かせる。
@@ -1549,9 +1605,12 @@ export class RailScene {
     /* 架線・電線(光の影響を受けない線の材質): 夜やトンネルで空より明るく光らないよう、
      * 明るさ k と露出の上げ幅で割る(トンネルの中では黒いシルエット) */
     const wk = Math.max(0.05, k * (L.wire != null ? L.wire : 1)) / boost;
-    for (let i = 0; i < 2; i++) {
-      const w = i === 0 ? this.M.wire : (this._p1M ? this._p1M.wire : null);
-      if (!w || !w.color) continue;
+    /* 線路の架線・街の電線・駅などの線の材質(rs._wireMats: ほかの部品が登録する配列) */
+    const wm = Array.isArray(this._wireMats) ? this._wireMats : null;
+    const nw = 2 + (wm ? wm.length : 0);
+    for (let i = 0; i < nw; i++) {
+      const w = i === 0 ? this.M.wire : i === 1 ? (this._p1M ? this._p1M.wire : null) : wm[i - 2];
+      if (!w || !w.color || (i > 1 && (w === this.M.wire || (this._p1M && w === this._p1M.wire)))) continue;
       if (!w.userData.base) w.userData.base = w.color.clone();
       w.color.copy(w.userData.base).multiplyScalar(wk);
     }
@@ -1560,8 +1619,9 @@ export class RailScene {
   /* ぬれ・雪の共通部品を、ワールドと車両の標準材質に付ける(運転台=カメラの子は除く)。
    * あわせて k で明るさを変える材質(空の映りこみ)を集める */
   _installWeatherChunk() {
-    if (this._hillMat) this._hillMat.userData.wxMacro = true;
-    const add = (m) => this._wxAdd(m);
+    /* 新しい材質(まだシェーダを作っていないもの)があったときだけ、次に描く前にまとめて準備する */
+    let fresh = false;
+    const add = (m) => { if (this._wxAdd(m)) fresh = true; };
     const walk = (o) => {
       if (o === this.camera) return;
       if (o.material) [].concat(o.material).forEach(add);
@@ -1571,11 +1631,13 @@ export class RailScene {
     /* 車両の材質は空の映りこみを弱めない(ステンレスのつや) */
     if (this.trainKit) Object.values(this.trainKit.M).forEach((m) => { if (m && m.userData) m.userData.envKeep = true; add(m); });
     this._kEnv = -1;
-    this._needPrewarm = true;
+    if (fresh) this._needPrewarm = true;
   }
 
+  /* 戻り値: はじめて見た材質なら true(this._envMats にまだ無かった) */
   _wxAdd(m) {
-    if (!m || !m.isMeshStandardMaterial) return;
+    if (!m || !m.isMeshStandardMaterial) return false;
+    if (this._envMats.has(m)) return false;
     /* 雨の日に水たまりができる平らな舗装(ホーム・犬走り・街の地面・道路。駅の材質 st-st は駅の部品の名前で見分ける) */
     const M = this.M;
     if (m === M.apron || m === M.plat || m === M.groundUrban || m === M.roadAsphalt || m.name === 'st-st') m.userData.puddle = true;
@@ -1600,6 +1662,7 @@ export class RailScene {
     }
     if (m.userData.env0 === undefined) m.userData.env0 = m.envMapIntensity;
     this._envMats.add(m);
+    return true;
   }
 
   /* ---------- 軌道 ----------
@@ -2500,6 +2563,11 @@ export class RailScene {
     if (mode === 'cab') { sc.left = -110; sc.right = 110; sc.top = 160; sc.bottom = -50; }
     else if (mode === 'drone') { sc.left = -170; sc.right = 170; sc.top = 190; sc.bottom = -120; }
     else { sc.left = -120; sc.right = 120; sc.top = 120; sc.bottom = -120; }
+    /* ターミナルの中: 屋根の奥のはしまで影の箱に入れる(外の太陽を弱めないので、屋根の影で中を暗く保つ) */
+    if (this._termCam) sc.top = Math.max(sc.top, 200);
+    /* 奥行き: 太陽は箱の中心から430mの所。中心の向こう190m(そらからの箱の大きさ)まで描けば足りる
+     * (それより奥の物の影は、見えている地面に落ちない) */
+    sc.far = 620;
     sc.updateProjectionMatrix();
   }
 
@@ -2633,7 +2701,7 @@ export class RailScene {
    * 入るときは約2.2秒(しばらく暗い)、出るときは約0.9秒(しばらくまぶしい=白くにじむ) */
   _updateLightLevel(dt) {
     const s = this._camS;
-    let kT = 1, kfT = 1, wxT = 1, indoor = false;
+    let kT = 1, kfT = 1, wxT = 1, indoor = false, term = false;
     if (this.camMode !== 'drone' && this.line) {
       const tn = this.line.sections.tunnel.find((t) => s > t.from && s < t.to);
       if (tn) {
@@ -2648,10 +2716,17 @@ export class RailScene {
       } else if (this._inTerminal(s)) {
         kT = 0.30;
         indoor = true;
+        term = true;
         /* ターミナルの屋根の下も乾いている(線路側の出口に近づくと外の雪・ぬれが見えてくる) */
         const T = this.terminal;
         wxT = Math.max(0, 1 - (T.up ? s - T.a : T.b - s) / 60);
       }
+    }
+    /* ターミナルの中にいるか(外の太陽を弱めない・影の箱を屋根の奥まで)。変わったら影の箱を作りなおす */
+    if (term !== !!this._termCam) {
+      this._termCam = term;
+      this._shadowBox(this.camMode);
+      this._shadowDirty = true;
     }
     const jump = !this._kInit || Math.abs(s - this._kLastS) > 60;
     this._kInit = true;
@@ -2670,6 +2745,14 @@ export class RailScene {
       if (Math.abs(wxT - this._kWx) < 0.002) this._kWx = wxT;
       if (Math.abs(kT - this._kE) < 0.002) this._kE = kT;
     }
+    /* ターミナルを出た直後も、目の慣れ(k)が外にもどるまでは太陽を弱めない(出口で外が一瞬暗くならないように) */
+    this._termSun = term || (!jump && !!this._termSun && this._k < 0.99);
+    /* 出口の先の白いかすみ(昼・夕方の くだり=前方に出口があるときだけ。夜の外は暗いので しない。_termD: 出口までの距離) */
+    const T = this.terminal;
+    if (T && !T.up && this.timeOfDay !== 'night' && (term || this._termSun)) {
+      this._termD = Math.max(0, T.b - s);
+      this._termW = term ? 1 : Math.max(0, Math.min(1, (1 - this._k) / 0.7));
+    } else this._termW = 0;
     this.look.k = this._k;
     this.look.indoor = indoor;
     /* 夜空の地平線の街明かりと夜の霧の色: 郊外(区分2以上)では弱める(_applyLightLevel より先に決める) */

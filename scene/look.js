@@ -8,6 +8,7 @@
  * 色は見た目(sRGB)で書く。THREE.Color の setHex は sRGB → リニアに直して持つ。
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
+import { LuminosityHighPassShader } from '../vendor/addons/LuminosityHighPassShader.js';
 
 /* sun: [強さ, 色] / hemi: [強さ, 空の色, 地面の色] / fog: [色(nullは空から自動), 近, 遠]
  * fogLin: 霧の色をリニアの光の強さで直接(夕焼けの地平線に合わせる) / env: 空の映りこみの強さ(倍率)
@@ -21,28 +22,31 @@ export const LOOK = {
     exposure: 1.2, bg: 0.9, env: 0.85, wire: 1, fog: [null, 30, 1300], fogFallback: 0xb6b9c4,
     bloom: null, head: 0, wet: 0, snow: 0,
   },
-  /* 夕方: 金色の低い日ざし。霧は夕焼けの地平線と同じ色(太陽の側はさらに明るく: 霧の照り返し) */
+  /* 夕方: 金色の低い日ざし。霧は夕焼けの地平線と同じ色(太陽の側はさらに明るく: 霧の照り返し)。
+   * 日かげは青みの空の光(空は青紫・地面の照り返しは暖色)。日なただけが だいだい色になる(全部ピンクにしない)。
+   * ブルームは太陽のまわりの強い所だけ(しきい値を上げて、左の建物まで白くにじませない) */
   eve: {
-    sun: [2.6, 0xffa25a], hemi: [0.45, 0xc0a0a8, 0x3a3230],
-    exposure: 0.95, bg: 1, env: 0.85, wire: 0.75, fog: [null, 50, 1500], fogLin: [0.97, 0.29, 0.16], fogFallback: 0x9a7a6a,
-    bloom: [2.2, 0.5, 0.3], head: 70, wet: 0, snow: 0,
+    sun: [2.6, 0xffa25a], hemi: [0.6, 0x8c96bc, 0x4a3a30],
+    exposure: 0.95, bg: 1, env: 0.7, wire: 0.75, fog: [null, 40, 1350], fogLin: [0.97, 0.29, 0.16], fogFallback: 0x9a7a6a,
+    bloom: [2.6, 0.42, 0.2], head: 70, wet: 0, snow: 0,
   },
   /* 夜: まっ黒にしない。紺の空・月明かり・街の明かりで遠くは灰色にかすむ。
-   * desat: 夜は色がうすく見える(芝や木の緑が青い光の下で黒くつぶれない) */
+   * 壁は暗く(昼を暗くしただけの絵にしない)、窓・街灯・ホームの明かりが目立つように。
+   * desat: 暗い所ほど色がうすく見える(芝や木の緑が青い光の下で黒くつぶれない。明かりの当たる所は色が残る) */
   night: {
-    sun: [0.55, 0x9fb4e0], hemi: [1.6, 0x66718c, 0x24211e], desat: 0.5,
+    sun: [0.38, 0x9fb4e0], hemi: [0.95, 0x5c6a88, 0x1e1c1a], desat: 0.65,
     exposure: 1.3, bg: 1, env: 1.0, wire: 0.2, fog: [0x262b3a, 60, 1050],
-    bloom: [1.1, 0.55, 0.25], head: 420, wet: 0, snow: 0,
+    bloom: [1.0, 0.5, 0.3], head: 420, wet: 0, snow: 0,
   },
   nightWet: {
-    sun: [0.4, 0x9fb4e0], hemi: [1.4, 0x5a6274, 0x24221f], desat: 0.3,
+    sun: [0.3, 0x9fb4e0], hemi: [0.85, 0x56606f, 0x201e1c], desat: 0.3,
     exposure: 1.25, bg: 1, env: 1.0, wire: 0.25, fog: [0x2a2d34, 40, 560],
     bloom: [1.1, 0.55, 0.25], head: 480, wet: 1, snow: 0,
   },
-  /* 雨: 晴れより暗い くもり空。ぬれた地面・水たまり */
+  /* 雨: 晴れより暗い くもり空。ぬれた地面(明るい空と暗い地面の差がつく)・水たまり・遠くは雨のかすみ */
   rain: {
     sun: [0.3, 0xd0d8e2], hemi: [0.5, 0xa4b2c0, 0x4a4e4a],
-    exposure: 0.78, bg: 0.5, env: 0.85, wire: 0.9, fog: [null, 25, 620], fogFallback: 0x9da4a8,
+    exposure: 0.82, bg: 0.5, env: 0.65, wire: 0.9, fog: [null, 18, 480], fogFallback: 0x9da4a8,
     bloom: [2.0, 0.25, 0.3], head: 0, wet: 1, snow: 0,
   },
   snow: {
@@ -91,6 +95,20 @@ const TM_GRADE = `
   if (src.indexOf('tmL') < 0) {
     if (src.indexOf(TM_ANCHOR) >= 0) THREE.ShaderChunk.tonemapping_pars_fragment = src.replace(TM_ANCHOR, TM_ANCHOR + TM_GRADE);
     else console.warn('[look] ACES の仕上げを入れる場所が見つからない(three.js の版が変わった?)');
+  }
+}
+
+/* ---------- ブルーム(光のにじみ)の入口: とても明るい点は明るさ8まで ----------
+ * 夕日がガラス窓に当たった反射(鏡のような反射)は、明るさが数十にもなる。にじみの元はしきい値を超えた明るさを
+ * そのまま使うので、小さな反射が画面の4分の1を白くおおう大きなにじみになる。灯り・太陽の円盤(8まで)は変わらない。
+ * ブルームのパスを作る前(このモジュールを読みこんだ時)に1回だけ書きかえる */
+{
+  const HP_ANCHOR = 'vec4 texel = texture2D( tDiffuse, vUv );';
+  const src = LuminosityHighPassShader && LuminosityHighPassShader.fragmentShader;
+  if (typeof src === 'string' && src.indexOf('hpCap') < 0 && src.indexOf(HP_ANCHOR) >= 0) {
+    LuminosityHighPassShader.fragmentShader = src.replace(HP_ANCHOR, HP_ANCHOR +
+      '\n\t\t\tfloat hpCap = dot( texel.xyz, vec3( 0.299, 0.587, 0.114 ) );' +
+      '\n\t\t\ttexel.xyz *= min( 1.0, 8.0 / max( hpCap, 1e-4 ) );');
   }
 }
 
@@ -249,8 +267,12 @@ uniform float uSnow;
 uniform vec3 uSnowCol;
 uniform vec3 uFogSun;
 uniform vec3 uSunDirW;
+uniform vec3 uFogAnti;
+uniform float uFogDir;
 uniform float uPud;
 uniform float uNightDs;
+uniform float uDsLo;
+uniform float uDsHi;
 varying vec3 vWxN;
 varying vec3 vWxP;
 float wxH2( vec2 p ) {
@@ -304,8 +326,9 @@ const WX_GENERIC = `
       /* 模様のある面(砂利など): ぬれた石は明るい石ほど暗くなり、全体が濃い一様な色になる(白黒のごま塩にしない)。
        * 光るのは明るい石の上だけ。全体を鏡のようにすると、空が映って乾いた時より白っぽい板に見えてしまう */
       float wxG = smoothstep( 0.08, 0.32, dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) );
-      diffuseColor.rgb *= 1.0 - wxWet * ( 0.18 + 0.42 * wxG );
-      wxWet *= 0.3 + 0.7 * wxG;
+      diffuseColor.rgb *= 1.0 - wxWet * ( 0.2 + 0.28 * wxG );
+      /* つやは明るい石の上だけ・弱く(くもり空の映りこみで、ぬれた砂利が乾いた時より白っぽくならないように) */
+      wxWet *= 0.14 + 0.40 * wxG;
     #endif` + WX_PUD + `
   }
   if ( uSnow > 0.0 ) {
@@ -327,22 +350,31 @@ const WX_PRE = `
     wxNrm *= gl_FrontFacing ? 1.0 : -1.0;
   #endif
   float wxUp = clamp( wxNrm.y, 0.0, 1.0 );
-  float wxWet = 0.0, wxCov = 0.0, wxPud = 0.0;
-  /* 夜は色がうすく見える(暗い所では目が色を感じにくい)。芝や木の緑が青い月明かりの下で真っ黒にならない */
-  if ( uNightDs > 0.0 ) diffuseColor.rgb = mix( diffuseColor.rgb, vec3( dot( diffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) ) ), uNightDs );`;
+  float wxWet = 0.0, wxCov = 0.0, wxPud = 0.0;`;
 const WX_ROUGH = `
-  roughnessFactor = mix( roughnessFactor, 0.18, wxWet * wxUp * 0.85 );
+  roughnessFactor = mix( roughnessFactor, 0.28, wxWet * wxUp * 0.85 );
   roughnessFactor = mix( roughnessFactor, 0.85, wxCov );
   roughnessFactor = mix( roughnessFactor, 0.03, wxPud * ( 1.0 - wxCov ) );`;
-/* 霧: three の標準の式に、太陽の方向ほど明るい霧(夕方の照り返し)を足す。uFogSun が0なら標準と同じ */
-const WX_FOG = `
+/* 夜の色のうすさ: 暗い所だけ色をぬく(目は暗い所で色を感じにくいが、明かりの当たる所の色は見える)。
+ * 照らされたあとの明るさで決めるので、ホームの床・車体の帯・店先など明かりの当たる所は色が残る。
+ * uDsLo/uDsHi は描き方で変える(ブルーム経由=トーンマップ前のリニア / 直接=トーンマップ後) */
+const WX_DS = `
+  if ( uNightDs > 0.0 ) {
+    float wxLo = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+    gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( wxLo ), uNightDs * ( 1.0 - smoothstep( uDsLo, uDsHi, wxLo ) ) );
+  }`;
+/* 霧: three の標準の式に、太陽の方向ほど明るい霧(夕方の照り返し)を足す。
+ * 夕方は太陽と反対の側(地球の影の側)の霧を、地平線と同じ青紫がかった灰色へ寄せる(uFogDir)。
+ * uFogSun・uFogDir が0なら標準と同じ */
+const WX_FOG = WX_DS + `
 #ifdef USE_FOG
   #ifdef FOG_EXP2
     float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
   #else
     float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
   #endif
-  vec3 wxFc = fogColor + uFogSun * pow( max( dot( normalize( vWxP - cameraPosition ), uSunDirW ), 0.0 ), 5.0 );
+  float wxMu = dot( normalize( vWxP - cameraPosition ), uSunDirW );
+  vec3 wxFc = mix( fogColor, uFogAnti, uFogDir * ( 1.0 - smoothstep( -0.6, 0.5, wxMu ) ) ) + uFogSun * pow( max( wxMu, 0.0 ), 8.0 );
   gl_FragColor.rgb = mix( gl_FragColor.rgb, wxFc, fogFactor );
 #endif`;
 
@@ -356,8 +388,13 @@ export function makeWeatherUniforms() {
     /* 霧の照り返し(リニアの光の強さ。夕方・ブルーム経由のときだけ0以外)と太陽の向き(世界座標) */
     uFogSun: { value: new THREE.Vector3() },
     uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
-    /* 夜の色のうすさ(0〜1。LOOK.desat × 目の慣れ) */
+    /* 夕方の太陽と反対側の霧の色(リニア)と、その効き(0=使わない。夕方・ブルーム経由だけ) */
+    uFogAnti: { value: new THREE.Color() },
+    uFogDir: { value: 0 },
+    /* 夜の色のうすさ(0〜1。LOOK.desat × 目の慣れ)と、色をぬく明るさの範囲(これより明るい所は色が残る) */
     uNightDs: { value: 0 },
+    uDsLo: { value: 0.01 },
+    uDsHi: { value: 0.12 },
   };
 }
 
@@ -366,7 +403,7 @@ export function makeWeatherUniforms() {
 export function installWeather(m, U) {
   if (!m || !m.isMeshStandardMaterial || m.userData.wx || m.userData.noWeather) return false;
   /* 古い作り方の U(この部品より前の makeWeatherUniforms)でも動くよう、足りない値は足しておく */
-  if (!U.uFogSun || !U.uSunDirW || !U.uNightDs) {
+  if (!U.uFogSun || !U.uSunDirW || !U.uNightDs || !U.uFogAnti || !U.uFogDir || !U.uDsLo || !U.uDsHi) {
     const D = makeWeatherUniforms();
     Object.keys(D).forEach((k) => { if (!U[k]) U[k] = D[k]; });
   }
@@ -381,8 +418,12 @@ export function installWeather(m, U) {
     sh.uniforms.uSnowCol = U.uSnowCol;
     sh.uniforms.uFogSun = U.uFogSun;
     sh.uniforms.uSunDirW = U.uSunDirW;
+    sh.uniforms.uFogAnti = U.uFogAnti;
+    sh.uniforms.uFogDir = U.uFogDir;
     sh.uniforms.uPud = pud;
     sh.uniforms.uNightDs = U.uNightDs;
+    sh.uniforms.uDsLo = U.uDsLo;
+    sh.uniforms.uDsHi = U.uDsHi;
     if (macro) { sh.uniforms.uWxMacro = U.uWxMacro; sh.uniforms.uWxFar = U.uWxFar; }
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>' + WX_VERT_HEAD)
@@ -410,6 +451,8 @@ export function makeDuskSky(geometry) {
     uHor: { value: lin(1.08, 0.32, 0.18) },
     uSunCol: { value: lin(2.08, 0.43, 0.09) },
     uAnti: { value: lin(0.38, 0.25, 0.34) },
+    /* 太陽と反対側の地平線(地球の影: 青みがかった灰色。のぼりで東へ走ると正面に見える) */
+    uHorAnti: { value: lin(0.34, 0.27, 0.36) },
     uSun: { value: new THREE.Vector3(0, 0.05, -1).normalize() },
   };
   const mat = new THREE.ShaderMaterial({
@@ -422,23 +465,26 @@ export function makeDuskSky(geometry) {
         gl_Position = ( projectionMatrix * modelViewMatrix * vec4( position, 1.0 ) ).xyww;
       }`,
     fragmentShader: `
-      uniform vec3 uZen, uMid, uHor, uSunCol, uAnti, uSun;
+      uniform vec3 uZen, uMid, uHor, uSunCol, uAnti, uHorAnti, uSun;
       varying vec3 vDir;
       void main() {
         vec3 d = normalize( vDir );
         float h = d.y, mu = dot( d, uSun ), hh = clamp( h, 0.0, 1.0 );
+        /* 地平線の色は方位で変える: 太陽の側はだいだい、反対側は地球の影の青みがかった灰色 */
+        vec3 hor = mix( uHorAnti, uHor, smoothstep( -0.6, 0.5, mu ) );
         /* 地平線のだいだい → 低い空のばら色(高さ2〜6°の帯) → 上の青(運転台から見える高さ15°あたりで青になる。
          * ばら色が上まで広がると、空も、空の光で照らされる壁も全部ピンクになる) */
-        vec3 c = mix( uHor, uMid, smoothstep( 0.0, 0.08, hh ) );
+        vec3 c = mix( hor, uMid, smoothstep( 0.0, 0.08, hh ) );
         c = mix( c, uZen, smoothstep( 0.04, 0.3, hh ) );
         /* 太陽の側の輝き(低い所ほど強い。高さ15°より上は青い空のまま: 太陽の方を向く運転台でも上は青) */
         c = mix( c, uSunCol, pow( max( mu, 0.0 ), 3.0 ) * ( 1.0 - smoothstep( 0.0, 0.28, hh ) ) * 0.85 );
         /* 反対側の地平線の少し上のピンクの帯(ビーナスの帯) */
         c = mix( c, uAnti, pow( max( -mu, 0.0 ), 2.0 ) * smoothstep( 0.02, 0.08, hh ) * ( 1.0 - smoothstep( 0.12, 0.3, hh ) ) * 0.6 );
-        /* 太陽の円盤とまわりのにじみ */
-        c += uSunCol * ( smoothstep( 0.99985, 0.99993, mu ) * 30.0 + pow( max( mu, 0.0 ), 200.0 ) * 1.5 );
+        /* 太陽の円盤(小さく明るい芯)とまわりのにじみ(せまい輝き+うすく広い輝き)。
+         * 円盤を強くしすぎると、ブルームで画面の左の4分の1が白くとぶ */
+        c += uSunCol * ( smoothstep( 0.99985, 0.99993, mu ) * 8.0 + pow( max( mu, 0.0 ), 900.0 ) * 2.0 + pow( max( mu, 0.0 ), 60.0 ) * 0.25 );
         /* 地平線より下 */
-        c = mix( c, uHor * 0.45, smoothstep( 0.0, 0.05, -h ) );
+        c = mix( c, hor * 0.45, smoothstep( 0.0, 0.05, -h ) );
         gl_FragColor = vec4( c, 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -484,8 +530,9 @@ export function makeNightSky(geometry) {
         float r = nsHash( floor( g ) );
         float star = step( 0.9965, r ) * smoothstep( 0.38, 0.0, length( fract( g ) - 0.5 ) ) * smoothstep( 0.05, 0.22, h ) * uStars;
         c += vec3( 0.9, 0.95, 1.0 ) * star * ( 0.5 + 1.6 * fract( r * 37.0 ) );
+        /* 月: 本当の大きさに近い小さな円盤と、うすいかさ(大きいと空の主役になってしまう) */
         float m = dot( d, uMoon );
-        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.9999, 0.99994, m ) * 1.7 + pow( max( m, 0.0 ), 600.0 ) * 0.14 );
+        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.99996, 0.99998, m ) * 1.7 + pow( max( m, 0.0 ), 300.0 ) * 0.08 );
         gl_FragColor = vec4( c, 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
