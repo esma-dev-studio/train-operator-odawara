@@ -26,7 +26,9 @@ export const PLAT = { L: { edge: 1.58, back: 5.0 }, R: { edge: -5.38, back: -8.8
  * 予告(300/200/100/50m)もここから測る。P6 は rs._stop8Ahead で光の目印をそろえる */
 export const STOP8_AHEAD = 1.6;
 const P_A = 155, P_B = 15;              // ホームの範囲: st.s-155 〜 st.s+15
-const ROOF_B = 8;                       // 屋根: st.s-roofA(駅ごと 95/125/140) 〜 st.s+8(停止位置の運転台の上まで)
+/* 屋根: st.s-roofA(駅ごと 95/125/140) 〜 st.s+10(停止位置の運転台の上と、その先の発車標まで)。
+ * 屋根の先の端とホームの先の端(st.s+P_B)は同じ5mの目に丸めるので、屋根はいつもホームの端の5m手前で終わる */
+const ROOF_B = 10;
 /* 8両の電車のドアの位置(各車両の先頭からの距離。先頭車の先頭 = 停止位置) */
 const DOOR_OFF = [2.9, 7.7, 12.4, 17.2];
 /* 乗る人(動く12人のうち4人)が待つドア(停止位置からの距離)。止まっている人の列は ここには並べない */
@@ -470,10 +472,11 @@ function platformEnd(rs, B, sEnd, sg, out) {
   makeSign(rs, 'noent', 0.42, 0.42, { c: T.c.clone().addScaledVector(T.nb, 0.012), n: T.nb.clone(), postH: 0 });
 }
 
-/* ---------- 発車する側のホームの端: 運転士用のモニター(ITV)とミラー(左ホームだけ) ---------- */
+/* ---------- 発車する側のホームの端: 運転士用のモニター(ITV)とミラー(左ホームだけ) ----------
+ * sEnd: ホームの先の端。端の柵の1.2m手前(止まった運転台から見て発車標の右うしろ) */
 let _itvGeo = null;
-function itvMonitor(rs, B, st, ob) {
-  const sI = st.s + 12.5;
+function itvMonitor(rs, B, st, ob, sEnd) {
+  const sI = sEnd - 1.2;
   const f = frameOf(rs, sI);
   const lat = PLAT.L.edge + 0.5, yb = f.p.y + 1.05;
   if (!_itvGeo) {
@@ -706,7 +709,7 @@ export function buildStations(rs) {
         platformEnd(rs, B, i1 * step, sg, 1);
       });
       /* 発車する側の端: 運転士用モニターとミラー */
-      itvMonitor(rs, B, st, ob);
+      itvMonitor(rs, B, st, ob, i1 * step);
       /* うしろの柵(右は駅舎への出入り口をあける) */
       [1, -1].forEach((sg) => {
         const x = sideOf(sg).back - 0.05 * sg;
@@ -754,7 +757,11 @@ export function buildStations(rs) {
           }
           /* ホームの両はしの灯り(柱4m+灯具)。屋根のない端も夜に明るく */
           const nearS = stairs ? st.s - 153 : Math.max(st.s - (roofA + 15), st.s - P_A + 4);
-          [st.s + 12, nearS].forEach((s) => {
+          /* 先の端の灯り: 屋根の先(いつもホームの端の5m手前)とホームの端のまんなか(モニターは端の1.2m手前)。
+           * 先端の駅名標(st.s+11)の板に柱がささらないよう、近いときは板のうしろ(まだ屋根の外)へ */
+          let farS = i1 * step - 2.5;
+          if (Math.abs(farS - (st.s + 11)) < 0.6) farS = st.s + 10.4;
+          [farS, nearS].forEach((s) => {
             frameInto(rs, s, f);
             c.copy(f.p).addScaledVector(f.left, lat);
             B.post(c.x, f.p.y + 1.05, c.z, 4.0, 0x6f777d, 1.6);
@@ -863,15 +870,19 @@ export function buildStations(rs) {
       ob.push({ s: st.s + STOP8_AHEAD, lat: PLAT.L.edge + 0.35, r: 0.3 });
     }
 
-    /* ---- 発車標と時計: 左ホームは停止位置の6m先(止まった運転台から見える。モニターは12.5m先で
-     * 重ならない)。時計は発車標のうしろ寄りのとなり。右ホームは中ほど ---- */
+    /* ---- 発車標と時計 ----
+     * 左ホームの発車標は停止位置の7.5m先・へり寄り(止まった運転台から見て「8」の右どなり。
+     * 「8」にかくれず、モニターはホームの端の1.2m手前でその右うしろ)。屋根の先の端より手前につるす。
+     * 時計は止まった運転台の右の窓から見える右ホームの先と、両ホームの中ほど。右ホームの発車標は中ほど。
+     * 中ほどのものは、ホームの中心線の柱(st.s から10mごと)のあいだ(st.s-65 / -75)につるす */
     const ceilY = isTerm ? 7.4 : under ? 6.2 : 4.05;
     if (!isTerm) {
-      const sL = clearOfGantry(st.s + 6, 0.7);
-      ledBoard(B, LO, sL, 3.15, under ? 5.4 : 3.55, ceilY);
-      clockAt(B, sL, 4.64, ceilY);
-      ledBoard(B, LP, clearOfGantry(st.s - 70, 0.7), mid(PLAT.R) + 0.1, under ? 5.4 : 3.55, ceilY);
-      clockAt(B, st.s - 60, mid(PLAT.R), ceilY);
+      const sL = under ? st.s + 7.5 : Math.min(st.s + 7.5, iOf(st.s + ROOF_B) * step - 0.45);
+      ledBoard(B, LO, sL, 3.05, under ? 5.4 : 3.55, ceilY);
+      clockAt(B, sL, mid(PLAT.R), ceilY);
+      clockAt(B, st.s - 65, mid(PLAT.L), ceilY);
+      ledBoard(B, LP, clearOfGantry(st.s - 75, 0.7), mid(PLAT.R) + 0.1, under ? 5.4 : 3.55, ceilY);
+      clockAt(B, st.s - 65, mid(PLAT.R), ceilY);
     } else {
       [[1, st.s + 14], [-1, st.s - 75]].forEach(([sg, s]) => clockAt(B, s, mid(sideOf(sg)), ceilY));
     }
@@ -1091,7 +1102,8 @@ export function buildTerminal(rs) {
     NB.build(rs);
   });
 
-  /* 発車標(オレンジのLED): 各ホームに2台。両面 */
+  /* 発車標(オレンジのLED): 各ホームに2台。両面。前の台は停止位置の9m先
+   * (止まった運転台から見て、停止位置目標「8」(1.6m先)にかくれない) */
   const ledL = texLed(), ledR = texLed();
   const housB = new Baker(new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.5, metalness: 0.4 }));
   const housGeo = new THREE.BoxGeometry(2.4, 0.55, 0.15);
@@ -1099,7 +1111,7 @@ export function buildTerminal(rs) {
     const mat = new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(2.2, 2.2, 2.2) });
     mat.userData.noWeather = true;
     const LB = new Baker(mat);
-    [6, -60].forEach((d) => {
+    [9, -60].forEach((d) => {
       frameInto(rs, phys(d), f);
       flatT(f, n);
       c.copy(f.p).addScaledVector(f.left, mid(sideOf(sg)));
