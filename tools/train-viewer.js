@@ -48,11 +48,12 @@ scene.add(sun, sun.target);
 /* ---- HDRI ---- */
 const pmrem = new THREE.PMREMGenerator(renderer);
 let envReady = false;
-new RGBELoader().load(NIGHT ? '../assets/sky/sky_night.hdr' : '../assets/sky/sky_clear.hdr', (t) => {
+/* 夜の空のHDRIは本体と同じく使わない(夜空は手続き生成)。夜は背景を濃紺にする */
+new RGBELoader().load('../assets/sky/sky_clear.hdr', (t) => {
   t.mapping = THREE.EquirectangularReflectionMapping;
-  scene.background = t;
-  scene.environment = pmrem.fromEquirectangular(t).texture;
-  scene.backgroundIntensity = NIGHT ? 0.8 : 1.0;
+  scene.background = NIGHT ? new THREE.Color(0x0b1424) : t;
+  /* r160 には scene.environmentIntensity がないので、夜は環境光を付けない */
+  scene.environment = NIGHT ? null : pmrem.fromEquirectangular(t).texture;
   envReady = true;
 }, undefined, (e) => { console.error('HDR load failed', e); envReady = true; });
 
