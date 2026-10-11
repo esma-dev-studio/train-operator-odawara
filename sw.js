@@ -3,20 +3,23 @@
  * 初回にゲーム一式(約10MB)を保存し、以後は保存分をすぐ返しつつ裏で更新する。
  * 公開のたびに VERSION を上げると古い保存分は消える。
  * ========================================================= */
-const VERSION = 'trainop-v3-002';
+const VERSION = 'trainop-v3-003';
 const CORE = [
   './', './index.html', './styles.css', './main.js', './manifest.webmanifest',
   './sim/engine.js', './sim/kana.js', './sim/line.js', './sim/autopilot.js',
   './scene/scene.js', './scene/cockpit.js', './scene/traffic.js', './scene/trains.js', './scene/weatherfx.js',
   './scene/look.js', './scene/town.js', './scene/facade.js', './scene/trackbed.js',
   './scene/stations.js', './scene/signage.js', './scene/lightpool.js', './scene/cars.js', './scene/shopsign.js',
+  './scene/roadtraffic.js',
   './cab/cab.js', './audio/audio.js', './audio/announce.js', './audio/vvvf-worklet.js',
   './audio/synth.js', './audio/synth-worker.js',
   './ui/stamps.js', './ui/rainglass.js', './ui/badges.js', './ui/icons.js',
+  './ui/stoppin.js', './ui/loadroute.js', './ui/glguard.js',
   './vendor/three.module.min.js', './vendor/RGBELoader.js',
   './vendor/addons/EffectComposer.js', './vendor/addons/RenderPass.js', './vendor/addons/UnrealBloomPass.js',
   './vendor/addons/OutputPass.js', './vendor/addons/ShaderPass.js', './vendor/addons/Pass.js', './vendor/addons/MaskPass.js',
-  './vendor/addons/CopyShader.js', './vendor/addons/LuminosityHighPassShader.js', './vendor/addons/OutputShader.js', './vendor/addons/Sky.js',
+  './vendor/addons/CopyShader.js', './vendor/addons/LuminosityHighPassShader.js', './vendor/addons/OutputShader.js',
+  './vendor/addons/LineSegmentsGeometry.js', './vendor/addons/LineSegments2.js', './vendor/addons/LineMaterial.js',
   './data/line.json', './data/timetable.json',
   './assets/favicon.svg', './assets/icon-180.png', './assets/icon-192.png', './assets/icon-512.png',
   './assets/tex/gravel_c.jpg', './assets/tex/gravel_n.jpg', './assets/tex/grass_c.jpg', './assets/tex/grass_n.jpg',

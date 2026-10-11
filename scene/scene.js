@@ -12,10 +12,11 @@ import { EffectComposer } from '../vendor/addons/EffectComposer.js';
 import { RenderPass } from '../vendor/addons/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/addons/OutputPass.js';
-import { Sky } from '../vendor/addons/Sky.js';
 import { STATION_KANA } from '../sim/kana.js';
 import { buildStations, buildTunnelLights, buildSignals, updateSignals, buildBoards, buildStopBeam, buildTerminal, buildFurniture, buildCrowds, buildPeople, placeFig, updatePeople, stationStyle } from './stations.js';
 import { Cockpit } from './cockpit.js';
+/* 運転台のふちのなめらか処理(COCKPIT_FEATHER)があるかを見るため(なければ キャンバスのMSAAを残す) */
+import * as CK from './cockpit.js';
 import { Traffic, placeTrain } from './traffic.js';
 import { buildTown, updateTown, makeTreeGeosP1, plantTreesP1, buildHillsP1, stationBodiesP1, makeRng, occFree, addCars } from './town.js';
 import { TrainKit } from './trains.js';
@@ -34,8 +35,32 @@ const QUALITY = {
   mid:  { dpr: 1.35, shadow: 1024, shadowsOn: true, aniso: 4, bloom: true, samples: 2, trainDetail: 'mid' },
   low:  { dpr: 1.0,  shadow: 0,    shadowsOn: false, aniso: 2, bloom: false, samples: 0, trainDetail: 'low' },
 };
-/* 自動軽量化でたどりついた段階の保存先 {q, dpr, shadowLevel, bloom} */
+/* 自動画質でたどりついた段階の保存先
+ * {q, dpr, shadowLite(動く影を1フレームおき), shadowUp(影2048), shadowUpBad, bloomShift(にじみの解像度), drawFarK, maxDpr}
+ * (古い保存の shadowLevel 1 は shadowLite として読む) */
 const PERF_KEY = 'trainop_perf';
+/* 自動画質の解像度(DPR)の段。下げるときも上げるときも1段ずつ */
+const DPR_STEPS = [1.05, 1.15, 1.25, 1.35, 1.5, 1.75];
+/* シェーダの準備(prewarmAsync)で、1つずつ描いて作るときだけ使うレイヤー(ふだんは だれも使わない) */
+const WARM_LAYER = 29;
+/* 準備は1回 12ms まで。のこりは つぎのタスクへ(画面の しゅっぱつカード・路線の帯が とまらない) */
+const WARM_SLICE_MS = 12;
+/* 毎フレームの作業用(new しない) */
+const _pinV = new THREE.Vector3();
+
+/* つぎのタスクまで ゆずる(setTimeout 0)。ms を渡すと そのぶん待つ */
+function yieldTask(ms) {
+  return new Promise((res) => setTimeout(res, ms || 0));
+}
+/* つぎの描画のタイミングまで ゆずる(裏のタブで rAF が止まっていても 100ms で すすむ) */
+function yieldFrame() {
+  return new Promise((res) => {
+    let done = false;
+    const go = () => { if (!done) { done = true; res(); } };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+    setTimeout(go, 100);
+  });
+}
 
 /* HDR(半精度RGBA)を縦横半分に(2x2の平均)。環境光(PMREM)はこの小さい版から作る
  * (2048x1024 のままだと作業用の描画先だけで約50MB。1024x512 なら256の立方体で約6MB) */
@@ -424,28 +449,24 @@ function boardTexture(lines, opts = {}) {
 }
 
 export class RailScene {
-  /* opts: { quality, timeOfDay:'day'|'evening'|'night', weather } */
+  /* opts: { quality, timeOfDay:'day'|'evening'|'night', weather, autoQ, debug,
+   *         deferWorld(ワールドは あとで setWorldAsync で作る。それまで描かない) } */
   constructor(canvas, line, sim, opts = {}) {
     this.quality = QUALITY[opts.quality] ? opts.quality : 'high';
     this.timeOfDay = opts.timeOfDay || (opts.night ? 'night' : 'day');
     this.weather = opts.weather || (sim && sim.weather) || 'clear';
+    this._debug = !!opts.debug;
     const Q = QUALITY[this.quality];
-    /* 自動軽量化の段階(opts.autoQ のときは前回たどりついた段階から始める: localStorage 'trainop_perf') */
+    /* 自動画質の段階(opts.autoQ のときは前回たどりついた段階から始める: localStorage 'trainop_perf')。
+     * 下げる: DPR・にじみの解像度(GPU) / 遠くを描く距離・影の間引き(CPU)。上げる: DPR・影2048 */
     this.autoQ = !!opts.autoQ;
-    this._perf = { dpr: Q.dpr, shadowLevel: 0, bloom: Q.bloom };
-    if (this.autoQ) {
-      try {
-        const p = JSON.parse(localStorage.getItem(PERF_KEY) || 'null');
-        if (p && p.q === this.quality) {
-          if (p.dpr > 0) this._perf.dpr = Math.min(Q.dpr, p.dpr);
-          this._perf.shadowLevel = p.shadowLevel ? 1 : 0;
-          if (p.bloom === false) this._perf.bloom = false;
-        }
-      } catch (e) { /* 読めなければ既定のまま */ }
-    }
-
-    /* キャンバスのMSAAは残す(運転台の重ね描き renderOverlay がキャンバスに直接描くため) */
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    this._perf = this._loadPerf(Q);
+    /* 遠くを描く距離の倍率(CPUが重いときに下げる。_cullTick が掛ける) */
+    this._drawFarK = this._perf.drawFarK;
+    /* 運転台の重ね描き(renderOverlay)はキャンバスに直接描く。ふちのなめらか処理(COCKPIT_FEATHER)が
+     * あれば、中・高はキャンバスのMSAAを切る(シーンはブルーム用の描画先のMSAAで描く)。低は直接描くので残す */
+    const feather = CK.COCKPIT_FEATHER === true;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !(feather && Q.bloom), powerPreference: 'high-performance' });
     /* シェーダのエラー確認(ログの取り出し)は1本ごとに完成を待つので重い。?debug=1 のときだけ */
     this.renderer.debug.checkShaderErrors = !!opts.debug;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, this._perf.dpr));
@@ -453,10 +474,32 @@ export class RailScene {
     this.renderer.toneMappingExposure = LOOK.day.exposure;
     if (Q.shadowsOn) {
       this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      /* 影のふちのぼかし: 高はやわらかい PCFSoft、中・低は PCF(画面じゅうの影の画素が軽くなる)。
+       * 作るときに1回だけ決める(走っている途中で変えると全シェーダの作り直しになる) */
+      this.renderer.shadowMap.type = this.quality === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
       /* 影は「何かが動いたときだけ」描きなおす(render の moving 判定)。止まっている間は前の影をそのまま使う */
       this.renderer.shadowMap.autoUpdate = false;
     }
+    /* WebGLの文脈が消えた(iPadが裏で回収した)ら描かない。もどったら glLost を下ろす。
+     * 作り直し(ステージごと)は ui/glguard.js が受けもつ */
+    this.glLost = false;
+    this._onCtxLost = (e) => {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      this.glLost = true;
+      if (this._fences) this._fences = [null, null];   // 消えた文脈のフェンスは もう使えない
+    };
+    this._onCtxRestored = () => { this.glLost = false; this._shadowDirty = true; };
+    try {
+      canvas.addEventListener('webglcontextlost', this._onCtxLost, false);
+      canvas.addEventListener('webglcontextrestored', this._onCtxRestored, false);
+    } catch (e) { /* noop */ }
+    /* 運転台の画面に出す「8」の目印の位置(render が毎フレーム書く。オブジェクトは使い回す)。
+     * vis: 見えている / x,y: 画面の割合(0..1, 左上が0) / d: 停止位置までの距離(m) */
+    this.stopPin = { vis: false, x: 0, y: 0, d: 0 };
+    /* 毎フレームの作業用のフレーム(位置・向き・左)。frameAt の new を避ける */
+    this._fr = newFrame();
+    this._frA = newFrame();
+    this._frB = newFrame();
     this._shadowDirty = true;
     this._shadowHold = 0;
     this._backdrop = false;          // メニュー・一時停止の背景(影もブルームも止める)
@@ -484,6 +527,10 @@ export class RailScene {
     this.fps = 60;
     this._fpsAcc = 0; this._fpsN = 0;
     this._frame = 0;
+    /* 実際に描いたコマの数(テスト・自動画質用)と、GPUの おくれ見張り(_paceSkip)のフェンス */
+    this.drawCount = 0;
+    this._skipN = 0; this._skipDt = 0; this._skipT0 = 0;
+    this._fences = [null, null]; this._fi = 0;
 
     /* ---- 見え方の状態(ほかの部品はこれを見て昼夜・天気・屋内に合わせる) ----
      * rev は時間帯・天気が変わるたびに増える。k は目の慣れ(屋外1、トンネルの奥0.1) */
@@ -546,13 +593,15 @@ export class RailScene {
     this.sun = new THREE.DirectionalLight(LOOK.day.sun[1], LOOK.day.sun[0]);
     this.sun.castShadow = Q.shadowsOn;
     if (Q.shadowsOn) {
-      const ms = this._perf.shadowLevel ? 512 : Q.shadow;
+      /* 影の大きさ: ふつうは画質どおり。自動画質で上げた(shadowUp)ときは 2048 */
+      const ms = this._perf.shadowUp ? Math.max(2048, Q.shadow) : Q.shadow;
       this.sun.shadow.mapSize.set(ms, ms);
       const sc = this.sun.shadow.camera;
       sc.near = 20; sc.far = 950;
       this.sun.shadow.bias = -0.0003;
       this.sun.shadow.normalBias = 0.08;
-      if (this._perf.shadowLevel) this._shadowLite = true;
+      /* CPUが重いときの段: 動いている間の影は1フレームおき(_updateShadow) */
+      if (this._perf.shadowLite) this._shadowLite = true;
     }
     this._shadowBox('cab');
     this.scene.add(this.sun);
@@ -575,22 +624,98 @@ export class RailScene {
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     this._pmrem.compileEquirectangularShader();
     this._wetBg = new THREE.Color(this.weather === 'snow' ? 0xc9cfd5 : 0x8d959c);   // 曇りの空がまだ無いときの雨・雪の背景色
-    this._buildEveningSky();
-    this._buildNightSky();
+    /* 夕焼け・夜空(どちらも重いシェーダを1回描いて環境光を作る)。opts.deferWorld のときは
+     * ワールドを少しずつ作る最初の手順で1つずつ(_skySteps。起動の1つの長い処理にしない) */
+    this._skyLater = !!opts.deferWorld;
+    if (!this._skyLater) {
+      this._buildEveningSky();
+      this._buildNightSky();
+    }
+    /* 晴れの空(HDR)が届くまでの代わり: 青空のグラデーションから作った環境光と背景(どちらも本物と同じ種類)。
+     * 届いて差しかえてもシェーダは変わらない(環境光の立方体の大きさ・背景の描き方が同じ) */
+    this._buildStandInSky();
     this.ensureEnv('clear');
     if (this.weather !== 'clear' && this.timeOfDay !== 'night') this.ensureEnv('rain');
 
     /* ---- 雨・雪の粒(カメラ近傍だけ) ---- */
     this.weatherFx = new WeatherFx(this.scene, this.camera);
 
-    /* ---- 路線(ワールド)は作り直せるようにグループにまとめる ---- */
+    /* ---- 路線(ワールド)は作り直せるようにグループにまとめる ----
+     * 動かないものの行列は作ったあとに固める(_freezeStatic)。シーンとワールドの箱そのものは動かないので
+     * 自分の行列を毎フレーム作りなおさない(作りなおすと子の全部に「更新」が伝わって、固めた意味がなくなる) */
+    this.scene.matrixAutoUpdate = false;
     this.world = new THREE.Group();
+    this.world.matrixAutoUpdate = false;
     this.scene.add(this.world);
-    this.setWorld(line, sim);
+    this._worldGen = 0;
+    this._buildQ = null;
+    if (opts.deferWorld) {
+      /* ワールドは あとで(setWorldAsync)。できるまで描かない */
+      this.sim = sim;
+      this._deferHold = true;
+      this._warming = (this._warming || 0) + 1;
+    } else {
+      this.setWorld(line, sim);
+    }
 
     /* ---- ポストエフェクト(光のにじみ=ブルーム) ---- */
     this._initPost();
-    this._applyWeather();
+    if (!this._skyLater) this._applyWeather();
+  }
+
+  /* opts.deferWorld のとき: 夕焼け・夜空を作る手順(ワールドの手順の前に入れる)。もう作ってあれば空 */
+  _skySteps() {
+    if (!this._skyLater) return [];
+    const pm = () => {
+      /* 晴れのHDRが先に届くと、環境光づくりの道具(_pmrem)は もう捨ててある */
+      if (!this._pmrem) { this._pmrem = new THREE.PMREMGenerator(this.renderer); this._pmremOwn = true; }
+    };
+    return [
+      () => { if (this._skyLater && !this.eveSky) { pm(); this._buildEveningSky(); } },
+      () => { if (this._skyLater && !this.nightSky) { pm(); this._buildNightSky(); } },
+      () => {
+        if (!this._skyLater) return;
+        this._skyLater = false;
+        /* 晴れの空がもう届いていれば、道具は ここで捨てる(届いていなければ _onHdr が使って捨てる) */
+        if (this._pmrem && this.env.clear && !this.env.clear.placeholder) { this._pmrem.dispose(); this._pmrem = null; }
+        this._applyWeather();
+      },
+    ];
+  }
+
+  /* 晴れの空の代わり(HDRが届くまで): 上は青・地平線は白っぽい・下は灰緑のグラデーションの箱を
+   * 立方体の背景(64)と環境光(PMREM 256)にする。作業用の材質はすぐ捨てる(シェーダの数は増えない) */
+  _buildStandInSky() {
+    this._standIn = null;
+    let geo = null, mat = null, cube = null, iblRT = null;
+    try {
+      geo = new THREE.SphereGeometry(10, 24, 12);
+      const pos = geo.attributes.position, col = [];
+      const top = new THREE.Color(0x6f9fd6), hor = new THREE.Color(0xd5e1ea), gnd = new THREE.Color(0x6d7466), c = new THREE.Color();
+      for (let i = 0; i < pos.count; i++) {
+        const y = pos.getY(i) / 10;
+        if (y >= 0) c.copy(hor).lerp(top, Math.pow(y, 0.6));
+        else c.copy(hor).lerp(gnd, Math.min(1, -y * 4));
+        col.push(c.r, c.g, c.b);
+      }
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      /* 色はリニアで 1.0 前後(晴れのHDRの空とだいたい同じ明るさ) */
+      mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, toneMapped: false });
+      const tmp = new THREE.Scene();
+      tmp.add(new THREE.Mesh(geo, mat));
+      iblRT = this._pmrem.fromScene(tmp, 0.04);
+      cube = new THREE.WebGLCubeRenderTarget(64, { type: THREE.HalfFloatType });
+      const cc = new THREE.CubeCamera(0.1, 100, cube);
+      cc.update(this.renderer, tmp);
+      /* iblRT・cube は 晴れの空が届いて使わなくなったら _promoteEnv が捨てる */
+      this._standIn = { ibl: iblRT.texture, bg: cube.texture, cube, iblRT };
+    } catch (e) {
+      if (cube) cube.dispose();
+      if (iblRT) iblRT.dispose();
+      this._standIn = null;
+    }
+    if (geo) geo.dispose();
+    if (mat) mat.dispose();
   }
 
   get night() { return this.timeOfDay === 'night'; }
@@ -607,65 +732,267 @@ export class RailScene {
     this._applyWeather();
   }
 
-  /* 路線(方向)が変わったときはワールドを作り直す。同じ路線なら信号(種別で変わる)だけ */
+  /* 路線(方向)が変わったときはワールドを作り直す。同じ路線なら信号(種別で変わる)だけ。
+   * 作り直しは _worldSteps の手順を順に(ここでは一気に)。setWorldAsync は同じ手順を1コマずつ */
   setWorld(line, sim) {
+    /* 少しずつ作っている途中(setWorldAsync)に呼ばれた: 同じ路線なら残りをここで一気に作ってから、ちがえば作りなおし */
+    if (this._buildQ) {
+      const q = this._buildQ;
+      this._buildQ = null;
+      this._worldGen++;   // 少しずつ作る側は ここで おしまい(続きは作らない)
+      if (line === this._buildLine) { this._runSteps(q); this._endDeferHold(); }
+      else this.line = null;
+      this._buildLine = null;
+      this._endBuildHold();
+    }
     this.sim = sim;
     this._shadowDirty = true;
     if (this._lateN) this._promoteEnv(false);
     if (line === this.line && this.world.children.length) {
-      this._buildSignals();
-      if (this.traffic) this.traffic.reset(sim);
-      this._installWeatherChunk();
-      this._resetCamFeel();
-      this._kInit = false;   // 新しい運転の最初のフレームで目の慣れを合わせ直す
-      this._cullX = 1e9;
+      this._sameLine(sim);
       return;
     }
-    this._disposeWorld();
-    this.line = line;
-    this.step = line.meta.step;
-    this.frames = buildFrames(line);
-    /* 喜多見の車両基地ゾーン(この右側には建物や木を生やさない) */
-    const kitami = this.line.stations.find((s) => s.name === '喜多見');
-    this.depotZone = kitami ? { a: kitami.s + 300, b: kitami.s + 640 } : null;
-    /* 踏切の位置(郊外区間に6箇所。駅・川・トンネル・複々線・基地を避ける) */
-    this.crossSpots = this._pickCrossings();
-    this.terminal = this._terminalInfo();
+    this._worldGen++;
+    this._runSteps(this._worldSteps(line, sim));
+    this._endDeferHold();
+  }
 
-    this._buildTrack();
-    this._buildSleepers();
-    this._buildLineside();
-    this._buildStations();
+  /* 同じ路線のまま運転だけ変わった(信号・ほかの列車・体感・目の慣れを合わせなおす) */
+  _sameLine(sim) {
     this._buildSignals();
-    this._buildBoards();
-    this._buildTown();
-    this._buildFences();
-    this._buildTrees();
-    this._buildTunnel();
-    this._buildRiver();
-    this._buildStopBeam();
-    this._buildLandmarks();
-    this._buildCrossings();
-    this._buildStationHouses();
-    this._buildRailsideDetails();
-    this._buildPlatformFurniture();
-    this._buildPeople();
-    this._buildCrowds();
-    this._buildHills();
-    /* 占有グリッドは街・木・丘を置くときだけ使う(十数MBあるので捨てる)。
-     * これより前に捨てると occFree がどこでも「空き」と答え、線路や道路の上に木が生えるので、丘のあとで */
-    this._occ = null;
-    const cells = this._splitInstances();
-    /* 帯の結合で増えたメッシュ(差分)も、遠ければ描かない対象にする */
-    const pre = new Set(this.world.children);
-    this._splitRibbons();
-    this.world.children.forEach((o) => { if (!pre.has(o)) cells.push(o); });
-    this._registerCells(cells);
-    this.traffic = new Traffic(this, sim);
+    if (this.traffic) this.traffic.reset(sim);
     this._installWeatherChunk();
     this._resetCamFeel();
-    this._kInit = false;
-    this._applyWeather();
+    this._kInit = false;   // 新しい運転の最初のフレームで目の慣れを合わせ直す
+    this._cullX = 1e9;
+  }
+
+  /* 手順の列を順に実行する。手順が配列を返したら(街の小分け _buildTownSteps)その場に差しこむ */
+  _runSteps(q) {
+    while (q.length) {
+      const out = q.shift()();
+      if (Array.isArray(out) && out.length) q.unshift(...out);
+    }
+  }
+
+  /* ワールドの作り直しの手順(決まった順番。それぞれ引数なしの関数)。
+   * 街(_buildTown)は、小分けの _buildTownSteps があればその手順に開く(なければ一気に) */
+  _worldSteps(line, sim) {
+    let cells = null;
+    return [
+      ...this._skySteps(),
+      () => {
+        this.sim = sim;
+        this._disposeWorld();
+        this.line = line;
+        this.step = line.meta.step;
+        this.frames = buildFrames(line);
+        /* 喜多見の車両基地ゾーン(この右側には建物や木を生やさない) */
+        const kitami = this.line.stations.find((st) => st.name === '喜多見');
+        this.depotZone = kitami ? { a: kitami.s + 300, b: kitami.s + 640 } : null;
+        /* 踏切の位置(郊外区間に6箇所。駅・川・トンネル・複々線・基地を避ける) */
+        this.crossSpots = this._pickCrossings();
+        this.terminal = this._terminalInfo();
+      },
+      () => this._buildTrack(),
+      () => this._buildSleepers(),
+      () => this._buildLineside(),
+      () => this._buildStations(),
+      () => { this._buildSignals(); this._buildBoards(); },
+      () => {
+        if (typeof this._buildTownSteps === 'function') {
+          const a = this._buildTownSteps();
+          if (Array.isArray(a)) return a;
+        }
+        this._buildTown();
+        return null;
+      },
+      () => this._buildFences(),
+      () => this._buildTrees(),
+      () => { this._buildTunnel(); this._buildRiver(); this._buildStopBeam(); },
+      () => this._buildLandmarks(),
+      () => this._buildCrossings(),
+      () => { this._buildStationHouses(); this._buildRailsideDetails(); },
+      () => { this._buildPlatformFurniture(); this._buildPeople(); },
+      () => this._buildCrowds(),
+      () => {
+        this._buildHills();
+        /* 占有グリッドは街・木・丘を置くときだけ使う(十数MBあるので捨てる)。
+         * これより前に捨てると occFree がどこでも「空き」と答え、線路や道路の上に木が生えるので、丘のあとで */
+        this._occ = null;
+      },
+      () => { cells = this._splitInstances(); },
+      () => {
+        /* 帯の結合で増えたメッシュ(差分)も、遠ければ描かない対象にする */
+        const pre = new Set(this.world.children);
+        this._splitRibbons();
+        this.world.children.forEach((o) => { if (!pre.has(o)) cells.push(o); });
+        this._registerCells(cells);
+        cells = null;
+      },
+      () => {
+        this.traffic = new Traffic(this, sim);
+        this._installWeatherChunk();
+        this._resetCamFeel();
+        this._kInit = false;
+        this._applyWeather();
+        /* 動かないものの行列を固める(毎フレームの行列計算をはぶく) */
+        this._freezeStatic();
+        this._worldNew = true;   // 新しいワールド: つぎの準備(prewarm)は省略しない
+      },
+    ];
+  }
+
+  /* ワールドを少しずつ作る(起動・のぼり/くだりの切替の暗転中。1手順ごとに1コマゆずる)。
+   * 作り終わるまで描かない(_warming)。onProgress(0..1) で進み具合を知らせる。
+   * 同じ路線なら setWorld と同じ軽い道ですぐ終わる */
+  async setWorldAsync(line, sim, onProgress) {
+    const prog = typeof onProgress === 'function' ? onProgress : null;
+    if (!this._buildQ && line === this.line && this.world.children.length) {
+      this.setWorld(line, sim);
+      if (prog) prog(1);
+      return;
+    }
+    /* もう同じ路線を作っている途中なら、そちらが終わるのを待つ */
+    if (this._buildQ && line === this._buildLine && this._buildP) {
+      await this._buildP;
+      if (this.sim !== sim) this.setWorld(line, sim);
+      if (prog) prog(1);
+      return;
+    }
+    const gen = ++this._worldGen;
+    /* 「描かない」は作っている間ずっと1つだけ(前の作りかけを追いこしても数がずれない) */
+    if (!this._buildHold) { this._buildHold = true; this._warming = (this._warming || 0) + 1; }
+    this.sim = sim;
+    this._shadowDirty = true;
+    if (this._lateN) this._promoteEnv(false);
+    const q = this._worldSteps(line, sim);
+    this._buildQ = q;
+    this._buildLine = line;
+    let done = 0, last = 0;
+    const run = async () => {
+      try {
+        while (q.length) {
+          if (gen !== this._worldGen) return;   // あとから作り直し(setWorld)が来た
+          const out = q.shift()();
+          if (Array.isArray(out) && out.length) q.unshift(...out);
+          done++;
+          const k = Math.max(last, done / (done + q.length));
+          last = k;
+          if (prog) { try { prog(k); } catch (e) { /* noop */ } }
+          /* 1コマゆずる。GPUの重い手順(空の環境光づくりなど)のあとは、GPUが終わるまで待つ
+           * (待たずに進むと、あとの何かの「待ち合わせ」で まとめて止まる) */
+          if (q.length) { await yieldFrame(); await this._gpuIdle(gen); }
+        }
+      } finally {
+        if (gen === this._worldGen && this._buildQ === q) {
+          this._buildQ = null;
+          this._buildLine = null;
+          this._endBuildHold();
+          this._endDeferHold();
+        }
+      }
+    };
+    this._buildP = run();
+    try { await this._buildP; } finally { if (this._buildQ === null) this._buildP = null; }
+  }
+
+  /* 少しずつ作るあいだの「描かない」を下ろす(1回だけ) */
+  _endBuildHold() {
+    if (!this._buildHold) return;
+    this._buildHold = false;
+    this._warming = Math.max(0, (this._warming || 0) - 1);
+  }
+
+  /* opts.deferWorld の「ワールドができるまで描かない」を下ろす(最初のワールドができたとき1回だけ) */
+  _endDeferHold() {
+    if (!this._deferHold) return;
+    this._deferHold = false;
+    this._warming = Math.max(0, (this._warming || 0) - 1);
+  }
+
+  /* 動くもの(作ったあとに位置・向き・大きさが変わる物)の目印 userData.dyn を、
+   * 知っている物にも付けておく(作る側が付けわすれても止まらないように) */
+  _markMovers() {
+    const mark = (o) => { if (o && o.isObject3D) o.userData.dyn = true; };
+    mark(this.stopBeam);
+    mark(this.wheelSpin);
+    const T = this._town;
+    if (T) { mark(T.ringCity); mark(T.ringHills); mark(T.board); }
+    const cr = this.crossings;
+    if (cr) for (let i = 0; i < cr.length; i++) { const a = cr[i] && cr[i].arms; if (a) for (let k = 0; k < a.length; k++) mark(a[k]); }
+    if (this.traffic && this.traffic.own) mark(this.traffic.own.group);
+  }
+
+  /* 動かないものの行列を固める: ワールドの子のうち、中に userData.dyn の物が1つもないものは
+   * いまの行列を計算してから、毎フレームの更新(matrixAutoUpdate / matrixWorldAutoUpdate)を止める。
+   * ?debug=1 のときは 固めた物が動いていないかを ときどき確かめる(_freezeCheck) */
+  _freezeStatic() {
+    this._markMovers();
+    const w = this.world;
+    w.updateMatrix();
+    w.updateMatrixWorld(true);
+    const frozen = [];
+    let dynRoots = 0;
+    for (let i = 0; i < w.children.length; i++) {
+      const c = w.children[i];
+      let dyn = false;
+      c.traverse((o) => { if (o.userData && o.userData.dyn) dyn = true; });
+      if (dyn) { dynRoots++; continue; }
+      c.updateMatrixWorld(true);
+      c.traverse((o) => { o.matrixAutoUpdate = false; });
+      c.matrixWorldAutoUpdate = false;
+      frozen.push(c);
+    }
+    this._frozen = frozen;
+    let nObj = 0;
+    for (let i = 0; i < frozen.length; i++) frozen[i].traverse(() => { nObj++; });
+    this._frzStat = { frozen: frozen.length, dyn: dynRoots, objects: nObj };
+    this._frzSnap = null;
+    if (this._debug) this._freezeSnap();
+  }
+
+  /* (debug) 固めた物の位置・向き・大きさを覚える */
+  _freezeSnap() {
+    const objs = [];
+    for (let i = 0; i < this._frozen.length; i++) this._frozen[i].traverse((o) => { objs.push(o); });
+    const v = new Float64Array(objs.length * 10);
+    for (let i = 0; i < objs.length; i++) {
+      const o = objs[i], b = i * 10;
+      v[b] = o.position.x; v[b + 1] = o.position.y; v[b + 2] = o.position.z;
+      v[b + 3] = o.quaternion.x; v[b + 4] = o.quaternion.y; v[b + 5] = o.quaternion.z; v[b + 6] = o.quaternion.w;
+      v[b + 7] = o.scale.x; v[b + 8] = o.scale.y; v[b + 9] = o.scale.z;
+    }
+    this._frzSnap = { objs, v, warned: new Set(), n: objs.length };
+  }
+
+  /* (debug) 120フレームごと: 固めた物が動いていたら console.warn(名前か、ワールドからの道すじ) */
+  _freezeCheck() {
+    const S = this._frzSnap;
+    if (!S) return;
+    const { objs, v } = S;
+    /* 固めたグループに あとから子が足された(その子は行列が更新されない) */
+    let n = 0;
+    for (let i = 0; i < this._frozen.length; i++) this._frozen[i].traverse(() => { n++; });
+    if (n !== S.n && !S.warnedAdd) {
+      S.warnedAdd = true;
+      console.warn('[freeze] frozen group changed: ' + S.n + ' -> ' + n + ' objects (あとから足す物は world 直下か userData.dyn の中へ)');
+    }
+    for (let i = 0; i < objs.length; i++) {
+      const o = objs[i], b = i * 10;
+      if (v[b] === o.position.x && v[b + 1] === o.position.y && v[b + 2] === o.position.z &&
+        v[b + 3] === o.quaternion.x && v[b + 4] === o.quaternion.y && v[b + 5] === o.quaternion.z && v[b + 6] === o.quaternion.w &&
+        v[b + 7] === o.scale.x && v[b + 8] === o.scale.y && v[b + 9] === o.scale.z) continue;
+      if (S.warned.has(o)) continue;
+      S.warned.add(o);
+      let path = '', p = o;
+      while (p && p !== this.world && p !== this.scene) {
+        const idx = p.parent ? p.parent.children.indexOf(p) : -1;
+        path = (p.name ? p.name : p.type + '[' + idx + ']') + (path ? '/' + path : '');
+        p = p.parent;
+      }
+      console.warn('[freeze] frozen object moved: world/' + path + ' (userData.dyn = true を付けてください)');
+    }
   }
 
   /* 帯(ribbon など行のある形)を、全線共通の区切り(5m×150行=750m)で切り、
@@ -745,6 +1072,8 @@ export class RailScene {
     geos.forEach((g) => g.dispose());
     texs.forEach((t) => this._staleTex.push(t));
     this.world.clear();
+    this._frozen = [];
+    this._frzSnap = null;
     this.signalMeshes = [];
     this._sigGroup = null;
     this._envMats = new Set();
@@ -790,12 +1119,15 @@ export class RailScene {
       const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.82);
       /* 中: にじみの計算は1/4の解像度で(最後の重ね合わせは元の解像度のまま)。
        * 1/4 にすると いちばん粗い段が画面ぜんたいに広がって明るくなりすぎる(ターミナルで平均+7)ので、
-       * 各段の重みを0.74倍にして 1/2 のときの明るさにそろえる(ターミナル・夜とも平均の差0.1以内で実測) */
-      if (this.quality === 'mid') {
-        const ss = bloom.setSize.bind(bloom);
-        bloom.setSize = (w, h) => ss(Math.max(1, w >> 1), Math.max(1, h >> 1));
-        bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74));
-      }
+       * 各段の重みを0.74倍にして 1/2 のときの明るさにそろえる(ターミナル・夜とも平均の差0.1以内で実測)。
+       * 自動画質で重いとき(bloomShift 2)は 1/8 の解像度(シェーダは同じ。_reapplySize で大きさだけ変わる) */
+      const ss = bloom.setSize.bind(bloom);
+      bloom.setSize = (w, h) => {
+        const sh = this._perf ? this._perf.bloomShift : 0;
+        ss(Math.max(1, w >> sh), Math.max(1, h >> sh));
+      };
+      this._bloomTinted = false;
+      if (this._perf && this._perf.bloomShift > 0) { bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74)); this._bloomTinted = true; }
       comp.addPass(bloom);
       comp.addPass(new OutputPass());
       bloom.enabled = false;
@@ -827,6 +1159,7 @@ export class RailScene {
    * placed: 呼び出し元(render)がもう今の運転の位置にカメラを置いた */
   prewarm(placed) {
     this._needPrewarm = false;
+    this._worldNew = false;
     this._booted = true;
     const r = this.renderer;
     if (!r || !this.scene) return;
@@ -839,6 +1172,7 @@ export class RailScene {
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
     this._flushStale();
+    this._warmDone = { sig: this._warmSig(), gen: this._worldGen };
   }
 
   /* 運転台を別に重ね描きする(renderOverlay がある)ときは、その部品をシーン本体のコンパイルから外す
@@ -848,26 +1182,70 @@ export class RailScene {
     const ovl = ck && typeof ck.renderOverlay === 'function' && ck.scene && ck.scene.isScene && ck.root ? ck : null;
     let par = null;
     if (ovl && ovl.root.parent && ovl.root.parent !== ovl.scene) { par = ovl.root.parent; par.remove(ovl.root); }
+    /* いま使っていない夕焼け・夜空の箱と ほかの天気の粒は作らない(分けて作る準備 _warmReps と同じ決まり。
+     * 時間帯・天気を変えると かならず準備しなおすので、そのときに作る)。
+     * シーンから外さずに、それらをとばして たどる入れ物を渡す(光はシーンの側から集める) */
+    const sc = this.scene, skip = this._warmSkipTop();
+    const root = !skip.size ? sc : {
+      traverse: (cb) => { cb(sc); const ch = sc.children; for (let i = 0; i < ch.length; i++) if (!skip.has(ch[i])) ch[i].traverse(cb); },
+      traverseVisible: () => { /* 光はシーンの側から集める */ },
+    };
     try {
-      if (async && typeof r.compileAsync === 'function') return r.compileAsync(this.scene, this.camera);
-      r.compile(this.scene, this.camera);
+      if (async && typeof r.compileAsync === 'function') return r.compileAsync(root, this.camera, sc);
+      r.compile(root, this.camera, sc);
       return null;
     } finally {
       if (par) par.add(ovl.root);
     }
   }
 
-  /* 運転開始の暗転中に使う版: シェーダの完成を待つ間、ほかの処理を止めない(compileAsync)。
-   * 完成を待っている間に届いた描画(render)は描かずに戻る(未完成のシェーダを待って止まらないように) */
-  async prewarmAsync() {
+  /* 準備(シェーダを作る)で とばす、本体のシーンの直下の物: いま見えていない夕焼け・夜空の箱と、
+   * いまの天気ではない雨・雪の粒。ほかの物(見えていない物も)は ぜんぶ準備する
+   * (トンネルで かくれている いまの天気の粒・あとから足される物が 走っている途中で作られないように) */
+  _warmSkipTop() {
+    const skip = new Set();
+    if (this.eveSky && !this.eveSky.visible) skip.add(this.eveSky);
+    if (this.nightSky && !this.nightSky.visible) skip.add(this.nightSky);
+    const fx = this.weatherFx;
+    if (fx) {
+      if (fx.rain && fx.mode !== 'rain') skip.add(fx.rain);
+      if (fx.snow && fx.mode !== 'snow') skip.add(fx.snow);
+    }
+    return skip;
+  }
+
+  /* シェーダの種類に かかわる見え方の目印(時間帯・天気・環境光と背景の形式・ぬれの部品を付けた材質の数)。
+   * 準備のあいだに晴れの空が届いて差しかわっても、これが同じなら シェーダは同じ(準備しなおさない) */
+  _warmSig() {
+    const sc = this.scene;
+    const t = (x) => (!x ? '-' : x.isColor ? 'c' : x.isTexture ? x.mapping + ':' + (x.image && x.image.height ? x.image.height : 0) + (x.isCubeTexture ? 'C' : 'T') : '?');
+    return this.timeOfDay + '|' + this.weather + '|' + t(sc.environment) + '|' + t(sc.background) + '|' +
+      (this._envMats ? this._envMats.size : 0);
+  }
+
+  /* 運転開始・起動・タイトルへ戻るときの暗転中に使う版。ほかの処理(画面の しゅっぱつカード・路線の帯)を止めない。
+   * ・並行コンパイル(KHR_parallel_shader_compile)がある: compileAsync で完成を待つ
+   * ・ない(iPadのSafari・ソフト描画): 材質ごとに「作る→リンクを待つ→1回描く」を 12ms ずつに分けて、
+   *   あいだで ほかのタスクに ゆずる(_warmSliced)。描くところまでしないと、GPU側の準備が最初のコマに残る
+   * ワールドも見え方も変わっていなければ(_needPrewarm も _worldNew もない)カメラを置くだけで すぐ終わる。
+   * onProgress(0..1) で進み具合を知らせる。完成を待っている間に届いた描画(render)は描かずに戻る */
+  async prewarmAsync(onProgress) {
+    const prog = typeof onProgress === 'function' ? onProgress : null;
+    const tell = (k) => { if (prog) { try { prog(k); } catch (e) { /* noop */ } } };
+    const r = this.renderer;
+    if (!r || !this.scene || this.glLost) { tell(1); return; }
+    if (!this._needPrewarm && !this._worldNew && this._booted && !this._lateN) {
+      this._placeView();
+      tell(1);
+      return;
+    }
     this._needPrewarm = false;
     this._booted = true;
-    const r = this.renderer;
-    if (!r || !this.scene) return;
     /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
     this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
     const cap = (ms) => new Promise((res) => setTimeout(res, ms));
-    let env0 = null;
+    let env0 = null, sliced = false;
+    const gen = this._worldGen;
     try {
       /* 使う空(HDR)を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる)。
        * どの空を使うかは _applyAtmosphere と同じ決め方: 夜は夜空・晴れの夕方は夕焼けの空(どちらも待つ物がない) */
@@ -882,28 +1260,355 @@ export class RailScene {
       /* シェーダの完成を待つ間に空が届いて差しかわったら、仕上げの準備(_needPrewarm)を消さない */
       env0 = this.scene.environment;
       this._placeView();
-      const prev = r.getRenderTarget();
-      let p = null;
-      try {
-        r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
-        p = this._compileMain(true);
-      } catch (e) { p = null; }
-      r.setRenderTarget(prev);
-      /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒で先へ(描かないまま止まらないように) */
-      if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+      const ex = r.extensions;
+      const par = !!(ex && typeof ex.has === 'function' && ex.has('KHR_parallel_shader_compile'));
+      if (par) {
+        const prev = r.getRenderTarget();
+        let p = null;
+        try {
+          r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+          p = this._compileMain(true);
+        } catch (e) { p = null; }
+        r.setRenderTarget(prev);
+        /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒で先へ(描かないまま止まらないように) */
+        if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+      } else {
+        sliced = true;
+        const sig0 = this._warmSig();
+        await this._warmSliced(gen, tell);
+        /* 準備のあいだに 晴れの空(HDR)が届いて差しかわるなどで _needPrewarm がまた立った:
+         * 見え方の目印(_warmSig)が同じなら シェーダは同じなので そのまま下ろす。ちがえば もう1回だけ分けて準備する
+         * (立てたままにすると、つぎの render が いっきに準備して止まる) */
+        if (this._needPrewarm && gen === this._worldGen && !this.glLost) {
+          this._needPrewarm = false;
+          if (this._warmSig() !== sig0) {
+            this._placeView();
+            await this._warmSliced(gen, tell);
+          }
+          env0 = this.scene.environment;
+        }
+      }
     } finally {
       this._warming = Math.max(0, (this._warming || 0) - 1);
     }
     if (this._warming) return;   // あとから呼ばれた準備がまだ続いている(仕上げはそちらで)
+    if (this.glLost) return;
     const rt0 = r.getRenderTarget();
     try {
       this._placeView();   // 待っている間に動いたかもしれないので置きなおす
-      this._prewarmTail();
+      /* 分けて作ったときは、仕上げ(にじみ・影)も もう作ってある。のこりの確認に1回描くだけ */
+      if (sliced) this._prewarmFinal(); else this._prewarmTail();
     } catch (e) { /* noop */ }
     r.setRenderTarget(rt0);
     this._flushStale();
     if (this.scene.environment === env0) this._needPrewarm = false;
+    if (gen === this._worldGen) {
+      this._worldNew = false;
+      /* 準備が そろったときの見え方の目印(render が 同じ見え方で いっきに準備しなおさないように) */
+      if (!this._needPrewarm) this._warmDone = { sig: this._warmSig(), gen };
+    }
+    tell(1);
     try { this.render(0); } catch (e) { /* noop */ }
+    /* 仕上げの絵をGPUが描き終えるまで待ってから返す(呼び出し側が暗転を明けたときに絵ができている。
+     * 待たずに進むと、つぎの何かの「待ち合わせ」で止まる) */
+    await this._gpuIdle(gen);
+  }
+
+  /* 分けて準備する(並行コンパイルがないとき)。準備するもの:
+   * A 本体のシーン: 材質ごと(と 物の種類・形の並びごと)の代表を1つずつ
+   * B 運転台の重ね描き: 同じように1つずつ
+   * C にじみ(ブルーム)と出力のパス: 1つずつ、本番と同じ描画先へ
+   * D 影の深度: 影を落とす種類ごとに1つずつ影の地図へ
+   * 1回分(12ms まで・新しいシェーダ2本まで・8個まで)ごとに:
+   *   1) シェーダを作る命令だけ出す(compile。待たない)
+   *   2) GPU側が終わるのを待つ(フェンスを ほかのタスクの合間に のぞく。待つあいだ画面は止まらない)
+   *   3) 三角形1つだけ本番と同じ描画先・同じ光の数で描く(リンク結果の読みとりとGPUの描画の準備)
+   *   4) もう一度 GPU側を待つ
+   * フェンスがない(WebGL1)ときは 3) で1つずつ待つことになるが、1回分が小さいので長くは止まらない。
+   * ワールドが作り直されたら(gen)・文脈が消えたら やめる */
+  async _warmSliced(gen, tell) {
+    const r = this.renderer;
+    const gl = r.getContext();
+    const fences = !!(gl && typeof gl.fenceSync === 'function');
+    const ck = this.cockpit;
+    const ovl = ck && typeof ck.renderOverlay === 'function' && ck.scene && ck.scene.isScene && ck.root ? ck : null;
+    const mainRT = this.composer ? this.composer.renderTarget1 : null;
+    const items = [];
+    this._warmReps(this.scene, ovl ? ovl.root : null).forEach((o) => items.push({ k: 'A', o }));
+    if (ovl) this._warmReps(ovl.scene, null).forEach((o) => items.push({ k: 'B', o }));
+    this._warmPostSteps().forEach((p) => items.push({ k: 'C', p }));
+    this._warmShadowReps().forEach((o) => items.push({ k: 'D', o }));
+    const total = items.length + 1;
+    /* 全体の状態を一時的に: カメラは WARM_LAYER だけを見る(光も同じレイヤーに入れて、光の数を本番と同じに) */
+    const cam = this.camera;
+    const camMask = cam.layers.mask;
+    const lights = [];
+    const addLights = (sc) => sc.traverse((o) => { if (o.isLight) lights.push([o, o.layers.mask]); });
+    addLights(this.scene);
+    if (ovl) addLights(ovl.scene);
+    const bg0 = this.scene.background;
+    const sm = r.shadowMap;
+    const st = { ac: true, smAuto: false, smNeed: false, rt: null };
+    const set = () => {
+      st.ac = r.autoClear; st.smAuto = sm.autoUpdate; st.smNeed = sm.needsUpdate; st.rt = r.getRenderTarget();
+      cam.layers.set(WARM_LAYER);
+      for (let i = 0; i < lights.length; i++) lights[i][0].layers.enable(WARM_LAYER);
+      r.autoClear = false;
+      sm.autoUpdate = false; sm.needsUpdate = false;
+    };
+    const unset = () => {
+      cam.layers.mask = camMask;
+      for (let i = 0; i < lights.length; i++) lights[i][0].layers.mask = lights[i][1];
+      this.scene.background = bg0;
+      r.autoClear = st.ac;
+      sm.autoUpdate = st.smAuto; sm.needsUpdate = st.smNeed;
+      r.setRenderTarget(st.rt);
+    };
+    /* 1つ分の「作る命令だけ」(待たない): compile に その1つだけを渡す */
+    const one = { o: null };
+    const fake = { traverse: (cb) => { cb(one.o); }, traverseVisible: () => { /* 光はシーンの側から集める */ } };
+    const compileItem = (it) => {
+      if (it.k === 'A') { one.o = it.o; r.setRenderTarget(mainRT); r.compile(fake, cam, this.scene); }
+      else if (it.k === 'B') { one.o = it.o; r.setRenderTarget(null); r.compile(fake, cam, ovl.scene); }
+      else if (it.k === 'C' && it.p.compile) it.p.compile();
+    };
+    let bgDone = false;
+    const drawItem = (it) => {
+      if (it.k === 'A') {
+        this._warmOne(it.o, () => {
+          /* 背景(空の箱)は最初の1回だけ描く(あとは毎回の全画面ぶんが むだ) */
+          if (bgDone) this.scene.background = null;
+          r.setRenderTarget(mainRT);
+          r.render(this.scene, cam);
+          bgDone = true;
+        }, false);
+      } else if (it.k === 'B') {
+        this._warmOne(it.o, () => { r.setRenderTarget(null); r.render(ovl.scene, cam); }, false);
+      } else if (it.k === 'C') {
+        it.p.draw();
+      } else {
+        /* 影の深度: ふつうの描画(render)の中で影の地図を描かせる(render の外で shadowMap.render を呼ぶと
+         * 光の状態がなくて何も作られない)。カメラは WARM_LAYER だけなので、影も本体も その1つだけ */
+        this._warmOne(it.o, () => {
+          this.scene.background = null;
+          r.setRenderTarget(mainRT);
+          r.render(this.scene, cam);
+        }, true);
+      }
+    };
+    const prog = () => (r.info.programs ? r.info.programs.length : 0);
+    let i = 0, waits = 0, longest = 0;
+    while (i < items.length) {
+      if (gen !== this._worldGen || this.glLost) break;
+      const t = performance.now(), p0 = prog(), i0 = i;
+      set();
+      try {
+        while (i < items.length && i - i0 < 8 && performance.now() - t < WARM_SLICE_MS && prog() - p0 < 2) {
+          try { compileItem(items[i]); } catch (e) { /* その1つは描くときに作られるだけ */ }
+          i++;
+        }
+      } finally { unset(); }
+      longest = Math.max(longest, performance.now() - t);
+      if (fences && prog() > p0) { await this._gpuIdle(gen); waits++; }
+      if (gen !== this._worldGen || this.glLost) break;
+      const t2 = performance.now();
+      set();
+      try {
+        for (let k = i0; k < i; k++) { try { drawItem(items[k]); } catch (e) { /* noop */ } }
+      } finally { unset(); }
+      longest = Math.max(longest, performance.now() - t2);
+      if (fences) { await this._gpuIdle(gen); waits++; } else await yieldTask(0);
+      tell(Math.min(0.99, i / total));
+    }
+    this._shadowDirty = true;
+    if (this._debug) {
+      const c = { A: 0, B: 0, C: 0, D: 0 };
+      items.forEach((it) => { c[it.k]++; });
+      console.log('[p6] warm sliced: main ' + c.A + ' / overlay ' + c.B + ' / post ' + c.C + ' / shadow ' + c.D +
+        ' / programs ' + prog() + ' / gpu waits ' + waits + ' / longest slice ' + Math.round(longest) + 'ms');
+    }
+  }
+
+  /* GPU側(シェーダのリンク・描画の準備)が いま出した命令まで終わるのを待つ。
+   * フェンスの状態は ほかのタスクの合間に のぞくだけなので、待つあいだ画面(しゅっぱつカードなど)は止まらない。
+   * 30秒・ワールドの作り直し・文脈が消えたら 待つのをやめる */
+  async _gpuIdle(gen) {
+    const gl = this.renderer.getContext();
+    let sync = null;
+    try { sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush(); } catch (e) { sync = null; }
+    if (!sync) { await yieldTask(0); return; }
+    const t0 = performance.now();
+    try {
+      for (let n = 0; ; n++) {
+        await yieldTask(n < 2 ? 0 : 6);
+        if (gen !== this._worldGen || this.glLost || gl.isContextLost()) break;
+        if (gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED) break;
+        if (performance.now() - t0 > 30000) break;
+      }
+    } catch (e) { /* noop */ } finally {
+      try { gl.deleteSync(sync); } catch (e) { /* noop */ }
+    }
+  }
+
+  /* 準備で描く代表(材質・物の種類・形の並びが同じなら1つだけ)。ワールドの中の見えていない物
+   * (遠いセル・トンネルで点く灯りなど。走っているうちに見えてくる)も入れる。
+   * 本体のシーンの直下の、いま使っていない夕焼け・夜空の箱と ほかの天気の粒(_warmSkipTop)は入れない:
+   * 時間帯・天気が変わるときは必ず準備しなおすので、そのときに作る(いま作ると重いシェーダのぶん待たされる)。
+   * ほかの物は見えていなくても入れる(トンネル・屋内で かくれている いまの天気の粒は、外に出たとたんに見える)。
+   * 運転台の重ね描きのシーン(root が本体のシーンでない)も、見えていなくても全部入れる
+   * (タイトルのデモは外の視点から始まり、とちゅうで運転台の視点に切りかわる。そこで作ると止まる)。
+   * skip(運転台の重ね描きの根)の中は入れない */
+  _warmReps(root, skip) {
+    const reps = [], seen = new Set();
+    const top = root === this.scene;
+    const skipTop = top ? this._warmSkipTop() : null;
+    const walk = (o) => {
+      if (o === skip) return;
+      if (skipTop && o.parent === root && skipTop.has(o)) return;
+      if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material && o.geometry) {
+        const g = o.geometry;
+        let gk = '';
+        const A = g.attributes;
+        for (const k in A) {
+          const a = A[k];
+          gk += k + a.itemSize + (a.normalized ? 'n' : '') + (a.isInterleavedBufferAttribute ? 'i' : '') + (a.array ? a.array.BYTES_PER_ELEMENT : 0) + ',';
+        }
+        if (g.morphAttributes && Object.keys(g.morphAttributes).length) gk += 'm';
+        if (g.index) gk += 'x' + g.index.array.BYTES_PER_ELEMENT;
+        if (g.isInstancedBufferGeometry) gk += 'I';
+        const kind = (o.isInstancedMesh ? (o.instanceColor ? 'IC' : 'I') : '') + (o.isSkinnedMesh ? 'S' : '') +
+          (o.isPoints ? 'P' : o.isLineSegments ? 'LS' : o.isLine ? 'L' : o.isSprite ? 'Sp' : 'M');
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        let mk = '';
+        for (let i = 0; i < mats.length; i++) mk += (mats[i] ? mats[i].id : 0) + ';';
+        const key = mk + '|' + kind + '|' + gk;
+        if (!seen.has(key)) { seen.add(key); reps.push(o); }
+      }
+      const ch = o.children;
+      for (let i = 0; i < ch.length; i++) walk(ch[i]);
+    };
+    walk(root);
+    return reps;
+  }
+
+  /* 代表を1つだけ描く(または影の地図へ)。見えるようにして、カメラの外でも描き、形は三角形1つに。終わったら全部もどす */
+  _warmOne(o, draw, shadow) {
+    const saved = [];
+    let p = o;
+    while (p) { if (!p.visible) { saved.push(p); p.visible = true; } p = p.parent; }
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const mv = [];
+    for (let i = 0; i < mats.length; i++) if (mats[i] && mats[i].visible === false) { mv.push(mats[i]); mats[i].visible = true; }
+    const g = o.geometry;
+    const dr0 = g.drawRange.start, dr1 = g.drawRange.count;
+    g.setDrawRange(0, o.isPoints ? 1 : o.isLine ? 2 : 3);
+    const ic0 = g.isInstancedBufferGeometry ? g.instanceCount : null;
+    if (ic0 !== null) g.instanceCount = 1;
+    const cnt0 = o.isInstancedMesh ? o.count : null;
+    if (cnt0 !== null && o.instanceMatrix && o.instanceMatrix.count > 0) o.count = 1;
+    const lm = o.layers.mask, fc = o.frustumCulled, cs = o.castShadow;
+    o.layers.enable(WARM_LAYER);
+    o.frustumCulled = false;
+    const own = Object.prototype.hasOwnProperty.call(o, 'onBeforeShadow');
+    const obs = o.onBeforeShadow;
+    try {
+      if (shadow) {
+        /* 影: 共有の深度材質は map/side などが変わっても選びなおさないので needsUpdate で選びなおさせる */
+        o.castShadow = true;
+        o.onBeforeShadow = function (rr, ob, cm, sc, geo, dm, grp) { dm.needsUpdate = true; obs.call(this, rr, ob, cm, sc, geo, dm, grp); };
+        const sm = this.renderer.shadowMap;
+        sm.needsUpdate = true;
+        if (draw) draw();
+        sm.needsUpdate = false;
+      } else if (draw) {
+        draw();
+      }
+    } finally {
+      if (shadow) { o.castShadow = cs; if (own) o.onBeforeShadow = obs; else delete o.onBeforeShadow; }
+      o.layers.mask = lm;
+      o.frustumCulled = fc;
+      if (cnt0 !== null) o.count = cnt0;
+      if (ic0 !== null) g.instanceCount = ic0;
+      g.setDrawRange(dr0, dr1);
+      for (let i = 0; i < mv.length; i++) mv[i].visible = false;
+      for (let i = 0; i < saved.length; i++) saved[i].visible = false;
+    }
+  }
+
+  /* 影の深度の代表(_prewarmShadows と同じ見分け方)。影の地図がないとき(低・影なし)は空 */
+  _warmShadowReps() {
+    const r = this.renderer;
+    if (!r.shadowMap.enabled || !this.sun || !this.sun.castShadow || typeof r.shadowMap.render !== 'function') return [];
+    const lod = new Map(((this._town && this._town.treeCells) || []).map((c) => [c.mesh, c.shadow]));
+    /* 遠いあいだ影を落とさないセル(登録の cs0 = もともと影を落とす)も、近づくと落とすので数に入れる */
+    const cs0 = new Set();
+    const reg = this._cellReg || [];
+    for (let i = 0; i < reg.length; i++) if (reg[i].cs0) cs0.add(reg[i].obj);
+    const reps = new Map();
+    this.world.traverse((o) => {
+      if (!o.isMesh || !(o.castShadow || lod.get(o) || cs0.has(o))) return;
+      const m = Array.isArray(o.material) ? o.material[0] : o.material;
+      if (!m) return;
+      const k = [o.isInstancedMesh, !!o.instanceColor, o.customDepthMaterial ? o.customDepthMaterial.uuid : '',
+        !!m.map, !!m.alphaMap, m.alphaTest > 0 ? m.uuid : '', m.shadowSide == null ? m.side : m.shadowSide].join('|');
+      if (!reps.has(k)) reps.set(k, o);
+    });
+    return [...reps.values()];
+  }
+
+  /* にじみ(ブルーム)と出力のパスを1つずつ、本番と同じ描画先へ描く手順(中・高)。{compile, draw} の並び。
+   * 中身(材質の名前)が想定とちがうときは何もしない(仕上げの1回の描画で作られる) */
+  _warmPostSteps() {
+    const r = this.renderer, C = this.composer, B = this.bloom;
+    const steps = [];
+    if (!C) return steps;
+    const quad = (q, mat, rt) => {
+      if (!q || !mat || !rt) return;
+      const use = (fn) => { const m0 = q.material; q.material = mat; try { r.setRenderTarget(rt); fn(); } finally { q.material = m0; } };
+      steps.push({
+        compile: q._mesh && q._mesh.isMesh ? () => use(() => r.compile(q._mesh, this.camera)) : null,
+        draw: () => use(() => q.render(r)),
+      });
+    };
+    if (B && B.fsQuad && typeof B.fsQuad.render === 'function') {
+      const H = B.renderTargetsHorizontal || [];
+      quad(B.fsQuad, B.materialHighPassFilter, B.renderTargetBright);
+      (B.separableBlurMaterials || []).forEach((m, i) => quad(B.fsQuad, m, H[i] || B.renderTargetBright));
+      quad(B.fsQuad, B.compositeMaterial, H[0]);
+      quad(B.fsQuad, B.blendMaterial, C.renderTarget1);
+    }
+    /* 出力パス(トーンマップ・色空間)は画面へ(最後のパスなので本番は renderToScreen) */
+    const passes = C.passes || [];
+    for (let i = 0; i < passes.length; i++) {
+      const ps = passes[i];
+      if (ps instanceof OutputPass) {
+        steps.push({
+          compile: null,
+          draw: () => {
+            const ts = ps.renderToScreen;
+            ps.renderToScreen = true;
+            try { ps.render(r, C.renderTarget2, C.renderTarget1, 0, false); } finally { ps.renderToScreen = ts; }
+          },
+        });
+      }
+    }
+    return steps;
+  }
+
+  /* 分けて準備したあとの仕上げ: 1回ふつうに描いて(にじみも通す)のこりがないか確かめる */
+  _prewarmFinal() {
+    const r = this.renderer;
+    if (this.composer) {
+      const be = this.bloom ? this.bloom.enabled : false;
+      if (this.bloom) this.bloom.enabled = true;
+      try { this.composer.render(0); } finally { if (this.bloom) this.bloom.enabled = be; }
+    } else {
+      r.setRenderTarget(null);
+      r.render(this.scene, this.camera);
+    }
+    const ck = this.cockpit;
+    if (ck && typeof ck.renderOverlay === 'function' && ck.root && ck.root.visible) ck.renderOverlay(r, this.camera);
+    this._shadowDirty = true;
   }
 
   /* prewarm の後半(同期): 運転台の重ね描き・背景とブルーム各パス・影の深度シェーダ */
@@ -961,6 +1666,7 @@ export class RailScene {
 
   /* 作り直しで外した材質・テクスチャを、新しいワールドの準備が済んでから捨てる */
   _flushStale() {
+    this._dropStandIn();   // 準備のあと(暗転中): 使わなくなった代わりの青空も ここで
     if (!this._staleMats.length && !this._staleTex.length) return;
     const mats = this._staleMats, texs = this._staleTex;
     this._staleMats = []; this._staleTex = [];
@@ -994,8 +1700,11 @@ export class RailScene {
     /* 届くまでの代わり: 背景は色、環境光は曇りなら晴れ(なければ夕方)、晴れなら夕方のもの(どれも 256 の立方体)。
      * 環境光を null にすると全シェーダが別の版になり、届いたときに全部コンパイルしなおしになるため */
     if (!this.env[k]) {
-      const st = (k === 'rain' && this.env.clear && this.env.clear.ibl) || (this.env.evening && this.env.evening.ibl) || null;
-      if (st) this.env[k] = { bg: k === 'rain' ? this._wetBg : new THREE.Color(0xa8c4dd), ibl: st, placeholder: true };
+      /* 晴れは青空のグラデーション(_standIn)。曇りは晴れ(か代わり)の環境光+灰色の背景 */
+      const si = this._standIn;
+      const st = (k === 'rain' && this.env.clear && this.env.clear.ibl) || (si && si.ibl) || (this.env.evening && this.env.evening.ibl) || null;
+      const bg = k === 'rain' ? this._wetBg : (si && si.bg) || new THREE.Color(0xa8c4dd);
+      if (st) this.env[k] = { bg, ibl: st, placeholder: true };
     }
     if (!this._envLoad[k]) this._envLoad[k] = this._loadHdr(k);
     return this._envLoad[k];
@@ -1076,6 +1785,20 @@ export class RailScene {
     this._lateN = Object.keys(L).length;
     this._shadowDirty = true;
     if (apply) this._applyWeather();
+    this._dropStandIn();
+  }
+
+  /* 晴れの空(HDR)が届いたあと、代わりの青空(_standIn)を どこも使っていなければ捨てる(GPUの約6MB)。
+   * 背景・環境光・曇りの代わり(env.rain)のどれかが まだ使っていれば、つぎの機会まで残す */
+  _dropStandIn() {
+    const si = this._standIn;
+    if (!si || !this.env.clear || this.env.clear.placeholder) return;
+    const sc = this.scene;
+    if (sc.environment === si.ibl || sc.background === si.bg) return;
+    if (this.env.rain && (this.env.rain.ibl === si.ibl || this.env.rain.bg === si.bg)) return;
+    this._standIn = null;
+    try { if (si.iblRT) si.iblRT.dispose(); } catch (e) { /* noop */ }
+    try { if (si.cube) si.cube.dispose(); } catch (e) { /* noop */ }
   }
 
   /* 遠いセル(全線を約700m/750mごとに分けたメッシュ)を登録する。
@@ -1210,12 +1933,39 @@ export class RailScene {
     this._shadowDirty = false;
   }
 
-  /* fps低下時に段階的に画質を落とす: 解像度 → 影(小さく・1フレームおき) → ブルーム。
+  /* 自動画質の段階を読む(opts.autoQ のときだけ前回の保存分。なければ画質の既定) */
+  _loadPerf(Q) {
+    const P = { dpr: Q.dpr, shadowLite: false, shadowUp: false, bloom: Q.bloom, bloomShift: this.quality === 'mid' ? 1 : 0,
+      drawFarK: 1, maxDpr: 0, shadowUpBad: false };
+    P.base = { dpr: P.dpr, bloomShift: P.bloomShift };
+    if (!this.autoQ) return P;
+    try {
+      const p = JSON.parse(localStorage.getItem(PERF_KEY) || 'null');
+      if (p && p.q === this.quality) {
+        const top = Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, 1.75);
+        if (p.maxDpr > 0) P.maxDpr = p.maxDpr;
+        /* 前回あげた段(既定より高いDPR)も もどす。ただし画面の画素密度と、合わなかった上限(maxDpr)まで */
+        if (p.dpr > 0) P.dpr = Math.min(Math.max(p.dpr, 0.75), Math.max(Q.dpr, top), P.maxDpr > 0 ? P.maxDpr : 9);
+        /* 古い保存(shadowLevel 1 = 影512+1フレームおき)は「1フレームおき」だけ引きつぐ(512 の段はもう使わない) */
+        P.shadowLite = !!(p.shadowLite || p.shadowLevel === 1);
+        P.shadowUp = !!(p.shadowUp || p.shadowLevel === 2) && !p.shadowUpBad;
+        P.shadowUpBad = !!p.shadowUpBad;
+        if (p.bloomShift > P.bloomShift && p.bloomShift <= 2) P.bloomShift = p.bloomShift;
+        if (p.drawFarK > 0) P.drawFarK = Math.min(1, Math.max(0.6, p.drawFarK));
+      }
+    } catch (e) { /* 読めなければ既定のまま */ }
+    return P;
+  }
+
+  /* GPUが重いときに1段下げる: 解像度(DPR) 1.35→1.25→1.15→1.05 → にじみの計算を1/8の解像度に。
+   * 影の地図は小さくしない(画素ごとの影の計算の重さは地図の大きさで変わらない)。
+   * にじみ(ブルーム)は止めない(夜・夕方の見た目の要。止めても描画の道は同じで軽くならない)。
    * 影は shadowMap.enabled を切りかえない(全シェーダの作り直しで数秒止まるため) */
   stepDownQuality() {
     const r = this.renderer, P = this._perf;
     const cur = r.getPixelRatio();
-    const next = [1.35, 1.15, 1.0].find((d) => d < cur - 0.01);
+    let next = 0;
+    for (let i = DPR_STEPS.length - 1; i >= 0; i--) if (DPR_STEPS[i] < cur - 0.01) { next = DPR_STEPS[i]; break; }
     if (next) {
       r.setPixelRatio(next);
       P.dpr = next;
@@ -1223,70 +1973,170 @@ export class RailScene {
       this._savePerf();
       return 'dpr';
     }
-    /* 影: 夜・雨(太陽の影がない)では下げても軽くならないので、この段はとばす */
-    if (r.shadowMap.enabled && !this._shadowLite && this.sun && this.sun.castShadow) {
-      const sh = this.sun.shadow;
-      sh.mapSize.set(512, 512);
-      if (sh.map) { sh.map.dispose(); sh.map = null; }
-      r.shadowMap.autoUpdate = false;
-      r.shadowMap.needsUpdate = true;
-      this._shadowDirty = true;
-      this._shadowLite = true;
-      P.shadowLevel = 1;
+    /* にじみ: 計算の解像度だけ下げる(段の数・シェーダは同じ。重ね合わせは元の解像度のまま) */
+    if (this.bloom && this.composer && P.bloomShift < 2) {
+      P.bloomShift++;
+      if (!this._bloomTinted) { this.bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74)); this._bloomTinted = true; }
+      this._reapplySize();
       this._savePerf();
-      return 'shadow';
-    }
-    /* ブルーム: 描画の道(ブルーム用の描画先→出力)はそのまま、にじみのパスだけ止める。
-     * シェーダは変わらないので、走行中にコンパイルは起きない */
-    if (this.bloom && P.bloom !== false && this._bloomOn()) {
-      this.bloom.enabled = false;
-      P.bloom = false;
-      this._savePerf();
-      return 'bloom';
+      return 'bloomRes';
     }
     return null;
   }
 
+  /* CPUが重いときに1段下げる: 遠くを描く距離を 0.8倍(0.6倍まで) → 動いている間の影を1フレームおき。
+   * 解像度は下げない(CPUの重さは画素の数で変わらない) */
+  _stepCpu() {
+    const P = this._perf;
+    if (P.drawFarK > 0.6 + 1e-3) {
+      P.drawFarK = Math.max(0.6, Math.round(P.drawFarK * 0.8 * 100) / 100);
+      this._drawFarK = P.drawFarK;
+      this._cullX = 1e9;   // つぎのコマで遠いセルを選びなおす
+      this._savePerf();
+      return 'drawFar';
+    }
+    if (!this._shadowLite && this.renderer.shadowMap.enabled) {
+      this._shadowLite = true;
+      P.shadowLite = true;
+      this._savePerf();
+      return 'shadowLite';
+    }
+    return null;
+  }
+
+  /* 軽く動いているときに1段上げる: 解像度を1段(画面の画素密度・1.75・合わなかった上限まで) → 影2048。
+   * 上げたあと2回(8秒)のうちに 52fps を切ったら もどして、その上限を覚える(_aq.trial) */
+  _stepUp() {
+    const r = this.renderer, P = this._perf, A = this._aq;
+    const top = Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, 1.75, P.maxDpr > 0 ? P.maxDpr : 9);
+    const cur = r.getPixelRatio();
+    let next = 0;
+    for (let i = 0; i < DPR_STEPS.length; i++) if (DPR_STEPS[i] > cur + 0.01) { next = DPR_STEPS[i]; break; }
+    if (next && next <= top + 1e-3) {
+      A.trial = { kind: 'dpr', prev: cur, n: 0 };
+      r.setPixelRatio(next);
+      P.dpr = next;
+      this._reapplySize();
+      return 'dprUp';
+    }
+    const sh = this.sun && this.sun.shadow;
+    if (sh && r.shadowMap.enabled && this.sun.castShadow && sh.mapSize.x < 2048 && !P.shadowUpBad) {
+      A.trial = { kind: 'shadow', prev: sh.mapSize.x, n: 0 };
+      this._setShadowSize(2048);
+      P.shadowUp = true;
+      return 'shadowUp';
+    }
+    return null;
+  }
+
+  /* 影の地図の大きさを変える(地図を捨てて作りなおすだけ。シェーダは同じ) */
+  _setShadowSize(n) {
+    const sh = this.sun && this.sun.shadow;
+    if (!sh) return;
+    sh.mapSize.set(n, n);
+    if (sh.map) { sh.map.dispose(); sh.map = null; }
+    this._shadowDirty = true;
+  }
+
+  /* 上げてみた段が重かった: もどして、その上限を保存する(つぎからは上げない) */
+  _revertUp(t) {
+    const r = this.renderer, P = this._perf;
+    if (t.kind === 'dpr') {
+      r.setPixelRatio(t.prev);
+      P.dpr = t.prev;
+      P.maxDpr = t.prev;
+      this._reapplySize();
+    } else {
+      this._setShadowSize(t.prev);
+      P.shadowUp = false;
+      P.shadowUpBad = true;
+    }
+    this._aq.locked = true;
+    this._savePerf();
+    return 'revert';
+  }
+
   _savePerf() {
     const P = this._perf;
-    /* 保存するのは自動軽量化が有効(opts.autoQ)のときだけ。古い呼び出し元の1回のカクつきで下げた段階を次回に持ちこまない。
+    /* 保存するのは自動画質が有効(opts.autoQ)のときだけ。古い呼び出し元の1回のカクつきで下げた段階を次回に持ちこまない。
      * 30fpsちょうどで安定しているとき(_capLike: iPadの低電力モードなどで、書きかえが1秒30回に絞られている)は
      * GPUの力不足ではないので、下げるのはこの回だけにして保存しない(保存すると低電力モードをやめても軽いまま) */
     if (!this.autoQ || this._capLike) return;
     try {
-      localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, dpr: P.dpr, shadowLevel: P.shadowLevel, bloom: P.bloom !== false }));
+      localStorage.setItem(PERF_KEY, JSON.stringify({
+        q: this.quality, dpr: P.dpr, shadowLite: !!P.shadowLite, shadowUp: !!P.shadowUp, shadowUpBad: !!P.shadowUpBad,
+        bloom: true, bloomShift: P.bloomShift, drawFarK: P.drawFarK, maxDpr: P.maxDpr || 0,
+      }));
       this._perfSaved = true;
     } catch (e) { /* 保存できなくても動く */ }
   }
 
-  /* 自動軽量化の見張り(毎フレーム呼ぶ)。1回のカクつきでは落とさない:
-   * 4秒ごとに平均fpsを見て、40未満が2回続き、直近2.5秒にカクつき(0.09秒以上)が無いときだけ1段下げる。
-   * 55fps以上が3回(12秒)続いたら、前の起動で保存した軽い段階は忘れる(次の起動はふつうの画質から) */
-  autoQualityTick(dt, { busy = false } = {}) {
-    const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0, good: 0, mx: 0, forgot: false });
+  /* 自動画質の見張り(毎フレーム呼ぶ)。opts: {busy, cpuMs}
+   * busy: 間引いて描く画面・ポーズ・暗転・出発直後・運転台以外のカメラ(はからない。はかりかけの4秒も捨てる)
+   * cpuMs: そのコマのJSの重さ(描画+計器+コーチ)。4秒の平均で CPU と GPU のどちらが重いかを見分ける。
+   * 下げる: 平均 45fps 未満が2回続き、直近2.5秒にカクつき(0.09秒以上)が無いとき1段。
+   *         CPUが平均9ms以上なら CPU の段(遠くの距離・影の間引き)、ほかは GPU の段(解像度・にじみ)
+   * 上げる: 58fps以上が3回(12秒)続き、CPUが7ms未満なら1段(解像度 → 影2048)。上げたあと52fpsを切ったら もどす。
+   * 戻り値: 変えた段の名前(なければ null) */
+  autoQualityTick(dt, opts) {
+    const o = opts || {};
+    const busy = !!o.busy;
+    const cpu = typeof o.cpuMs === 'number' && o.cpuMs >= 0 && o.cpuMs < 1000 ? o.cpuMs : -1;
+    const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0, good: 0, mx: 0, forgot: false, cs: 0, cn: 0, up: 0, trial: null, locked: false });
     const now = performance.now();
     if (dt >= 0.09) A.hitch = now;
-    /* 間引いて描く画面・ポーズ中・暗転中・出発直後は はからない(その間の rAF の間隔は 3Dの重さを表さない)。
-     * はかりかけの4秒も捨てる(なめらか・重いのどちらにも数えない) */
-    if (busy) { A.t = 0; A.n = 0; A.mx = 0; return null; }
+    if (busy) { A.t = 0; A.n = 0; A.mx = 0; A.cs = 0; A.cn = 0; A.d0 = -1; return null; }
+    if (!(A.d0 >= 0)) A.d0 = this.drawCount;
     A.t += dt; A.n++;
     if (dt > A.mx) A.mx = dt;
+    if (cpu >= 0) { A.cs += cpu; A.cn++; }
     if (A.t < 4 - 1e-6) return null;   // 1/30秒を120回足しても4にわずかに届かないので少し余裕を見る
-    const fps = A.n / A.t, mx = A.mx;
-    A.t = 0; A.n = 0; A.mx = 0;
+    /* fps は実際に描いたコマで(GPUが追いつかずに描かなかったコマは数えない) */
+    const drawn = this.drawCount - A.d0;
+    const fps = Math.min(A.n, drawn > 0 ? drawn : A.n) / A.t, mx = A.mx, cpuAvg = A.cn ? A.cs / A.cn : -1;
+    A.t = 0; A.n = 0; A.mx = 0; A.cs = 0; A.cn = 0; A.d0 = this.drawCount;
+    this._aqLast = { fps, cpu: cpuAvg };
     /* 30fps前後で1コマの長さがそろっている = 画面の書きかえの上限(iPadの低電力モードなど)。GPUの限界ではないので保存しない */
     this._capLike = fps > 27 && fps < 32 && mx < 0.045;
-    /* なめらかに動いている: 前の起動で保存した軽い段階を消す。
-     * ただし、この起動で自分で下げて保存した段階は消さない(下げたから速くなっただけなので) */
+    /* 上げてみた段の見きわめ(2回) */
+    if (A.trial) {
+      const t = A.trial;
+      if (fps < 52) { A.trial = null; A.good = 0; return this._revertUp(t); }
+      if (++t.n >= 2) { A.trial = null; this._savePerf(); }
+      return null;
+    }
+    /* なめらかに動いている: 前の起動で保存した軽い段階は忘れる(つぎの起動はふつうの画質から。合わなかった上限は覚えておく)。
+     * ただし、この起動で自分で変えて保存した段階は消さない(下げたから速くなっただけなので) */
     A.good = fps >= 55 ? A.good + 1 : 0;
     if (A.good >= 3 && this.autoQ && !this._perfSaved && !A.forgot) {
       A.forgot = true;
-      try { localStorage.removeItem(PERF_KEY); } catch (e) { /* 消せなくても動く */ }
+      try {
+        const P = this._perf;
+        if (P.maxDpr > 0 || P.shadowUpBad) localStorage.setItem(PERF_KEY, JSON.stringify({ q: this.quality, maxDpr: P.maxDpr || 0, shadowUpBad: !!P.shadowUpBad }));
+        else localStorage.removeItem(PERF_KEY);
+      } catch (e) { /* 消せなくても動く */ }
     }
-    const bad = fps < 40 && now - A.hitch > 2500 && !busy;
+    /* 上げる */
+    A.up = fps >= 58 && (cpuAvg < 0 || cpuAvg < 7) ? A.up + 1 : 0;
+    if (A.up >= 3 && !A.locked) {
+      A.up = 0;
+      const u = this._stepUp();
+      if (u) return u;
+      A.locked = true;   // もう上げる段がない
+    }
+    /* 下げる */
+    const bad = fps < 45 && now - A.hitch > 2500;
     A.bad = bad ? A.bad + 1 : 0;
     if (A.bad < 2) return null;
     A.bad = 0;
+    A.up = 0;
+    /* 一度 下げたら、この起動のあいだは もう上げない(軽い場面で上げて 重い場面で下げる、の くりかえしは
+     * そのたびに画面の大きさの作りなおしで止まる) */
+    A.locked = true;
+    if (cpuAvg > 9) {
+      const c = this._stepCpu();
+      if (c) return c;
+    }
     return this.stepDownQuality();
   }
 
@@ -2532,7 +3382,7 @@ export class RailScene {
     this._fv = v;
     if (Math.abs(a) <= 4) this._accSm += (a - this._accSm) * (1 - Math.exp(-dt / 0.35));   // ワープ等の飛びは捨てる
     /* カーブ: 25m先との向きの差(左カーブで負)。カントで車体は内側へ傾くので符号を反転して左へロール */
-    const fA = frameAt(this.frames, this.step, Math.min(this.line.meta.length - 2, s + 25));
+    const fA = frameInto(this.frames, this.step, Math.min(this.line.meta.length - 2, s + 25), this._frA);
     const kap = (f.t.x * fA.t.z - f.t.z * fA.t.x) / 25;
     const rollT = -Math.max(-0.035, Math.min(0.035, kap * 12)) * Math.min(1, sim.v / 40);
     this._roll += (rollT - this._roll) * (1 - Math.exp(-dt / 0.8));
@@ -2714,15 +3564,66 @@ export class RailScene {
     sun.position.copy(tgt).addScaledVector(dir, 430);
   }
 
+  /* GPUの おくれ見張り: 2コマ前に入れたフェンスが まだなら true(このコマは描かない)。
+   * GPUが追いつかない(ソフト描画・重い場面)ときに 命令が何秒ぶんも たまると、画面の大きさを変えるなどの
+   * 「待ち合わせ」で その全部を待って止まる。2コマまでに おさえて、入力から絵までの おくれも小さくする。
+   * 2秒以上まっても終わらないときは描く(止まりつづけない)。フェンスのない環境(WebGL1)では何もしない */
+  _paceSkip(dt) {
+    const f = this._fences[this._fi];
+    if (!f) return false;
+    const gl = this.renderer.getContext();
+    let done = true;
+    const t0 = performance.now();
+    try { done = gl.getSyncParameter(f, gl.SYNC_STATUS) === gl.SIGNALED; } catch (e) { done = true; }
+    const now = performance.now();
+    /* フェンスをのぞくだけで待たされる環境(問い合わせがGPUとの待ち合わせになる)では、見張りをやめる
+     * (30回のうち半分より多く 2ms 以上かかったら) */
+    this._paceN = (this._paceN || 0) + 1;
+    if (now - t0 > 2) this._paceSlow = (this._paceSlow || 0) + 1;
+    if (this._paceN >= 30) {
+      if ((this._paceSlow || 0) > 15) { this._paceOff = true; this._fences = [null, null]; return false; }
+      this._paceN = 0; this._paceSlow = 0;
+    }
+    if (!done) {
+      if (!this._skipT0) this._skipT0 = now;
+      if (now - this._skipT0 < 2000) {
+        this._skipDt = Math.min(0.25, this._skipDt + (dt > 0 ? dt : 0));
+        this._skipN++;
+        return true;
+      }
+    }
+    this._skipT0 = 0;
+    try { gl.deleteSync(f); } catch (e) { /* noop */ }
+    this._fences[this._fi] = null;
+    return false;
+  }
+
+  /* 描いたコマの終わりにフェンスを入れる(2つを交互に使う) */
+  _paceMark() {
+    if (this._paceOff) return;
+    const gl = this.renderer.getContext();
+    if (!gl || typeof gl.fenceSync !== 'function') return;
+    const i = this._fi;
+    if (this._fences[i]) { try { gl.deleteSync(this._fences[i]); } catch (e) { /* noop */ } }
+    let f = null;
+    try { f = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); } catch (e) { f = null; }
+    this._fences[i] = f;
+    this._fi = i ^ 1;
+  }
+
   /* 毎フレーム描画 */
   render(dt) {
-    /* prewarmAsync がシェーダの完成を待っている間は描かない(未完成のシェーダで止まらないように) */
-    if (this._warming) return;
+    /* 準備中(prewarmAsync・少しずつ作るワールド)・文脈が消えた・ワールドがまだない ときは描かない */
+    if (this._warming || this.glLost || !this.frames || !this.sim) return;
+    /* GPUが2コマ前の絵を まだ描き終えていなければ、このコマは描かない(描かなかった時間は次のコマに足す)。
+     * dt=0 の1回だけの描きなおし(一時停止・成績票の うしろ・準備のあと)は かならず描く */
+    if (dt > 0 && this._paceSkip(dt)) return;
+    if (this._skipDt > 0) { dt += this._skipDt; this._skipDt = 0; }
     this.clockT += dt;
     const sim = this.sim;
     const L = this.line.meta.length;
     const s = Math.max(0, Math.min(L - 2, sim.pos));
-    const f = frameAt(this.frames, this.step, s);
+    const f = frameInto(this.frames, this.step, s, this._fr);
     this._camFeel(dt, s, f);
     this._placeCamera(s, f, dt);
     const eye = this.camera.position;
@@ -2743,37 +3644,41 @@ export class RailScene {
 
     this._updateSleepers(s);
 
-    /* 信号現示の更新（近傍・変化したときだけ） */
-    const R = this._sigRes;
-    this.signalMeshes.forEach((sm) => {
-      const d = sm.sig.s - sim.pos;
-      if (d < -50 || d > 1100) return;
-      const asp = sim.signalAspect(sm.sig);
-      if (asp === sm.asp) return;
-      sm.asp = asp;
-      sm.lamps.forEach((l) => {
-        const on = (asp === 3 && l.k === 'G') || ((asp === 1) && l.k === 'Y') ||
-          (asp === 2 && (l.k === 'Y' || l.k === 'G')) || (asp === 0 && l.k === 'R');
-        l.lamp.material = on ? R.on[l.k] : R.off;
-        l.glow.visible = on;
-      });
-    });
+    /* 信号の現示は _updatePeople → _updateSignals(scene/signage.js)で、近くの変わった灯だけ書きかえる */
 
     /* ほかの列車・自列車 */
     if (this.traffic) this.traffic.update(dt);
 
     /* 停止位置の光の目印(つぎに とまる駅だけ) */
     const nxt = sim.stops[sim.stopIdx];
+    const pin = this.stopPin;
     if (this.guide !== false && nxt && !sim.doorOpen && nxt.stopAt - sim.pos < 650 && nxt.stopAt - sim.pos > -2) {
-      /* 「8」の標識が停止位置より a8 m 先に立つとき(駅の側で _stop8Ahead を決める)は、その柱の位置に */
-      const a8 = this._stop8Ahead || 0;
-      const fb = frameAt(this.frames, this.step, Math.min(L - 2, nxt.stopAt + a8));
-      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, a8 ? 1.93 : 2.3);
+      /* 「8」の標識が停止位置より a8 m 先に立つとき(駅の側で _stop8Ahead を決める)は、その柱の位置に。
+       * 横の位置は駅の側の _stop8Lat(なければ 標識の柱 1.93m / 標識なし 2.3m) */
+      const hasB = this._stop8Ahead != null;
+      const a8 = hasB ? this._stop8Ahead : 0;
+      const lat = this._stop8Lat != null ? this._stop8Lat : (a8 ? 1.93 : 2.3);
+      const fb = frameInto(this.frames, this.step, Math.min(L - 2, nxt.stopAt + a8), this._frB);
+      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, lat);
       this.stopBeam.position.y += 4.4;
       this._beamMat.opacity = 0.5 + 0.22 * Math.sin(this.clockT * 4);
       this.stopBeam.visible = true;
+      /* 画面の目印(ui/stoppin.js)の位置: 光の柱の2m下(標識の高さ)を、いまのカメラで画面へ写す */
+      if (this.camMode === 'cab') {
+        this.camera.updateMatrixWorld();
+        _pinV.copy(this.stopBeam.position);
+        _pinV.y -= 2.0;
+        _pinV.project(this.camera);
+        pin.vis = _pinV.z < 1 && Math.abs(_pinV.x) < 1 && Math.abs(_pinV.y) < 1;
+        pin.x = (_pinV.x + 1) / 2;
+        pin.y = (1 - _pinV.y) / 2;
+        pin.d = nxt.stopAt - sim.pos;
+      } else {
+        pin.vis = false;
+      }
     } else {
       this.stopBeam.visible = false;
+      pin.vis = false;
     }
     /* 観覧車をゆっくり回す */
     if (this.wheelSpin) this.wheelSpin.rotation.z += dt * 0.05;
@@ -2790,21 +3695,35 @@ export class RailScene {
       this._inTunnelNow = indoor;
       if (this.trainKit) this.trainKit.setNight(tod !== 'day' || this.weather !== 'clear' || indoor);
     }
-    let light = tod === 'night' ? 0.16 : tod === 'evening' ? 0.55 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1;
-    if (indoorEye) light = Math.min(light, 0.3);
-    /* ワイパー: 雨は 'on'(つづけて)、雪は 'int'(間をあけて)、屋内・外のカメラでは止める */
-    const wiper = indoorEye || this.camMode !== 'cab' ? false : this.weather === 'rain' ? 'on' : this.weather === 'snow' ? 'int' : false;
-    this.cockpit.update(dt, { light, night: tod === 'night', wiper, snow: this.weather === 'snow' && !indoorEye });
-    if (this.weatherFx) this.weatherFx.update(dt, sim.v / 3.6, indoorEye && this.camMode === 'cab');
+    /* 運転台の明るさ・ワイパー・雪(scene の _updateCockpit があればそちらで。なければ ここで) */
+    if (typeof this._updateCockpit === 'function') {
+      this._updateCockpit(dt, s, indoorEye);
+    } else {
+      let light = tod === 'night' ? 0.16 : tod === 'evening' ? 0.55 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1;
+      if (indoorEye) light = Math.min(light, 0.3);
+      /* ワイパー: 雨は 'on'(つづけて)、雪は 'int'(間をあけて)、屋内・外のカメラでは止める */
+      const wiper = indoorEye || this.camMode !== 'cab' ? false : this.weather === 'rain' ? 'on' : this.weather === 'snow' ? 'int' : false;
+      this.cockpit.update(dt, { light, night: tod === 'night', wiper, snow: this.weather === 'snow' && !indoorEye });
+    }
+    /* 雨・雪の粒(4つめ: 線路の高さ。雪の床の高さに使う) */
+    if (this.weatherFx) this.weatherFx.update(dt, sim.v / 3.6, indoorEye && this.camMode === 'cab', f.p.y);
 
     /* 走っている間に届いた空(HDR)は、止まっているときに使いはじめる */
     if (this._lateN && (sim.ended || sim.v < 0.05)) this._promoteEnv(true);
     /* 時間帯・天気が変わった直後は、描く前に使うシェーダをまとめて準備 */
-    if (this._needPrewarm) this.prewarm(true);
+    if (this._needPrewarm) {
+      /* 同じ路線・時間帯・天気・空の形式のまま(タイトルへ もどる・同じ条件で もう一回 など)で
+       * 前の準備が そろっているなら シェーダは同じ。いっきに準備しなおさない(iPadで止まる) */
+      const W = this._warmDone;
+      if (W && W.gen === this._worldGen && !this._worldNew && W.sig === this._warmSig()) this._needPrewarm = false;
+      else this.prewarm(true);
+    }
     this._updateShadow(dt);
     /* 遠景クリップより遠いセルは描かない */
     this._cullTick(false);
     this._frame++;
+    /* (debug) 固めた物が動いていないか(120フレームごと) */
+    if (this._frzSnap && this._frame % 120 === 0) this._freezeCheck();
     if (this.composer) {
       if (this.bloom) this.bloom.enabled = this._bloomOn();
       this.composer.render();
@@ -2814,6 +3733,8 @@ export class RailScene {
     /* 運転台の重ね描き(キャンバスへ直接。あれば) */
     const ck = this.cockpit;
     if (ck && typeof ck.renderOverlay === 'function') ck.renderOverlay(this.renderer, this.camera);
+    this.drawCount++;
+    this._paceMark();
 
     /* fps計測(自動軽量化・デバッグ用) */
     if (dt > 0) {

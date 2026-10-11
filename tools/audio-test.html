@@ -98,6 +98,13 @@
       <button data-ev="finished">finished</button>
       <button data-ev="unknown-xyz">未知イベント</button>
     </div>
+    <div class="btns" style="margin-top:8px" id="cue-btns">
+      <button data-cue="stopGold">cue stopGold</button>
+      <button data-cue="stopPerfect">cue stopPerfect</button>
+      <button data-cue="goal">cue goal</button>
+      <button data-cue="coachPing">cue coachPing</button>
+      <button data-cue="atsChime">cue atsChime</button>
+    </div>
     <div class="btns" style="margin-top:8px">
       <select id="sel-mel"></select>
       <button id="b-melody">発車メロディ</button>
@@ -282,6 +289,10 @@ function bindUI() {
   $('#b-pass').onclick = () => { world.trains.push({ pos: sim.pos + 600, speed: -22, age: 0 }); log('すれ違い列車: 前方600m・対向80km/h'); };
   document.querySelectorAll('[data-ev]').forEach((b) => {
     b.onclick = () => { start(); sim.emit(b.dataset.ev, { seed: 0, departAt: sim.t + 20, name: 'テスト', err: 0, late: 0 }); log('event: ' + b.dataset.ev); };
+  });
+  /* UI用の名前つきの音(main.js の _cue と おなじ audio.cue) */
+  document.querySelectorAll('[data-cue]').forEach((b) => {
+    b.onclick = () => { start(); const n = audio && audio.cue(b.dataset.cue, 0.5); log('cue: ' + b.dataset.cue + (n ? '' : ' (まだ合成中)')); };
   });
   const sel = $('#sel-mel');
   for (let i = 0; i < 8; i++) sel.insertAdjacentHTML('beforeend', `<option value="${i}">メロディ ${i}</option>`);

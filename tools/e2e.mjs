@@ -2,6 +2,9 @@
  * e2e.mjs — ブラウザでの通し確認(ヘッドレスChromium + Playwright)
  * タイトル → 列車えらび → 短い区間を自動運転 → 成績票 まで進め、
  * 各画面のスクリーンショットと、コンソールエラーが無いことを確認する。
+ * つづけて: 「8」を大きく行きすぎた → 「もういちど とめる(すこし もどる)」で 180m 手前から止めなおす流れ、
+ * WebGLの文脈が消えた → もどる(一時停止のまま 同じ位置で 描画が再開する)、
+ * 最後に 長い処理(long task, 250ms以上)の記録を出す(ソフト描画では GPU待ちも ふくむ)。
  *
  * 使い方: (ローカルHTTPサーバを立ててから)
  *   npx http-server -p 8123 -c-1 .
@@ -25,10 +28,21 @@ const args = process.env.GPU ? ['--enable-gpu', '--ignore-gpu-blocklist'] : ['--
 const browser = await chromium.launch({ args: [...args, '--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 const errors = [];
+const bad = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push(`${e.message}\n${e.stack}`));
 const shot = (name) => page.screenshot({ path: join(out, name + '.png'), timeout: 120000 });
 const step = (s) => console.log('・' + s);
+/* 長い処理(long task)の記録。場面(phase)ごとに */
+await page.addInitScript(() => {
+  window.__lt = [];
+  window.__ltPhase = 'boot';
+  try {
+    new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__lt.push([window.__ltPhase, Math.round(e.duration)]); })
+      .observe({ type: 'longtask', buffered: true });
+  } catch (e) { /* 古いブラウザ */ }
+});
+const phase = (n) => page.evaluate((x) => { window.__ltPhase = x; }, n);
 
 await page.goto(`${base}/index.html?debug=1&q=${process.env.Q || 'low'}`);
 await page.waitForFunction(() => window.__test && window.__test.app.mode === 'title', null, { timeout: 120000 });
@@ -46,8 +60,9 @@ await page.waitForTimeout(300);
 await shot('2_select');
 step('列車えらび(区間指定)');
 
+await phase('first-start');
 await page.click('#btn-start');
-await page.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 60000 });
+await page.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 120000 });
 await page.waitForTimeout(1500);
 await shot('3_drive');
 step('運転開始');
@@ -99,6 +114,7 @@ const res = await page.evaluate(() => ({
 }));
 step(`成績票: ${res.total}点 ランク${res.rank} 停車${res.stops}駅`);
 
+await phase('menus');
 await page.click('#btn-res-select');
 await page.click('#btn-back-title');
 await page.click('#btn-to-stamps');
@@ -106,9 +122,114 @@ await page.waitForTimeout(800);
 await shot('5_stamps');
 step('スタンプ帳');
 
+/* ---- 「8」を 15m 行きすぎて止まった → もういちど とめる(すこし もどる) ----
+ * 1駅目は ふつうに止め、2駅目で行きすぎる。やりなおしても 1駅目の点数は のこり、
+ * 「とちゅうから やりなおした」あつかい(きろくに のこらない)にも ならない */
+await phase('retry');
+await page.evaluate(() => __test.setup({ service: 'local', start: 8, end: 10 }));
+await page.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 120000 });
+const ov = await page.evaluate(() => {
+  const A = __test.app, sim = A.sim;
+  sim.skipDwell();
+  __test.advance(8);   // ドアが しまって 走りだすまで
+  const first = __test.arrive();
+  sim.skipDwell();
+  __test.approach(120);
+  const r = __test.overrun(15.2);
+  return { first, overrun: r, stops: sim.score.stops.length, hasRetry: typeof sim.retryApproach === 'function', wired: typeof A._retryApproach === 'function' };
+});
+await page.waitForTimeout(800);
+if (!ov.overrun || !ov.overrun.overrun) bad.push('いきすぎパネルが出ない');
+await shot('6_overrun');
+if (ov.hasRetry && ov.wired) {
+  await page.click('#btn-overrun-retry');
+  await page.waitForFunction(() => !__test.app._overrun, null, { timeout: 30000 }).catch(() => { /* noop */ });
+  await page.waitForTimeout(1200);
+  const af = await page.evaluate(() => {
+    const A = __test.app, sim = A.sim, st = sim.stops[sim.stopIdx];
+    return { back: Math.round(st.stopAt - sim.pos), stops: sim.score.stops.length, retried: !!A._retried, v: sim.v, door: sim.doorOpen };
+  });
+  step(`もういちど とめる: 「8」の ${af.back}m 手前 / いままでの駅 ${af.stops} / やりなおし扱い ${af.retried}`);
+  if (Math.abs(af.back - 180) > 2) bad.push(`やりなおしの位置が 180m 手前でない (${af.back}m)`);
+  if (af.stops !== ov.stops) bad.push(`やりなおしで 前の駅の点数が きえた (${ov.stops} → ${af.stops})`);
+  if (af.retried) bad.push('やりなおしが「とちゅうから やりなおした」あつかいになった');
+  await shot('7_retry');
+  await page.evaluate(() => { __test.auto(true); __test.fast(20); });
+  await page.waitForFunction(() => __test.app.mode === 'result', null, { timeout: 600000 });
+  await page.waitForTimeout(1500);
+  const rr = await page.evaluate(() => ({
+    text: document.querySelector('#screen-result').textContent,
+    stops: __test.app.sim.score.stops.map((x) => ({ name: x.name, retry: !!x.retry })),
+  }));
+  step(`やりなおしたあとの成績票: ${rr.stops.map((x) => x.name + (x.retry ? '(やりなおし)' : '')).join(' / ')}`);
+  if (/きろくに\s*のこらない/.test(rr.text)) bad.push('成績票に「きろくに のこらない」が出た');
+  if (rr.stops.length !== 2 || !rr.stops[1].retry) bad.push('やりなおした駅に retry の しるしがない');
+  await shot('8_retry_result');
+} else {
+  step(`もういちど とめる: ${ov.hasRetry ? 'ボタンの配線(main.js の _retryApproach)がまだ' : 'エンジンに retryApproach がない'} → この確認はとばす`);
+  await page.evaluate(() => { const A = __test.app; if (A._setOverrun) A._setOverrun(false); });
+}
+
+/* ---- WebGLの文脈が消えた → もどる ---- */
+await phase('lose-gl');
+await page.evaluate(() => { if (__test.app.mode !== 'drive') __test.go('title'); });
+await page.evaluate(() => __test.setup({ service: 'local', start: 10, end: 12 }));
+await page.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 120000 });
+await page.waitForTimeout(800);
+const guard = await page.evaluate(() => !!__test.app._glGuard);
+if (guard) {
+  const g0 = await page.evaluate(() => {
+    const A = __test.app;
+    A.sim.skipDwell(); __test.advance(20);
+    const pos = A.sim.pos, d0 = A.scene.drawCount || 0;
+    let ok = false;
+    if (__test.loseGL) ok = __test.loseGL() !== false;
+    else {
+      const gl = A.scene.renderer.getContext(), ext = gl.getExtension('WEBGL_lose_context');
+      if (ext) { ext.loseContext(); setTimeout(() => ext.restoreContext(), 500); ok = true; }
+    }
+    window.__glT0 = performance.now();
+    return { pos, d0, ok, scene: A.scene.drawCount };
+  });
+  if (!g0.ok) bad.push('WEBGL_lose_context が使えない');
+  /* 消えたことに気づいて 一時停止した ところの位置 */
+  await page.waitForFunction(() => __test.app._glLost || (__test.app._glGuard && __test.app._glGuard.n > 0), null, { timeout: 30000, polling: 50 })
+    .catch(() => bad.push('文脈が消えたことに気づかない'));
+  g0.pos = await page.evaluate(() => __test.app.sim.pos);
+  /* 新しいステージ(scene)が 準備を終えて 1コマ描いたら 立ちなおり(一時停止中なので そのあとは描かない) */
+  await page.waitForFunction(() => {
+    const A = __test.app;
+    return !A._glLost && A.scene && !A.scene.glLost && !A.scene._warming && (A.scene.drawCount || 0) >= 1;
+  }, null, { timeout: 180000, polling: 250 }).catch(() => bad.push('文脈が消えたあと 描画が もどらない'));
+  const g1 = await page.evaluate(() => {
+    const A = __test.app;
+    const fade = document.querySelector('#fade');
+    return { pos: A.sim.pos, paused: !!A.paused, ms: Math.round(performance.now() - window.__glT0), fade: fade.classList.contains('on'), lost: !!A._glLost };
+  });
+  step(`文脈が消えた → もどった: ${(g1.ms / 1000).toFixed(1)}秒 / 一時停止 ${g1.paused} / 位置のずれ ${Math.abs(g1.pos - g0.pos).toFixed(2)}m`);
+  if (!g1.paused) bad.push('文脈が もどったあと 一時停止に なっていない');
+  if (Math.abs(g1.pos - g0.pos) > 1) bad.push('文脈が もどったあと 位置が ずれた');
+  await page.waitForTimeout(1200);
+  await shot('9_after_lose_gl');
+  await page.evaluate(() => __test.app.setPaused(false));
+} else {
+  step('文脈の消失: ui/glguard.js の配線(main.js)がまだ → この確認はとばす');
+}
+
+/* ---- 長い処理の記録 ---- */
+const lt = await page.evaluate(() => window.__lt || []);
+const by = {};
+lt.forEach(([p, d]) => { (by[p] = by[p] || []).push(d); });
+console.log('長い処理(long task)の記録 (ms, 大きい順。ソフト描画では GPU待ちも ふくむ):');
+Object.keys(by).forEach((k) => {
+  const a = by[k].sort((x, y) => y - x);
+  console.log(`  ${k.padEnd(12)} ${a.length}回 最大${a[0]} / ${a.slice(0, 6).join(', ')}`);
+});
+
 await browser.close();
 console.log('スクリーンショット:', out);
 if (errors.length) { console.error('★ コンソールエラー:\n' + errors.join('\n')); process.exit(1); }
 if (layoutBad.length) { console.error('★ 上の帯の レイアウト:\n' + layoutBad.join('\n')); process.exit(1); }
 if (Number(res.stops) !== 2) { console.error('★ 停車駅数が想定外'); process.exit(1); }
+if (bad.length) { console.error('★ ' + bad.join('\n★ ')); process.exit(1); }
 console.log('OK');
