@@ -9,7 +9,7 @@ import { RailScene } from './scene/scene.js';
 import { Cab } from './cab/cab.js';
 import { CabAudio } from './audio/audio.js';
 import { Announcer } from './audio/announce.js';
-import { kanaOf, rubyStation } from './sim/kana.js';
+import { kanaOf, rubyStation, STATION_KANA } from './sim/kana.js';
 import { prepareLine } from './sim/line.js';
 import { makeAutopilot } from './sim/autopilot.js';
 import { drawStamp, stampColor } from './ui/stamps.js';
@@ -23,6 +23,18 @@ const SVC_COLOR = { local: '#8fa0aa', exp: '#ff6b3d', rapid: '#3fb0ff' };
 const rubySvc = (name) => SVC_KANA[name] ? `<ruby>${name}<rt>${SVC_KANA[name]}</rt></ruby>` : name;
 const CAM_MODES = ['cab', 'chase', 'side', 'front', 'drone'];
 const CAM_NAME = { cab: 'うんてんせき', chase: 'うしろから', side: 'よこから', front: 'せんろわきから', drone: 'そらから' };
+/* じかん・天気の ことばと アイコン(ui/icons.js) */
+const TOD_WORD = { day: 'ひる', evening: 'ゆうがた', night: 'よる' };
+const TOD_ICO = { day: 'day', evening: 'sunset', night: 'moon' };
+const WX_WORD = { clear: 'はれ', rain: 'あめ', snow: 'ゆき' };
+const WX_ICO = { clear: 'sun', rain: 'rain', snow: 'snow' };
+/* 描画の土台の 新しい部品(ui/stoppin.js・ui/loadroute.js・ui/glguard.js)は、
+ * RailScene.setWorldAsync と いっしょに 入る。ないときは 読みに いかない
+ * (ない ファイルを import すると 404 の エラーが コンソールに 出るため) */
+const HAS_HUD_MODS = typeof RailScene.prototype.setWorldAsync === 'function';
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/* 広い画面(判定カードの中に スタンプを おす・お知らせを コーチの上に 出す) */
+const WIDE_MQ = '(min-width: 861px) and (min-height: 541px)';
 
 /* 停止位置のひょうか(◎ぴったり ±35cm / ○いいね ±1m / △おしい ±2m / ×ざんねん) */
 const gradeOf = (abs) => (abs <= 0.35 ? { k: 'perfect', mark: '◎', word: 'ぴったり', col: 'var(--green)' }
@@ -84,36 +96,41 @@ const App = {
     const touch = navigator.maxTouchPoints > 1 || matchMedia('(any-pointer: coarse)').matches;
     this._touch = touch;
     document.documentElement.classList.toggle('touch', touch);
-    this.KUP = touch ? `<span class="kc">${icon('chevron-up')}すすむ</span>` : '<span class="kc">↑</span>';
-    this.KDN = touch ? `<span class="kc">${icon('chevron-down')}ブレーキ</span>` : '<span class="kc">↓</span>';
+    this._buildKeys(touch);
     const qp = (location.search.match(/[?&]q=(high|mid|low)/) || [])[1];   // 検証用の画質指定
     this._qp = qp;
     this.quality = qp || this.settings.quality || this._defQuality();
     /* 前回の むき(のぼり/くだり)を先に もどす(タイトルのデモ走行も おなじ むきで はしる。ワールドを2回 作らない) */
     if (this.save.last && this.save.last.direction === 'up') this.direction = 'up';
+    this._mountLoadRoute();
     this.bindUI();
     this._startLoadTips();
     this.setLoad(0.05, 'せんろを よみこみ中…');
-    /* テクスチャ・空の読み込み進捗をバーに出す */
+    /* テクスチャ・空の読み込み進捗をバーに出す(進みぐあいは もどらない: setLoad が 大きいほうを とる) */
     let texDone = 0, texTotal = 1;
-    THREE.DefaultLoadingManager.onProgress = (u, a, b) => { texDone = a; texTotal = b; this.setLoad(0.35 + 0.6 * (a / b), 'けしきを よみこみ中…'); };
+    THREE.DefaultLoadingManager.onProgress = (u, a, b) => { texDone = a; texTotal = b; this.setLoad(0.25 + 0.6 * (a / b), 'けしきを よみこみ中…'); };
     const [line, tt] = await Promise.all([
       fetch('./data/line.json').then((r) => r.json()),
       fetch('./data/timetable.json').then((r) => r.json()),
     ]);
     this.rawLine = line; this.timetable = tt;
     this.line = prepareLine(line, this.direction);
-    this.setLoad(0.25, 'まちを つくっています…');
+    this.setLoad(0.2, 'まちを つくっています…');
     await nextFrame();
-    /* デモ走行の列車と3Dステージ */
+    /* デモ走行の列車と3Dステージ。
+     * 少しずつ作れる(setWorldAsync)ときは、ワールドを あとから 作り、進みぐあいを 路線の帯に出す */
     this.attract = this._makeAttract();
     try {
       this.scene = new RailScene($('#gl'), this.attract.line, this.attract.sim, {
         quality: this.quality, timeOfDay: this.attract.tod, weather: 'clear',
         autoQ: !qp && !this.settings.quality,   // 画質「じどう」のときだけ、前回の軽量化レベルを引きつぐ
         debug: this.debug,   // ?debug=1 のときだけ シェーダのエラーを コンソールに出す
+        deferWorld: true,
       });
       this.scene.guide = this.settings.guide;
+      if (typeof this.scene.setWorldAsync === 'function') {
+        await this.scene.setWorldAsync(this.attract.line, this.attract.sim, (k) => this.setLoad(0.25 + 0.6 * k, 'まちを つくっています…'));
+      }
     } catch (err) {
       this.setLoad(1, '3Dが ひょうじできませんでした。ブラウザを さいしんに してね。(' + (err && err.message ? err.message : err) + ')');
       return;
@@ -129,23 +146,77 @@ const App = {
     this.buildSelect();
     /* 空(HDRI)の読み込みを少しだけ待つ(最大4秒) */
     const t0 = performance.now();
-    while (texDone < texTotal && performance.now() - t0 < 4000) await new Promise((r) => setTimeout(r, 100));
-    this.setLoad(1, 'じゅんび OK');
+    while (texDone < texTotal && performance.now() - t0 < 4000) await wait(100);
+    this.setLoad(0.9, 'じゅんび中…');
     this.updateStampCount();
-    /* シェーダーを先に作っておく(デモ走行が運転台視点に切りかわったときに止まらない) */
-    if (this.scene.prewarm) { try { this.scene.prewarm(); } catch (e) { /* 先読みできなくても続行 */ } }
+    /* シェーダーを先に作っておく(デモ走行が運転台視点に切りかわったときに止まらない)。
+     * 少しずつ作れる(prewarmAsync)なら 待つ(帯を すすめる)。15秒は 止まったときの 保険 */
+    const S = this.scene;
+    if (typeof S.prewarmAsync === 'function') {
+      try { await Promise.race([S.prewarmAsync((k) => this.setLoad(0.9 + 0.1 * k)), wait(15000)]); } catch (e) { /* 先読みできなくても続行 */ }
+    } else if (S.prewarm) { try { S.prewarm(); } catch (e) { /* 先読みできなくても続行 */ } }
+    this.setLoad(1, 'じゅんび OK');
+    this._installHudMods();
     this.go('title');
     if (!this._rafStarted) { this._rafStarted = true; this.loop(); }
     this.registerSW();
     if (this.debug) this._exposeTest();
   },
 
+  /* コーチ・ボタンの ことば: レバーの いまの位置で かわる(ブレーキ中の「うえ」は ゆるめる)。
+   * 3つの むき(すすむ側 p / ブレーキ b / ひじょう eb)ぶんを 先に作っておく(毎フレーム 文字列を作らない) */
+  _buildKeys(touch) {
+    const W = {
+      p: ['すすむ', 'ブレーキ'],
+      b: ['ゆるめる', 'つよく'],
+      eb: ['ゆるめる', 'ひじょう'],
+    };
+    const K = {};
+    Object.keys(W).forEach((b) => {
+      const [u, d] = W[b];
+      K[b] = touch
+        ? { b, up: u, dn: d, KUP: `<span class="kc">${icon('chevron-up')}${u}</span>`, KDN: `<span class="kc">${icon('chevron-down')}${d}</span>` }
+        : { b, up: u, dn: d, KUP: `<span class="kc">↑<small>${u}</small></span>`, KDN: `<span class="kc">↓<small>${d}</small></span>` };
+    });
+    this._KEYS = K;
+  },
+  _keys(notch) { return this._KEYS[notch === -8 ? 'eb' : notch < 0 ? 'b' : 'p']; },
+
+  /* よみこみ画面の 路線の帯(ui/loadroute.js があるときだけ。ないときは 細い棒のまま) */
+  _mountLoadRoute() {
+    if (!HAS_HUD_MODS) return;
+    const names = Object.keys(STATION_KANA).map((n) => STATION_KANA[n]);
+    if (this.direction === 'up') names.reverse();
+    import('./ui/loadroute.js').then((m) => {
+      if (!m || typeof m.mountLoadRoute !== 'function' || this.mode !== 'boot') return;
+      this._lr = m.mountLoadRoute($('#load-route'), names);
+      if (this._lr && typeof this._lr.set === 'function') this._lr.set(this._loadK || 0);
+    }).catch(() => { /* 帯なしでも よみこめる */ });
+  },
+
+  /* 運転画面の「8」の目印・WebGLの文脈の 立ちなおり(あるときだけ) */
+  _installHudMods() {
+    if (!HAS_HUD_MODS) return;
+    import('./ui/stoppin.js').then((m) => {
+      if (!m || typeof m.createStopPin !== 'function') return;
+      this._pin = m.createStopPin(document.querySelector('.hud'));
+      this.resizeGL();
+    }).catch(() => { /* 目印なしでも 運転できる */ });
+    import('./ui/glguard.js').then((m) => {
+      if (m && typeof m.installGlGuard === 'function') m.installGlGuard(this);
+    }).catch(() => { /* 立ちなおりなし */ });
+  },
+
   /* 画質「じどう」のときの きまり(タッチ端末=ふつう / パソコン=きれい) */
   _defQuality() { return this._touch ? 'mid' : 'high'; },
 
   setLoad(k, txt) {
+    /* ワールド作りと テクスチャの よみこみが 同時に すすむので、進みぐあいは 大きいほうを とる(もどらない) */
+    if (k > (this._loadK || 0)) this._loadK = k;
+    const kk = this._loadK || 0;
     const f = $('#load-fill');
-    if (f) f.style.width = Math.round(k * 100) + '%';
+    if (f) f.style.width = Math.round(kk * 100) + '%';
+    if (this._lr && typeof this._lr.set === 'function') { try { this._lr.set(kk); } catch (e) { /* noop */ } }
     if (txt) $('#load-txt').textContent = txt;
   },
 
@@ -238,9 +309,10 @@ const App = {
       this.scene.setCameraMode(seq[A.camI]);
       document.body.classList.toggle('cam-cab', seq[A.camI] === 'cab');
     }
+    /* 「LIVE」の字は CSS(.live-cap::before)。カメラの名前は 出さない(子どもには いみが ない) */
     const nx = sim.stops[sim.stopIdx];
     const dest = A.dir === 'up' ? 'しんじゅく' : 'しんゆりがおか';
-    const txt = `LIVE ・ きゅうこう ${dest} ゆき ・ ${nx ? 'つぎは ' + kanaOf(nx.name) + ' ・ ' : ''}${CAM_NAME[this.scene.camMode] || ''}`;
+    const txt = `きゅうこう ${dest} ゆき${nx ? ' ・ つぎは ' + kanaOf(nx.name) : ''}`;
     if (txt !== this._liveTxt) { this._liveTxt = txt; $('#live-txt').textContent = txt; }
   },
 
@@ -257,32 +329,42 @@ const App = {
     this.rainGlass.setActive(false);
   },
 
-  /* タイトルなどに もどるとき: ワールドを作り直す(重い)ときだけ 暗転で かくす(画面が かたまって見えない) */
+  /* タイトルなどに もどるとき: ワールド・じかん・天気が かわる(シェーダの 作りなおしが いる)ときは
+   * 暗転で かくし、その中で 少しずつ 準備する(画面が かたまって見えない) */
   _returnToAttract(prev) {
     const A = this.attract;
     if (!A) return;
     const nextLine = this.line || A.line;
-    const heavy = !!this._qualityDirty || (this.scene && this.scene.line !== nextLine);
+    const S0 = this.scene;
+    const heavy = !!this._qualityDirty || (S0 && (S0.line !== nextLine || S0.timeOfDay !== A.tod || S0.weather !== 'clear'));
     if (!heavy || prev === 'boot') {
       if (this._qualityDirty) this._rebuildScene();
       this._enterAttract();
       return;
     }
     const fade = $('#fade');
+    fade.classList.remove('card');
     fade.classList.add('on');
     const tok = (this._swapTok = (this._swapTok || 0) + 1);
-    nextFrame().then(nextFrame).then(() => {
+    clearTimeout(this._retSlowT);
+    this._retSlowT = setTimeout(() => { if (tok === this._swapTok && !this._starting) fade.classList.add('slow'); }, 700);
+    nextFrame().then(nextFrame).then(async () => {
       if (tok !== this._swapTok) return;
       try {
         if (this.mode === 'title' || this.mode === 'select' || this.mode === 'stamps') {
           if (this._qualityDirty) this._rebuildScene();
           this._enterAttract();
-          /* 新しいステージ(文脈)は シェーダが からっぽ。暗いうちに 作っておく
-           * (明けてから render の 先読みで 画面が かたまらないように。路線だけ かわったときは ほぼ つくりおきで すぐ) */
-          if (this.scene && this.scene.prewarm) { try { this.scene.prewarm(); } catch (e) { /* noop */ } }
+          /* 新しいステージ(文脈)・新しい じかんや天気は シェーダが からっぽ。暗いうちに 作っておく
+           * (明けてから render の 先読みで 画面が かたまらないように。10秒は 止まったときの 保険) */
+          const S = this.scene;
+          if (S && typeof S.prewarmAsync === 'function') {
+            try { await Promise.race([S.prewarmAsync(), wait(10000)]); } catch (e) { /* noop */ }
+          } else if (S && S.prewarm) { try { S.prewarm(); } catch (e) { /* noop */ } }
+          this._pauseDirty = true;
         }
       } finally {
-        if (!this._starting) fade.classList.remove('on');
+        clearTimeout(this._retSlowT);
+        if (tok === this._swapTok && !this._starting) { fade.classList.remove('on'); fade.classList.remove('slow'); }
       }
     });
   },
@@ -306,9 +388,38 @@ const App = {
       this._returnToAttract(prev);
     }
     this._applyBackdrop();
+    this._bdFrames = 2;   // 画面が かわったら 2コマは かならず描く(そのあとは 間引く: loop)
+    if (mode !== 'drive' && this._pin) { try { this._pin.hide(); } catch (e) { /* noop */ } }
     if (mode === 'stamps') this.buildStampBook();
-    if (mode === 'title') this.updateStampCount();
+    if (mode === 'title') { this.updateStampCount(); this._updateQuick(); }
     this.resizeGL();
+  },
+
+  /* タイトルの「前回の つづき」: 前回の 列車(種別・区間・じかん・天気)を 1行で */
+  _updateQuick() {
+    const L = this.save.last;
+    const q = $('#btn-quick'), sel = $('#btn-to-select');
+    const ok = !!(L && SERVICES[L.service] && this.rawLine);
+    let sub = '';
+    if (ok) {
+      try {
+        const line = prepareLine(this.rawLine, L.direction === 'up' ? 'up' : 'down');
+        const svc = SERVICES[L.service];
+        const stops = line.stations.filter((st) => !svc.stops || svc.stops.includes(st.name));
+        const a = stops[Math.min(stops.length - 2, L.startIdx || 0)];
+        const b = stops[L.endIdx == null ? stops.length - 1 : Math.min(stops.length - 1, L.endIdx)];
+        const tod = TOD_WORD[L.daytime] ? L.daytime : 'day', wx = WX_WORD[L.weather] ? L.weather : 'clear';
+        sub = `<span class="nw">${rubySvc(svc.name)}</span> <span class="nw">${rubyStation(a.name)} → ${rubyStation(b.name)}</span>`
+          + ` <span class="nw q-cond">${icon(TOD_ICO[tod])}${TOD_WORD[tod]} ${icon(WX_ICO[wx])}${WX_WORD[wx]}</span>`;
+      } catch (e) { sub = ''; }
+    }
+    const show = ok && !!sub;
+    setHidden(q, !show);
+    if (show) $('#quick-sub').innerHTML = sub;
+    /* 前回が あるときは「列車を えらぶ」を ひかえめな ボタンに */
+    sel.classList.toggle('btn-primary', !show);
+    sel.classList.toggle('btn-ghost', show);
+    setHtml(sel, show ? '<ruby>列車<rt>れっしゃ</rt></ruby>を えらぶ' : '<ruby>運転<rt>うんてん</rt></ruby>をはじめる');
   },
 
   /* 不透明に ちかい画面(えらぶ・スタンプ・成績票)の うしろは「背景モード」: 影とブルームを止め、3Dは 1/3 の回数だけ描く */
@@ -321,19 +432,42 @@ const App = {
   },
 
   /* ================= 選択画面 ================= */
+  /* 前回えらんだ列車(save.last)に もどす */
+  _applyLast(L) {
+    this.direction = L.direction === 'up' ? 'up' : 'down';
+    this.service = SERVICES[L.service] ? L.service : 'local';
+    this.daytime = ['day', 'evening', 'night'].includes(L.daytime) ? L.daytime : 'day';
+    this.weather = ['clear', 'rain', 'snow'].includes(L.weather) ? L.weather : 'clear';
+    this._useLine(this.direction);
+    this.startIdx = L.startIdx || 0;
+    this.endIdx = L.endIdx == null ? null : L.endIdx;
+  },
+
+  /* むき dir の 路線にする。いまの 3Dの 路線と おなじ むきなら それを つかう(出発で ワールドを 作りなおさない) */
+  _useLine(dir) {
+    if (this.line && this.line.meta && this.line.meta.direction === dir) return;
+    const SL = this.scene && this.scene.line;
+    this.line = SL && SL.meta && SL.meta.direction === dir ? SL : prepareLine(this.rawLine, dir);
+  },
+
+  /* 選択画面の ボタン(むき・じかん・天気)を いまの えらびに そろえる */
+  _syncSelUI() {
+    $('#dir-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.dir === this.direction));
+    $('#tod-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === this.daytime));
+    $('#wx-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === this.weather));
+  },
+
   buildSelect() {
-    /* 前回えらんだ列車を おぼえておく(はじめての子は 2駅の みじかい運転から) */
+    /* 前回えらんだ列車を おぼえておく。
+     * はじめての子は 経堂 → 祖師ヶ谷大蔵(各駅停車・くだり): まっすぐの高架で 制限100 のまま、むずかしい カーブや
+     * 地下の駅が ない。タイトルのデモ走行も この あたりを はしるので、出発の 暗転も みじかい */
     const L = this.save.last;
     if (L && SERVICES[L.service]) {
-      this.direction = L.direction === 'up' ? 'up' : 'down';
-      this.service = L.service;
-      this.daytime = ['day', 'evening', 'night'].includes(L.daytime) ? L.daytime : 'day';
-      this.weather = ['clear', 'rain', 'snow'].includes(L.weather) ? L.weather : 'clear';
-      if (!this.line || this.line.meta.direction !== this.direction) this.line = prepareLine(this.rawLine, this.direction);
-      this.startIdx = L.startIdx || 0;
-      this.endIdx = L.endIdx == null ? null : L.endIdx;
+      this._applyLast(L);
     } else if ((this.save.runs || 0) < 3) {
-      this.startIdx = 0; this.endIdx = 2;
+      this.direction = 'down'; this.service = 'local';
+      this._useLine('down');
+      this.startIdx = 10; this.endIdx = 12;
     }
     $('#dir-seg').querySelectorAll('button').forEach((b) => {
       b.classList.toggle('on', b.dataset.dir === this.direction);
@@ -341,9 +475,7 @@ const App = {
         if (this.direction === b.dataset.dir) return;
         this.direction = b.dataset.dir;
         $('#dir-seg').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-        /* いまの 3Dの 路線と おなじ むきに もどしたときは それを つかう(出発で ワールドを 作りなおさない) */
-        const SL = this.scene && this.scene.line;
-        this.line = SL && SL.meta && SL.meta.direction === this.direction ? SL : prepareLine(this.rawLine, this.direction);
+        this._useLine(this.direction);
         /* むきを かえたら、区間の長さは そのままで はじめから */
         const span = this.endIdx == null ? null : this.endIdx - this.startIdx;
         this.startIdx = 0; this.endIdx = span; this._pick = 'start';
@@ -404,7 +536,7 @@ const App = {
         <span class="svc-band"></span>
         <span class="svc-name">${rubySvc(s.name)}</span>
         <span class="svc-meta"><span class="nw">とまる<ruby>駅<rt>えき</rt></ruby> ${stops}</span> <span class="nw">ぜんぶで ${dur == null ? '—' : dur}ぷん</span></span>
-        <span class="svc-best">${best ? `ベスト ${best.total}てん (${best.rank})` : 'まだ きろくなし'}</span>
+        <span class="svc-best${best ? '' : ' none'}">${best ? `ベスト ${best.total}てん (${best.rank})` : 'まだ きろくなし'}</span>
       </button>`;
     }).join('');
     wrap.querySelectorAll('.svc-card').forEach((b) => {
@@ -460,10 +592,12 @@ const App = {
       const ring = tier >= 3 ? '#d9b54a' : tier === 2 ? stampColor(st.name) : '#8a8f94';
       const stampMark = tier ? `<span class="rt-stamp t${tier}" style="border-color:${ring}" title="スタンプ"></span>` : '';
       return `<li class="${cls}" data-si="${si}"><span class="rt-dot"><i></i></span>
-        <span class="rt-name">${st.name}<small>${kanaOf(st.name)}</small>${stampMark}</span>${tag}</li>`;
+        <span class="rt-name">${rubyStation(st.name)}${stampMark}</span>${tag}</li>`;
     }).join('');
     const ol = $('#route-list');
     ol.innerHTML = html;
+    /* えらんだ 区間の 線は 種別の色 */
+    ol.style.setProperty('--svc', SVC_COLOR[this.service]);
     ol.querySelectorAll('.rt').forEach((li) => {
       li.addEventListener('click', () => {
         const si = Number(li.dataset.si);
@@ -502,7 +636,9 @@ const App = {
     const row = ol.querySelector('.rt.start');
     const sc = $('#screen-select');
     if (!row || !sc || !sc.classList.contains('active')) return;
-    const own = ol.scrollHeight > ol.clientHeight + 2 && getComputedStyle(ol).overflowY !== 'visible';
+    /* 広い画面の よこ長の 路線図(grid)は ぜんぶ 見えているので うごかさない */
+    if (getComputedStyle(ol).display === 'grid') return;
+    const own =ol.scrollHeight > ol.clientHeight + 2 && getComputedStyle(ol).overflowY !== 'visible';
     /* 画面ごと うごかすときは、スタートが いちばん上の駅なら うごかさない(見出しと ①むき から 見てもらう) */
     if (!own && this.startIdx === 0) return;
     const box = own ? ol : sc;
@@ -516,19 +652,43 @@ const App = {
 
   _segKey(from, to) { return `${this.service}_${this.direction}_${from}_${to}`; },
 
-  renderSummary() {
+  /* いま えらんでいる 運転の まとめ(選択画面の まとめ・しゅっぱつカード で つかう) */
+  _runInfo() {
     const stops = this._svcStops();
     const n = stops.length;
-    const end = this.endIdx == null ? n - 1 : this.endIdx;
+    const si = Math.min(this.startIdx, n - 2);
+    const end = this.endIdx == null ? n - 1 : Math.min(n - 1, this.endIdx);
     const tt = this.timetable[this._ttKey()];
     const slow = this.weather === 'snow' ? 1.12 : this.weather === 'rain' ? 1.04 : 1;   // 天候ダイヤ
-    const min = tt ? Math.max(1, Math.round(((tt[end][0] - tt[this.startIdx][1]) * slow) / 60)) : '—';
-    const nStop = end - this.startIdx;
-    const tod = { day: 'ひる', evening: 'ゆうがた', night: 'よる' }[this.daytime];
-    const wx = { clear: 'はれ', rain: 'あめ', snow: 'ゆき' }[this.weather];
-    const b = this.save.bestSeg[this._segKey(stops[this.startIdx].name, stops[end].name)];
-    $('#sel-summary').innerHTML = `<b class="sum-route">${rubyStation(stops[this.startIdx].name)} → ${rubyStation(stops[end].name)}</b>
-      <span class="sum-meta"><span class="nw">${rubySvc(SERVICES[this.service].name)}</span> ・ <span class="nw">とまる<ruby>駅<rt>えき</rt></ruby> <b>${nStop}</b></span> ・ <span class="nw">やく <span class="sum-time">${min}ぷん</span></span> ・ <span class="nw">${tod}</span> ・ <span class="nw">${wx}</span>${b ? ` ・ <span class="nw sum-best">ベスト ${b.total}てん (${b.rank})</span>` : ''}</span>`;
+    const min = tt && tt[end] && tt[si] ? Math.max(1, Math.round(((tt[end][0] - tt[si][1]) * slow) / 60)) : '—';
+    const from = stops[si].name, to = stops[end].name;
+    return { from, to, nStop: end - si, min, best: this.save.bestSeg[this._segKey(from, to)] || null };
+  },
+
+  renderSummary() {
+    const R = this._runInfo();
+    const tod = TOD_WORD[this.daytime];
+    const wx = WX_WORD[this.weather];
+    const b = R.best;
+    $('#sel-summary').innerHTML = `<b class="sum-route">${rubyStation(R.from)} → ${rubyStation(R.to)}</b>
+      <span class="sum-meta"><span class="nw">${rubySvc(SERVICES[this.service].name)}</span> ・ <span class="nw">とまる<ruby>駅<rt>えき</rt></ruby> <b>${R.nStop}</b></span> ・ <span class="nw">やく <span class="sum-time">${R.min}ぷん</span></span> ・ <span class="nw">${tod}</span> ・ <span class="nw">${wx}</span>${b ? ` ・ <span class="nw sum-best">ベスト ${b.total}てん (${b.rank})</span>` : ''}</span>`;
+  },
+
+  /* しゅっぱつカード(暗転の中): 種別・行き先・区間・とまる駅・時間・じかん・天気・めあて */
+  _fillFadeCard() {
+    const R = this._runInfo();
+    const svc = SERVICES[this.service];
+    const card = $('#fade-card');
+    card.style.setProperty('--svc', SVC_COLOR[this.service]);
+    /* 行き先は この運転の ゴール(運転台の 表示と おなじ) */
+    $('#fc-svc').innerHTML = `<span class="fc-chip">${rubySvc(svc.name)}</span>${rubyStation(R.to)} ゆき`;
+    $('#fc-route').innerHTML = `${rubyStation(R.from)}<span class="fc-arrow">→</span>${rubyStation(R.to)}`;
+    const wet = this.weather !== 'clear';
+    $('#fc-meta').innerHTML = `<span class="nw">とまる<ruby>駅<rt>えき</rt></ruby> <b>${R.nStop}</b></span><span class="fc-dot">・</span>`
+      + `<span class="nw">やく <b>${R.min}</b> ぷん</span><span class="fc-dot">・</span>`
+      + `<span class="nw">${icon(TOD_ICO[this.daytime])}${TOD_WORD[this.daytime]}</span><span class="fc-dot">・</span>`
+      + `<span class="nw${wet ? ' fc-wet' : ''}">${icon(WX_ICO[this.weather])}${wet ? WX_WORD[this.weather] + '（すべりやすい）' : WX_WORD[this.weather]}</span>`;
+    $('#fc-goal').innerHTML = R.best ? `この くかんの ベスト <b>${R.best.total}</b>てん` : '「8」に ぴったり とめよう';
   },
 
   /* ================= えきスタンプ ================= */
@@ -549,7 +709,9 @@ const App = {
       const tier = this.save.stampTier[name] || 0;
       const cnt = this.save.stamps[name] || 0;
       if (tier) got++;
-      const cell = document.createElement('div');
+      /* マスは ボタン: おすと その駅に とまる みじかい運転を えらんだ 選択画面へ(とりに いく) */
+      const cell = document.createElement('button');
+      cell.type = 'button';
       cell.className = 'stamp-cell' + (tier ? ' t' + tier : ' no');
       const no = document.createElement('span');
       no.className = 'sc-no';
@@ -566,18 +728,25 @@ const App = {
       else if (be != null) { const cm = cmOf(be); ct.innerHTML = `さいこう ${cm}cm → <b>あと ${Math.max(1, cm - 100)}cm</b>`; }
       else ct.textContent = 'まだ';
       cell.append(no, cv, nm, ct);
+      if (tier < 3) {
+        const go = document.createElement('span');
+        go.className = 'sc-go';
+        go.innerHTML = `とりに いく ${icon('chevron-right')}`;
+        cell.appendChild(go);
+      }
+      cell.addEventListener('click', () => this._goGetStamp(i, names.length));
       grid.appendChild(cell);
     });
     $('#stamps-count').textContent = `${got} / ${names.length}`;
     $('#stamps-prog-fill').style.transform = `scaleX(${(got / names.length).toFixed(3)})`;
-    /* 見本: くろ・いろ・きん の3つ(±の記号は つかわない) */
+    /* 見本: くろ・いろ・きん の3つ(±の記号・「いない」は つかわない) */
     const lg = $('#stamp-legend');
     if (lg && !lg.childElementCount) {
       const cap = document.createElement('span');
       cap.className = 'sl-cap';
       cap.textContent = '「8」に とまると もらえるよ';
       lg.appendChild(cap);
-      [[1, 'くろ', '1m いない'], [2, 'いろ', '35cm いない'], [3, 'きん', '10cm いない']].forEach(([t, w, d]) => {
+      [[1, 'くろ', 'ずれ 1m まで'], [2, 'いろ', 'ずれ 35cm まで'], [3, 'きん', 'ずれ 10cm まで']].forEach(([t, w, d]) => {
         const it = document.createElement('span');
         it.className = 'sl-it sl-t' + t;
         const cv = document.createElement('canvas');
@@ -593,11 +762,50 @@ const App = {
     bg.innerHTML = BADGES.map((b) => {
       const has = !!this.save.badges[b.id];
       if (has) nb++;
+      /* かずを あつめる くんしょうは、まだのとき「いま いくつ」を 棒で */
+      const pg = has ? null : this._badgeProg(b.id);
       return `<div class="badge${has ? '' : ' no'}"><span class="bd-ico">${this._badgeIco(b)}</span>
-        <span><div class="bd-name">${b.name}</div><div class="bd-desc">${b.desc}</div></span></div>`;
+        <span><div class="bd-name">${b.name}</div><div class="bd-desc">${b.desc}</div>${pg ? this._progHtml(pg) : ''}</span></div>`;
     }).join('');
     $('#badges-count').textContent = `${nb} / ${BADGES.length}`;
     $('#badges-prog-fill').style.transform = `scaleX(${(nb / BADGES.length).toFixed(3)})`;
+  },
+
+  /* かずを あつめる くんしょうの いまの かず(ほかは null) */
+  _badgeProg(id) {
+    const p = this.save.perfect || 0, k = this._stampKinds();
+    if (id === 'perfect10') return { cur: Math.min(10, p), max: 10 };
+    if (id === 'perfect30') return { cur: Math.min(30, p), max: 30 };
+    if (id === 'stamp10') return { cur: Math.min(10, k), max: 10 };
+    if (id === 'stampAll') return { cur: Math.min(23, k), max: 23 };
+    return null;
+  },
+  /* 進みぐあいの棒(transform だけで のばす) + 「n / N」 */
+  _progHtml(pg) {
+    const k = Math.max(0, Math.min(1, pg.cur / Math.max(1, pg.max)));
+    return `<span class="pg"><span class="pg-bar"><i style="transform:scaleX(${k.toFixed(3)})"></i></span><span class="pg-n"><b>${pg.cur}</b> / ${pg.max}</span></span>`;
+  },
+
+  /* スタンプちょうの マスから「とりに いく」: その駅で おわる みじかい運転(各駅停車)を えらんで 選択画面へ。
+   * 新宿は のぼりの おわり(ゴール)なので のぼりで */
+  _goGetStamp(i, n) {
+    this.service = 'local';
+    if (i > 0) {
+      this.direction = 'down';
+      this._useLine('down');
+      this.startIdx = Math.max(0, i - 2);
+      this.endIdx = i;
+    } else {
+      this.direction = 'up';
+      this._useLine('up');
+      this.startIdx = n - 3;
+      this.endIdx = null;
+    }
+    this._pick = 'start';
+    this._syncSelUI();
+    this.renderSvcCards();
+    this.go('select');
+    this.renderRoute(true);
   },
 
   _badgeIco(b) { return b.letter ? `<b class="bd-let">${b.letter}</b>` : icon(b.icon); },
@@ -743,9 +951,47 @@ const App = {
     this._gripFlashT = setTimeout(() => g.classList.remove('tb-flash'), 320);
   },
 
+  /* おした しゅんかんに うごく ボタン(はなしたとき=click では おそい)。
+   * repeat: おしたままだと 0.4秒後から 0.22秒ごとに くりかえす(fn が false を かえしたら やめる)。
+   * キーボード(Enter/スペース)で おされたとき(detail 0 の click)も うごく */
+  _pressBtn(el, fn, repeat) {
+    if (!el) return;
+    let t1 = null, t2 = null;
+    const stop = () => {
+      clearTimeout(t1); clearInterval(t2); t1 = t2 = null;
+      el.classList.remove('pressed');
+    };
+    el.addEventListener('pointerdown', (ev) => {
+      if (ev.button != null && ev.button > 0) return;
+      ev.preventDefault();
+      try { el.setPointerCapture(ev.pointerId); } catch (e) { /* 合成イベント等 */ }
+      stop();
+      el.classList.add('pressed');
+      const more = fn(false);
+      if (repeat && more !== false) {
+        t1 = setTimeout(() => {
+          t2 = setInterval(() => { if (fn(true) === false) { clearInterval(t2); t2 = null; } }, 220);
+        }, 400);
+      }
+    });
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('lostpointercapture', stop);
+    el.addEventListener('click', (ev) => { if (ev.detail === 0) fn(false); });
+  },
+
   bindUI() {
     $('#btn-start').addEventListener('click', () => this.startDrive());
     $('#btn-to-select').addEventListener('click', () => { this._unlockAudio(); this.renderSvcCards(); this.go('select'); this.renderRoute(true); });
+    /* 前回の つづき: 前回と おなじ 列車で すぐ しゅっぱつ */
+    $('#btn-quick').addEventListener('click', () => {
+      if (this._starting || !this.save.last) return;
+      this._unlockAudio();
+      this._applyLast(this.save.last);
+      this._syncSelUI();
+      this.renderSvcCards(); this.renderRoute();
+      this.startDrive();
+    });
     $('#btn-to-stamps').addEventListener('click', () => this.go('stamps'));
     $('#btn-stamps-back').addEventListener('click', () => this.go('title'));
     $('#book-tabs').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => this._setBookTab(b.dataset.v)));
@@ -768,7 +1014,8 @@ const App = {
       if (this._starting) return;   // 出発の フェード中(すぐ うんてん画面に かわる)
       this.renderSvcCards(); this.go('select'); this.renderRoute(true);
     });
-    $('#btn-overrun-retry').addEventListener('click', () => { this._setOverrun(false); this.retryStation(); });
+    /* もういちど とめる: 「8」の 180m 手前に もどって この駅だけ やりなおす(まえの駅までの きろくは のこる) */
+    $('#btn-overrun-retry').addEventListener('click', () => this._retryApproach());
     /* このまま つぎの駅へ: その駅は ×(0てん)で とうちゃく あつかいにして、ドアを あける */
     $('#btn-overrun-go').addEventListener('click', () => {
       if (!this._overrun) return;
@@ -781,15 +1028,34 @@ const App = {
     });
     $('#btn-cam').addEventListener('click', () => this.cycleCam());
 
-    /* タッチ用ボタン(すすむ/ブレーキ/けいてき/ポーズ)
-     * ▲▼はレバーを1段ずつ動かすのと同じ */
+    /* タッチ用ボタン(うえ/した/けいてき/ポーズ)
+     * うえ・したは レバーを1段ずつ動かすのと同じ。おしたしゅんかんに うごき、おしたままだと つづけて うごく。
+     * くりかえしは P4 と B7 で とまる(ひじょう(EB)は べつに もういちど おしたときだけ) */
     const canOp = () => this._canOp();
-    $('#tb-up').addEventListener('click', () => { if (canOp()) { this.sim.setNotch(Math.min(4, this.sim.notch + 1)); this._flashGrip(); } });
-    $('#tb-dn').addEventListener('click', () => { if (canOp()) { this.sim.setNotch(Math.max(-8, this.sim.notch - 1)); this._flashGrip(); } });
-    $('#tb-horn').addEventListener('click', () => { if (canOp() && this.audio) { this.audio.horn(); this.grantBadge('horn'); } });
+    this._pressBtn($('#tb-up'), () => {
+      if (!canOp()) return false;
+      const n0 = this.sim.notch;
+      this.sim.setNotch(Math.min(4, n0 + 1));
+      if (this.sim.notch === n0) return false;   // ドアが あいていて すすめない など
+      this._flashGrip();
+      return this.sim.notch < 4;
+    }, true);
+    this._pressBtn($('#tb-dn'), (rep) => {
+      if (!canOp()) return false;
+      const n0 = this.sim.notch;
+      if (rep && n0 <= -7) return false;   // おしたままでは ひじょうに いれない
+      this.sim.setNotch(Math.max(-8, n0 - 1));
+      if (this.sim.notch === n0) return false;
+      this._flashGrip();
+      return this.sim.notch > -7;
+    }, true);
+    this._pressBtn($('#tb-horn'), () => { if (canOp() && this.audio) { this.audio.horn(); this.grantBadge('horn'); } return false; }, false);
     $('#btn-pause-touch').addEventListener('click', () => { if (this.mode === 'drive' && this.running) this.setPaused(!this.paused); });
+    /* はやく しゅっぱつ: メロディは のこす(ならし おわったら ドアが しまる)。エンジンが 古いときは すぐ しまる */
     $('#btn-skip').addEventListener('click', () => {
-      if (canOp() && this.sim.skipDwell()) this.flashMsg('ドアが しまります！', 1600);
+      if (!canOp()) return;
+      const keep = typeof this.sim.retryApproach === 'function';
+      if (this.sim.skipDwell({ keepMelody: true })) this.flashMsg(keep ? 'メロディが おわったら ドアが しまるよ' : 'ドアが しまります！', 1600);
     });
 
     addEventListener('keydown', (ev) => {
@@ -816,6 +1082,8 @@ const App = {
     addEventListener('resize', () => this.resizeGL());
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.mode === 'drive' && this.running && !this.paused) this.setPaused(true);
+      /* もどってきたら 1回 描きなおす(iPadは 裏にいる間に 画面の中身を すてることがある) */
+      if (!document.hidden) this._pauseDirty = true;
     });
   },
 
@@ -835,6 +1103,7 @@ const App = {
     if (CAM_MODES.every((m) => m === 'cab' || this.save.cams[m])) this.grantBadge('camera');
     const lab = $('#cam-label');
     lab.innerHTML = icon('camera') + ' してん: ' + CAM_NAME[CAM_MODES[this.camIdx]];
+    lab.classList.remove('lower3');
     lab.classList.remove('hidden');
     clearTimeout(this._camLabT);
     this._camLabT = setTimeout(() => lab.classList.add('hidden'), 1600);
@@ -853,13 +1122,12 @@ const App = {
   },
 
   resizeGL() {
-    this._pauseDirty = true;   // ポーズ中でも 大きさが かわったら 1回 描きなおす
-    /* 画面の むき・大きさが かわったら スキップボタンの もとの高さ(CSSの bottom)を 読みなおす */
-    if (this._bh) this._bh.skip._base = null;
+    this._pauseDirty = true;   // ポーズ中・メニューの うしろでも 大きさが かわったら 1回 描きなおす
     if (!this.scene) return;
     const wrap = $('#gl-wrap');
     this.scene.resize(wrap.clientWidth, wrap.clientHeight);
     if (this.rainGlass) this.rainGlass.resize(wrap.clientWidth, wrap.clientHeight);
+    if (this._pin && typeof this._pin.resize === 'function') this._pin.resize(wrap.clientWidth, wrap.clientHeight);
   },
 
   /* ================= 運転開始 ================= */
@@ -878,12 +1146,28 @@ const App = {
       /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす) */
       this.save.last = { direction: this.direction, service: this.service, daytime: this.daytime, weather: this.weather, startIdx: this.startIdx, endIdx: this.endIdx };
       this.writeSave();
+      /* 暗転の中に「しゅっぱつカード」(この運転の 種別・区間・じかん・天気・めあて)。
+       * 路線・じかん・天気が かわる(準備が ながい)ときは すぐ 下に 棒(slow)。そうでなくても 0.7秒で 出す */
       const fade = $('#fade');
+      this._fillFadeCard();
+      clearTimeout(this._cardT);
+      fade.classList.add('card');
       fade.classList.add('on');
-      /* じゅんびが 0.7秒より ながいときだけ「じゅんび中」を出す(すぐ おわるときは 出さない) */
+      const tCard = performance.now();
+      const S0 = this.scene;
+      const heavy = !!S0 && (S0.line !== this.line || S0.timeOfDay !== this.daytime || S0.weather !== this.weather);
       clearTimeout(this._slowT);
-      this._slowT = setTimeout(() => { if (this._starting) fade.classList.add('slow'); }, 700);
-      await new Promise((r) => setTimeout(r, 380));
+      if (heavy) fade.classList.add('slow');
+      else this._slowT = setTimeout(() => { if (this._starting) fade.classList.add('slow'); }, 700);
+      await wait(380);
+      /* むきが かわる(ワールドの 作りなおし)ときは、少しずつ 作る(暗転の中で。beginRun の setWorld は 軽い道すじになる) */
+      if (S0 && S0.line !== this.line && typeof S0.setWorldAsync === 'function') {
+        try {
+          const pre = new TrainSim(this.line, { service: this.service, weather: this.weather, timetable: this.timetable, endIdx: this.endIdx });
+          pre.reset(Math.min(this.startIdx, pre.stops.length - 2));
+          await S0.setWorldAsync(this.line, pre);
+        } catch (e) { /* beginRun の setWorld で 作る */ }
+      }
       this.go('drive');
       await nextFrame();
       this.beginRun(this.startIdx);
@@ -901,6 +1185,9 @@ const App = {
         try { S.prewarm(); } catch (e) { /* noop */ }
       }
       await nextFrame();
+      /* カードを 読める ように、はやい 端末でも 1.3秒(もういちど・つづきは 0.6秒)は 見せる */
+      const hold = (again ? 600 : 1300) - (performance.now() - tCard);
+      if (hold > 0) await wait(hold);
       if (this.mode === 'drive' && this.sim && !this.sim.ended) this.running = true;
       this._runT0 = performance.now();
       await nextFrame();   // 運転台の さいしょの1コマが 描けてから 明ける
@@ -908,7 +1195,11 @@ const App = {
     } finally {
       this._starting = false;
       clearTimeout(this._slowT);
-      $('#fade').classList.remove('slow');
+      const f = $('#fade');
+      f.classList.remove('slow');
+      /* カードは 暗転が 明けきってから はずす(明けている とちゅうで 消えない) */
+      clearTimeout(this._cardT);
+      this._cardT = setTimeout(() => { if (!this._starting) f.classList.remove('card'); }, 500);
     }
   },
 
@@ -956,10 +1247,10 @@ const App = {
       this.audio.bind(this.sim);
     }
     this.sim.onEvent((type, e) => this.onSimEvent(type, e));
-    $('#drive-head-svc').innerHTML = `<span class="dh-svc" style="--svc:${SVC_COLOR[this.service]}">${rubySvc(svcName)}</span>${rubyStation(dest)} ゆき`;
+    /* 種別・行き先は 運転台の モニタ(TIMS)の 見出しに あるので、上の帯には 出さない */
     this._buildRouteStrip();
     this._renderMarks();
-    $('#msg-center').classList.add('hidden');
+    this._hideMsg();
     this.setPaused(false);
     this.running = true;
     this.resizeGL();
@@ -970,6 +1261,7 @@ const App = {
     this._coachTxt = null; this._cb = null;
     this._sd = {};
     this._want = undefined; this._wantDir = undefined;
+    this._tbMode = null; this._hotCued = false; this._lateHold = 0;
     if (this.cab && typeof this.cab.setTarget === 'function') { try { this.cab.setTarget(null); } catch (e) { /* noop */ } }
     ['#tb-up', '#tb-dn'].forEach((s) => { const b = $(s); if (b) b.classList.remove('want'); });
   },
@@ -982,15 +1274,35 @@ const App = {
     document.body.classList.toggle('ov-open', !!on);
   },
 
-  /* この運転の ◎○△× (さいきんの10えき)と「れんぞく ×N」を 路線の帯に出す(とうちゃくの ときだけ 書きかえる) */
+  /* 路線の帯の 下の 目もり: この運転の 駅間 1つずつ。おわった駅間は ◎○△× の色、いまの駅間は 水色。
+   * 「れんぞく ×N」は 帯の 右はしの 金の札(とうちゃく・やりなおしの ときだけ 書きかえる) */
   _renderMarks() {
-    const el = $('#rs-marks');
-    if (!el || !this.sim) return;
-    const S = this.sim.score.stops.slice(-10);
-    el.innerHTML = S.map((st) => {
-      const g = gradeOf(Math.abs(st.err));
-      return `<i class="gm" style="--g:${g.col}">${g.mark}</i>`;
-    }).join('') + (this.runStreak >= 2 ? `<span class="gm-st">れんぞく ×${this.runStreak}</span>` : '');
+    const el = $('#rs-ticks');
+    const sim = this.sim;
+    if (!el || !sim) return;
+    const n = Math.max(1, sim.stops.length - 1 - sim.startIdx);
+    if (!this._ticks || this._ticks.length !== n || this._ticksEl !== el) {
+      el.textContent = '';
+      this._ticks = [];
+      this._ticksEl = el;
+      for (let i = 0; i < n; i++) { const t = document.createElement('i'); el.appendChild(t); this._ticks.push(t); }
+    }
+    const S = sim.score.stops;
+    const cur = sim.ended ? -1 : sim.stopIdx - sim.startIdx - 1;
+    for (let i = 0; i < n; i++) {
+      const t = this._ticks[i];
+      const st = S[i];
+      const cls = st ? 'done' : i === cur ? 'cur' : '';
+      if (t._c !== cls) { t._c = cls; t.className = cls; }
+      const col = st ? gradeOf(Math.abs(st.err)).col : '';
+      if (t._g !== col) { t._g = col; t.style.setProperty('--g', col || 'transparent'); }
+    }
+    const sk = document.querySelector('#rs-win .rs-streak');
+    if (sk) {
+      const on = (this.runStreak || 0) >= 2;
+      setHidden(sk, !on);
+      if (on) setHtml(sk, `れんぞく <b>×${this.runStreak}</b>`);
+    }
   },
 
   onSimEvent(type, e) {
@@ -1001,34 +1313,36 @@ const App = {
       const last = this.sim.score.stops[this.sim.score.stops.length - 1];
       const abs = Math.abs(last.err);
       /* とうちゃくの お祝いは じゅんばんに: 「いきすぎ」などの お知らせは けしてから カードを出す。
-       * カードが出ているあいだ(3.4秒)は「はやく しゅっぱつ」ボタンも 出さない */
-      clearTimeout(this._msgT);
-      $('#msg-center').classList.add('hidden');
-      this._celebrateUntil = performance.now() + 3400;
-      if (this.sim.stopIdx >= this.sim.stops.length - 1) this._finalSeq = true;   // しゅうてん: くんしょうは 成績票で
-      this.showStopCard(e.name, last);
-      this._renderMarks();
-      /* スタンプ・くんしょうは カードのあとに じゅんばんに出す。
-       * スタンプが出るときは カードの0.9秒あと、出ないときは くんしょうが カード(3.4秒)と かさならないよう待つ */
+       * カードが出ているあいだは「はやく しゅっぱつ」ボタンも 出さない */
+      this._hideMsg();
+      const final = this.sim.stopIdx >= this.sim.stops.length - 1;
+      if (final) this._finalSeq = true;   // しゅうてん(ゴール): くんしょうは 成績票で
       const prevBest = this.save.bestErr[e.name];
       this.save.bestErr[e.name] = Math.min(prevBest == null ? 99 : prevBest, abs);
       const tier = tierOf(abs);
       const raised = tier >= 1 && tier > (this.save.stampTier[e.name] || 0);
-      this._queuePop(null, raised ? 900 : 3400);
-      if (tier >= 1) this.awardStamp(e.name, tier);
+      /* 広い画面では スタンプを カードの中に おす(カードを すこし 長く 出す) */
+      const inCard = raised && matchMedia(WIDE_MQ).matches;
+      const hold = final ? 4500 : inCard ? 4200 : 3400;
+      this._celebrateUntil = performance.now() + hold;
+      this.showStopCard(e.name, last, { hold, stamp: inCard });
+      this._renderMarks();
+      /* スタンプ・くんしょうは カードのあとに じゅんばんに出す。
+       * スタンプが出るときは カードの0.9秒あと、出ないときは くんしょうが カードと かさならないよう待つ */
+      this._queuePop(null, raised ? 900 : hold);
+      if (tier >= 1) this.awardStamp(e.name, tier, inCard ? hold - 900 : 0);
       else this.writeSave();
     }
     if (type === 'door-closed') {
       /* 出発信号が あか(さきの電車が いる)ときは「出発進行」と いわない(コーチの「まとう」と くいちがう) */
       const sg = this.sim.nextSignals(1)[0];
       const red = sg && sg.dist < 150 && sg.aspect === 0;
-      if (red) this.flashMsg('ドアが しまりました。<i class="sig sig-r"></i>しんごうが あか ── まとう', 2200);
+      if (red) this.flashMsg('<i class="sig sig-r"></i>しんごうが あか。まとう', 2200);
       else this.flashMsg('ドアが しまりました ── <ruby>出発進行<rt>しゅっぱつしんこう</rt></ruby>！', 1800);
     }
     if (type === 'overrun' && !this._overrun) this.flashMsg(`${icon('warn')} いきすぎ！ とまるところを すぎています`, 2600, true);
     if (type === 'overrun-stop') {
-      clearTimeout(this._msgT);
-      $('#msg-center').classList.add('hidden');
+      this._hideMsg();
       $('#ov-txt').innerHTML = `「8」より <b>${Math.round(e.err)}m</b> さきで とまったよ`;
       /* 「このまま つぎの駅へ」は エンジンに acceptOverrun が あるときだけ。しゅうてんでは つぎの駅が ないので「このまま おわる」 */
       const ovGo = $('#btn-overrun-go');
@@ -1038,19 +1352,18 @@ const App = {
       this._setOverrun(true);
     }
     if (type === 'ats-brake') {
-      /* じどうブレーキの りゆうを ひとことで(kind が ないときは まえの文) */
+      /* じどうブレーキの りゆうを ひとことで(22字まで。くわしい せつめいは 成績票の「スピードを まもれた？」に) */
       const kind = e.kind;
       const tg = e.target != null ? Math.round(e.target) : null;
       let msg;
-      if (kind === 'stop') msg = 'ブレーキが おそかった！ じどうブレーキが かかったよ。「ブレーキまで」が 0 に なる まえに ブレーキ';
+      if (kind === 'stop') msg = 'ブレーキが おそかった！ じどうブレーキ';
       else if (kind === 'signal') msg = `<i class="sig sig-${tg === 0 ? 'r' : 'y'}"></i>しんごうが ${tg === 0 ? 'あか' : 'きいろ'}！ じどうブレーキ`;
-      else if (kind === 'over') msg = `スピード オーバー（${tg} より はやい）！ じどうブレーキ`;
+      else if (kind === 'over') msg = 'スピード オーバー！ じどうブレーキ';
       else {
         const a = this.sim.hud().ats;
-        const why = a && a.kind === 'limit' ? `（このさき ${Math.round(a.target)} のため）` : '';
-        msg = `スピードの<ruby>出<rt>だ</rt></ruby>しすぎ！ じどうブレーキが かかりました${why}`;
+        msg = a && a.kind === 'limit' ? `このさき ${Math.round(a.target)} まで！ じどうブレーキ` : 'スピードの<ruby>出<rt>だ</rt></ruby>しすぎ！ じどうブレーキ';
       }
-      this.flashMsg(`${icon('warn')} ${msg}`, kind === 'stop' ? 3200 : 2400, true);
+      this.flashMsg(`${icon('warn')} ${msg}`, 2400, true);
     }
     /* ガクン(レバーを いっきに うごかした): その場で 見せる。せつめいは 1回目だけ */
     if (type === 'jerk') {
@@ -1058,13 +1371,13 @@ const App = {
       this._cue('doorThud', 0.3, 1.6);
       if (!this._jerkTold) {
         this._jerkTold = true;
-        this.flashMsg('ガクン！ おきゃくさんが よろけたよ。レバーは 1だんずつ うごかそう', 2600, true);
+        this.flashMsg('ガクン！ レバーは 1だんずつ', 2600, true);
       } else this.flashMsg('ガクン！', 900, true);
     }
     /* 非常ブレーキの減点は 1回目だけ理由を説明する */
     if (type === 'eb' && e.moving && !this._ebTold) {
       this._ebTold = true;
-      this.flashMsg('ひじょうブレーキは ほんとうに あぶない ときだけ。ふだんは B1〜B7 を つかおう', 2800, true);
+      this.flashMsg('ひじょうブレーキは あぶない ときだけ', 2800, true);
     }
     /* 車内放送(よみは ひらがなで渡す) */
     if (A && type === 'depart') {
@@ -1079,16 +1392,34 @@ const App = {
   },
 
   /* ---- 停止位置の判定カード ---- */
-  showStopCard(name, st) {
+  /* opt: { hold(カードを出す ミリ秒), stamp(カードの中に スタンプを おす ばしょを とっておく) } */
+  showStopCard(name, st, opt) {
+    const o = opt || {};
     const el = $('#stop-card');
     const err = st.err, abs = Math.abs(err);
     const g = gradeOf(abs);
     const gold = abs <= 0.10;   // ±10cm: きんの スタンプと おなじ ランク
+    const goal = !!this._finalSeq;
     el.style.setProperty('--g', gold ? 'var(--gold)' : g.col);
-    el.className = 'g-' + g.k + (gold ? ' gold' : '');
+    el.className = 'g-' + g.k + (gold ? ' gold' : '') + (goal ? ' goal' : '');
     this.runStreak = abs <= 1 ? (this.runStreak || 0) + 1 : 0;
-    $('#sc-sta').innerHTML = `${rubyStation(name)}<small> に とうちゃく</small>`;
+    $('#sc-sta').innerHTML = goal
+      ? `<b class="sc-goal">ゴール</b>${rubyStation(name)}<small> に とうちゃく</small>`
+      : `${rubyStation(name)}<small> に とうちゃく</small>`;
     $('#sc-streak').innerHTML = this.runStreak >= 2 ? `れんぞく <b>×${this.runStreak}</b>` : '';
+    /* ゴールでは この運転の ◎○△× の かず */
+    const tl = $('#sc-tally');
+    if (goal && this.sim) {
+      const c = { perfect: 0, good: 0, ok: 0, ng: 0 };
+      this.sim.score.stops.forEach((x) => { c[gradeOf(Math.abs(x.err)).k]++; });
+      tl.innerHTML = [['perfect', '◎'], ['good', '○'], ['ok', '△'], ['ng', '×']]
+        .filter(([k], i) => i < 3 || c[k] > 0)
+        .map(([k, m]) => `<span class="st-${k}">${m} <b>${c[k]}</b></span>`).join('');
+      tl.classList.remove('hidden');
+    } else tl.classList.add('hidden');
+    /* カードの中の スタンプ: おすまでは ばしょだけ とっておく(あとから 出ても カードの 中みが ずれない) */
+    const ss = $('#sc-stamp');
+    ss.className = o.stamp ? 'sc-stamp wait' : 'sc-stamp hidden';
     $('#sc-grade').textContent = g.mark;
     const dir = err > 0 ? 'いきすぎ' : 'てまえ';
     if (abs >= 1) {
@@ -1101,6 +1432,7 @@ const App = {
     $('#sc-time').innerHTML = st.late > 3 ? `じかん<br><b>${st.late}びょう おくれ</b>` : 'じかん<br><b>ぴったり</b>';
     const tip = $('#sc-tip');
     if (g.k === 'ng') { tip.textContent = err > 0 ? 'つぎは ブレーキを もうすこし はやく' : 'つぎは ブレーキを すこし よわく'; tip.classList.remove('hidden'); }
+    else if (st.late > 3 && !goal) { tip.textContent = 'つぎは もうすこし はやく はしろう'; tip.classList.remove('hidden'); }
     else tip.classList.add('hidden');
     /* 列車の先頭が「8」のどこで止まったか(はしから すべりこむ) */
     const nose = $('#sc-nose');
@@ -1111,7 +1443,7 @@ const App = {
     nose.style.transition = '';
     nose.style.transform = `translateX(${(x - 100).toFixed(1)}%)`;
     clearTimeout(this._scT);
-    this._scT = setTimeout(() => el.classList.add('hidden'), 3400);
+    this._scT = setTimeout(() => el.classList.add('hidden'), o.hold || 3400);
   },
 
   /* ---- ポップアップの順番待ち(カード → スタンプ → くんしょう が重ならない) ---- */
@@ -1132,7 +1464,10 @@ const App = {
     this._popBusy = false;
     clearTimeout(this._popT);
     clearTimeout(this._scT);
+    clearTimeout(this._goalCueT);
     ['#stop-card', '#stamp-pop', '#badge-toast'].forEach((s) => $(s).classList.add('hidden'));
+    const lab = $('#cam-label');
+    if (lab.classList.contains('lower3')) { lab.classList.remove('lower3'); lab.classList.add('hidden'); }
   },
 
   /* くんしょう: 新しくもらえたらトーストで知らせる */
@@ -1157,8 +1492,9 @@ const App = {
     }, 3200);
   },
 
-  /* スタンプ: ±1m くろ / ±35cm いろ / ±10cm きん。新しいとき・ランクが上がったときだけ ポン と出す */
-  awardStamp(name, tier) {
+  /* スタンプ: ±1m くろ / ±35cm いろ / ±10cm きん。新しいとき・ランクが上がったときだけ ポン と出す。
+   * inCardMs > 0: 広い画面で、判定カードの中(4れつめ)に おす。その あとの くんしょうは カードが きえてから */
+  awardStamp(name, tier, inCardMs) {
     const old = this.save.stampTier[name] || 0;
     this.save.stampTier[name] = Math.max(old, tier);
     this.save.stamps[name] = (this.save.stamps[name] || 0) + 1;
@@ -1166,7 +1502,19 @@ const App = {
     this.writeSave();
     const run = this.runStamps.find((r) => r.name === name);
     if (run) run.tier = Math.max(run.tier, tier); else this.runStamps.push({ name, tier });
-    if (tier > old) {
+    if (tier > old && inCardMs > 0) {
+      const word = old === 0 ? 'スタンプ ゲット！' : tier === 3 ? 'きんに レベルアップ！' : 'いろつきに レベルアップ！';
+      this._queuePop(() => {
+        const box = $('#sc-stamp');
+        if ($('#stop-card').classList.contains('hidden')) return;
+        drawStamp($('#sc-stamp-cv'), name, { tier, size: 84, seed: name.length });
+        $('#sc-stamp-txt').textContent = word;
+        box.className = 'sc-stamp t' + tier;
+        void box.offsetWidth;   // おす アニメを はじめから
+        box.classList.add('go');
+        this._cue('stampPress', 0.5);
+      }, inCardMs);
+    } else if (tier > old) {
       const cap = old === 0 ? `${rubyStation(name)} の スタンプ ゲット！`
         : tier === 3 ? 'きんの スタンプに レベルアップ！' : 'いろつき スタンプに レベルアップ！';
       this._queuePop(() => {
@@ -1192,13 +1540,25 @@ const App = {
     if (kinds >= 23) this.grantBadge('stampAll');
   },
 
+  /* お知らせ。出す時間は 字の かずで のばす(小2が 声に出して 読める はやさ: 1字 0.26秒、さいだい 7秒)。
+   * 「ちゅうい」(warn)が 出ている あいだは、ふつうの お知らせで 上書きしない */
   flashMsg(text, ms = 2600, warn = false) {
+    const now = performance.now();
+    if (!warn && now < (this._msgWarnUntil || 0)) return;
+    const n = String(text).replace(/<rt>.*?<\/rt>|<[^>]+>|\s/g, '').length;
+    const dur = Math.min(7000, Math.max(ms, 900 + n * 260));
+    this._msgWarnUntil = warn ? now + dur : 0;
     const el = $('#msg-center');
     el.innerHTML = text;
     el.classList.toggle('warn', warn);
     el.classList.remove('hidden');
     clearTimeout(this._msgT);
-    this._msgT = setTimeout(() => el.classList.add('hidden'), ms);
+    this._msgT = setTimeout(() => { el.classList.add('hidden'); this._msgWarnUntil = 0; }, dur);
+  },
+  _hideMsg() {
+    clearTimeout(this._msgT);
+    this._msgWarnUntil = 0;
+    $('#msg-center').classList.add('hidden');
   },
 
   setPaused(p) {
@@ -1223,11 +1583,12 @@ const App = {
     const a = sim.stops[sim.startIdx].stopAt, b = sim.stops[sim.stops.length - 1].stopAt;
     const q = (s) => document.querySelector('#rs-win ' + s);
     this._rs = {
-      a, b, segA: a, segB: b, k: null, kAll: null, idx: null,
+      a, b, segA: a, segB: b, k: null, idx: null,
       prev: q('.rs-prev span'), next: q('.rs-next span'), after: q('.rs-after span'),
       afterNode: q('.rs-after'), seg2: q('.rs-seg2'), left: q('.rs-left'),
-      train: $('#rs-train'), fill: $('#rs-all-fill'),
+      train: $('#rs-train'),
     };
+    this._ticks = null;   // 目もりは この運転の 駅の かずで 作りなおす
     this._updateRouteStrip();
   },
 
@@ -1247,12 +1608,11 @@ const App = {
       const rest = Math.max(0, sim.stops.length - sim.stopIdx);
       R.left.innerHTML = rest <= 1 ? 'つぎ <b>ゴール</b>' : `あと <b>${rest}</b> えき`;
       R.segA = prev.stopAt; R.segB = next.stopAt;
+      this._renderMarks();   // いまの駅間の 目もり
     }
     const k = Math.max(0, Math.min(1, (sim.pos - R.segA) / Math.max(1, R.segB - R.segA)));
     const kr = Math.round(k * 400) / 4;   // 0.25%きざみ
     if (kr !== R.k) { R.k = kr; R.train.style.transform = `translateX(${(kr - 100).toFixed(2)}%)`; }
-    const ka = Math.round(Math.max(0, Math.min(1, (sim.pos - R.a) / Math.max(1, R.b - R.a))) * 500) / 500;
-    if (ka !== R.kAll) { R.kAll = ka; R.fill.style.transform = `scaleX(${ka})`; }
   },
 
   /* ブレーキ地点の計算(150msに1回だけ。重い予測を毎フレームしない) */
@@ -1268,12 +1628,18 @@ const App = {
     return this._cb;
   },
 
+  /* 駅より手前(400m以内)に、低い制限が あるか(いまの速さに かかわらず)。あれば ats を かえす */
+  _limitZone(h) {
+    const a = h.ats;
+    if (!a || a.kind !== 'limit' || a.target >= h.limit) return null;
+    const d = a.at - this.sim.pos;
+    return d < 400 && (!h.next || d < h.next.dist - 5) ? a : null;
+  },
+
   /* 駅より手前(400m以内)に、いまの速さより低い制限があるか */
   _limitAhead(h) {
-    const a = h.ats, sim = this.sim;
-    if (!a || a.kind !== 'limit' || a.target >= h.limit || sim.v <= a.target + 1) return false;
-    const d = a.at - sim.pos;
-    return d < 400 && (!h.next || d < h.next.dist - 5);
+    const a = this._limitZone(h);
+    return !!a && this.sim.v > a.target + 1;
   },
 
   /* B4で止まれる距離に 余裕(はやいほど大きく、最大12m)を足した「ブレーキを かける場所」までの距離 */
@@ -1291,29 +1657,56 @@ const App = {
     return q;
   },
 
-  /* ブレーキめやす: このままのブレーキだと、どこで止まるか。
-   * ブレーキを かける場所の 120m 手前から(または ブレーキ中・手前の制限に あわせるとき)だけ 出す */
+  /* ブレーキめやす(右の たての パネル)。2つの かお:
+   * ・駅: このままのブレーキだと どこで止まるか(「8」の めもり)。ブレーキを かける場所の 120m 手前から・ブレーキ中
+   * ・制限(mode-lim): 駅より手前の 低い制限に あわせる。制限の板 + 「おとす ぶん」の 赤い棒(おとせたら みどりの OK) */
   _updateBrakeGuide(h) {
     const el = this._bgEl || (this._bgEl = {
-      box: $('#brake-guide'), pred: $('#bg-pred'), txt: $('#bg-txt'),
+      box: $('#brake-guide'), pred: $('#bg-pred'), txt: $('#bg-txt'), cap: $('#bg-cap'),
       lo: document.querySelector('#brake-guide .bg-lbl-over'), ls: document.querySelector('#brake-guide .bg-lbl-short'),
+      plate: $('#bg-lim-plate'), bar: $('#bg-limbar-i'), limv: $('#bg-limv'),
     });
     const sim = this.sim;
-    let show = this.settings.guide && h.next && !h.doorOpen && h.next.dist < 650 && h.next.dist > -15 && sim.v > 0.5 && !this._overrun;
-    let c = null;
-    if (show) {
-      c = this._brakeCalc(h);
-      show = sim.notch < 0 || this._limitAhead(h) || this._toBrake(h, c) < 120;
+    let mode = null, c = null;
+    if (this.settings.guide && !h.doorOpen && sim.v > 0.5 && !this._overrun) {
+      const zone = this._limitZone(h);
+      let stopNeed = false;
+      if (h.next && h.next.dist < 650 && h.next.dist > -15) {
+        c = this._brakeCalc(h);
+        stopNeed = sim.notch < 0 || this._toBrake(h, c) < 120;
+      }
+      /* おとす ひつようが ある 制限 → 駅 → おとし おわった 制限(OK) の じゅん */
+      if (zone && sim.v > zone.target + 1) mode = 'lim';
+      else if (stopNeed) mode = 'stop';
+      else if (zone) mode = 'lim';
     }
-    setHidden(el.box, !show);
-    if (!show) return;
+    setHidden(el.box, !mode);
+    if (!mode) return;
+    const isLim = mode === 'lim';
+    if (el._lim !== isLim) {
+      el._lim = isLim;
+      el.box.classList.toggle('mode-lim', isLim);
+      el.cap.innerHTML = isLim ? 'スピードを<br>おとす' : 'ブレーキ<br>めやす';
+    }
+    if (isLim) {
+      const a = h.ats;
+      setText(el.plate, String(Math.round(a.target)));
+      const ok = sim.v <= a.target + 1;
+      const k = Math.max(0, Math.min(1, (sim.v - a.target) / Math.max(1, h.limit - a.target)));
+      const sc = ok ? 'scaleY(1)' : `scaleY(${(Math.round(k * 50) / 50).toFixed(2)})`;
+      if (el.bar._s !== sc) { el.bar._s = sc; el.bar.style.transform = sc; }
+      if (el._ok !== ok) { el._ok = ok; el.box.classList.toggle('ok', ok); }
+      setHtml(el.limv, `いま <b>${Math.floor(sim.v)}</b>`);
+      const d = this._steady('limAt', Math.max(0, a.at - sim.pos));
+      h.uiLimAt = d;
+      setHtml(el.txt, ok ? '<b>OK</b>' : `あと <b>${d}</b>m`);
+      setCls(el.txt, 'bg-txt' + (ok ? ' ok' : ''));
+      return;
+    }
+    if (el._ok) { el._ok = false; el.box.classList.remove('ok'); }
     const pred = c.pred;
     let txt, cls = '', act = 0;
-    if (this._limitAhead(h)) {
-      /* 手前の制限に合わせて減速中: 駅の予想は まだ出さない(CLAUDE.md: ATSの先行パターンの理由表示) */
-      if (el.pred._d !== 'none') { el.pred._d = 'none'; el.pred.style.display = 'none'; }
-      txt = `このさき<br><b>${Math.round(h.ats.target)}</b> まで`;
-    } else if (pred == null) {
+    if (pred == null) {
       if (el.pred._d !== 'none') { el.pred._d = 'none'; el.pred.style.display = 'none'; }
       const toBrake = this._toBrake(h, c);
       txt = toBrake > 0 ? `ブレーキまで<br><b>${this._steady('toBrake', toBrake)}m</b>` : '<b>ブレーキ</b>を<br>かけよう';
@@ -1337,32 +1730,63 @@ const App = {
     if (el.ls) setCls(el.ls, 'bg-lbl bg-lbl-short' + (act < 0 ? ' act' : ''));
   },
 
+  /* 時間に おくれそうか(ゆっくり はしりすぎ)。いちど 出したら 5秒は 出しつづける(ちらつかない) */
+  _lateHint(h, wet, now) {
+    const sim = this.sim, nx = h.next;
+    if (!nx || wet || nx.arr == null) return false;
+    const eta = nx.dist / Math.max(sim.v / 3.6, 8) + 8;
+    const lateBy = sim.t + eta - nx.arr;
+    if (lateBy > 15 && sim.v < h.limit - 12 && sim.notch < 4) this._lateHold = now + 5000;
+    return now < (this._lateHold || 0);
+  },
+
   /* 「いまやること」コーチ(小2でもわかる次の一手を常に出す。まちがえる前に知らせる)。
-   * want = その文で つかってほしい ノッチ(運転台の めもりと すすむ/ブレーキ ボタンを 光らせる) */
+   * ボタンの ことばは レバーの いまの位置で かわる(ブレーキ中の うえ = ゆるめる)。
+   * want = その文で つかってほしい ノッチ(運転台の めもりと うえ/した ボタンを 光らせる)。
+   * 計器(cab.render)より 先に よぶ: h.uiLimAt(コーチ・めやすと おなじ まるめの 制限までの距離)と
+   * h.uiBrakeNow(いま ブレーキ)を 計器に わたす */
   _updateCoach(h) {
     const el = this._coachEl || (this._coachEl = $('#coach'));
+    const tx = this._coachTxtEl || (this._coachTxtEl = $('#coach-txt'));
     const sim = this.sim;
     if (!h) h = sim.hud();
-    const KUP = this.KUP || '<b>▲</b>', KDN = this.KDN || '<b>▼</b>';
+    const K = this._keys(sim.notch);
+    const KUP = K.KUP, KDN = K.KDN;
+    if (!this._tbUp) { this._tbUp = $('#tb-up'); this._tbDn = $('#tb-dn'); this._tbBox = $('#touch-btns'); }
+    /* うえ/した ボタンの ことばも レバーの位置に あわせる(すすむ側 / ブレーキ / ひじょう が かわったときだけ) */
+    if (this._tbMode !== K.b) {
+      this._tbMode = K.b;
+      const su = this._tbUp.querySelector('span'), sd = this._tbDn.querySelector('span');
+      if (su) su.textContent = K.up;
+      if (sd) sd.textContent = K.dn;
+      this._tbBox.setAttribute('data-mode', K.b);
+    }
+    const now = performance.now();
+    const nx = h.next;
     let txt = '', hot = false, want = null;
     const redAhead = h.ats && h.ats.kind === 'signal' && h.ats.target === 0;
     const redNear = redAhead && h.ats.at - sim.pos < 150;
     const wet = this.weather === 'rain' || this.weather === 'snow';
+    const lateTxt = () => `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`;
     /* スピード オーバーの チャイムは こえた ときに 1回だけ(制限より おそくなったら また鳴る) */
     if (sim.v > h.limit + 0.5) {
       if (!this._overChimed && !h.doorOpen) { this._overChimed = true; this._cue('atsChime', 0.3); }
     } else if (sim.v < h.limit) this._overChimed = false;
     if (this._overrun) {
-      txt = '<b>やりなおす</b> を タップしてね';
+      txt = 'どちらか タップしてね';
     } else if (h.finished) {
       txt = '';
     } else if (h.doorOpen) {
-      const rest = Math.ceil((h.next ? h.next.dep : sim._departTime) - sim.t);
-      txt = rest > 0 ? `おきゃくさんが のりおり中… しゅっぱつまで あと <b>${Math.max(0, rest)}</b> びょう`
-        : 'まもなく ドアが しまります';
-    } else if (sim.v < 0.5 && sim._left && h.next && h.next.dist > 0.5 && h.next.dist < 250 && !redNear) {
-      /* 「8」の手前で止まってしまった: すこし進んで もういちど止まる */
-      txt = `「8」まで あと <b>${Math.round(h.next.dist)}</b> m。${KUP}を 1かい → うごいたら ${KDN}で とまろう`;
+      /* のこり びょうは 上の 大型HUDに 1つだけ(ここには 数字を 出さない) */
+      const rest = Math.ceil((nx ? nx.dep : sim._departTime) - sim.t);
+      if (sim.notch > 0) txt = 'すすむ OK！ ドアが しまったら うごくよ';
+      else if (rest <= 10) txt = 'ドアの ランプが ついたら しゅっぱつ';
+      else txt = 'おきゃくさんが のりおり中…';
+    } else if (sim.v < 0.5 && sim._left && nx && nx.dist > 0.5 && nx.dist < 250 && !redNear) {
+      /* 「8」の手前で止まってしまった: レバーを P1 まで(ブレーキ中なら その ぶん 多く)おす */
+      const m = Math.round(nx.dist);
+      if (sim.notch >= 1) txt = `あと <b>${m}</b> m！ うごきだすよ`;
+      else txt = `あと <b>${m}</b> m！ ${KUP}を <b>${1 - sim.notch}</b>かい（P1）`;
       const st = h.settle || 0;   // 少し手前で止まったときの まちじかん(エンジンに あるときだけ)
       if (st > 0) txt += `（あと <b>${Math.ceil(st)}</b> びょうで ドアが あくよ）`;
       want = 1;
@@ -1377,7 +1801,7 @@ const App = {
         ? `${icon('warn')} じどうブレーキ中… スピードが <b>${tgt}</b> まで さがるのを まとう`
         : `${icon('warn')} じどうブレーキ中… もうすぐ ゆるむよ`;
     } else if (h.slipping) {
-      txt = `すべってる！ ${KUP}で ブレーキを すこし よわく`;
+      txt = `すべってる！ ${KUP} を 1かい`;
       want = Math.min(-1, sim.notch + 1);
     } else if (redAhead && (h.ats.at - sim.pos) < 700) {
       if (sim.v < 0.5) txt = '<i class="sig sig-r"></i>しんごうが <b>あか</b>。あおに かわるまで まとう';
@@ -1386,6 +1810,7 @@ const App = {
       /* 「いまの制限は守っているのに」の混乱に、理由(この先の低い制限)を示す。
        * 先行パターンの じどうブレーキの 理由なので「もうすぐ ◯◯」「スピード オーバー」より 先に出す */
       const m = this._steady('limAt', Math.max(0, h.ats.at - sim.pos));
+      h.uiLimAt = m;
       txt = `${icon('warn')} このさきは <b>${Math.round(h.ats.target)}</b> まで。いまから おとそう（あと <b>${m}</b> m）`;
       want = -3;
     } else if (sim.v > h.limit + 0.5) {
@@ -1403,45 +1828,51 @@ const App = {
     } else if (this._limitAhead(h)) {
       /* 駅より手前に 低い制限がある: まずは そちらに合わせる(駅の予想を出すと まぎらわしい) */
       const m = this._steady('limAt', Math.max(0, h.ats.at - sim.pos));
+      h.uiLimAt = m;
       txt = `このさきは <b>${Math.round(h.ats.target)}</b> まで。${KDN}で おとそう（あと <b>${m}</b> m）`;
       want = -3;
-    } else if (h.next && h.next.dist < 650) {
+    } else if (nx && nx.dist < 650) {
       /* 駅に近づいた(ブレーキめやすと おなじ 650m から): ブレーキを かける場所と、止まる場所の予想 */
       const c = this._brakeCalc(h);
-      const dist = h.next.dist;
+      const dist = nx.dist;
       if (sim.notch >= 0) {
         const toBrake = this._toBrake(h, c);
-        if (toBrake > 40) txt = `ブレーキまで あと <b>${this._steady('toBrake', toBrake)}</b> m`;
+        if (toBrake > 200 && this._lateHint(h, wet, now)) { txt = lateTxt(); want = 4; }
+        else if (toBrake > 40) txt = `ブレーキまで あと <b>${this._steady('toBrake', toBrake)}</b> m`;
         else if (toBrake > 0) { txt = `そろそろ！ ${KDN}を 3〜4かい`; want = -4; }
         else { txt = `いま！ ${KDN}`; hot = true; want = -4; }
       } else if (c.pred == null) {
-        txt = `このままだと とまれない → ${KDN} もっと`;
+        txt = `このままだと とまれない → ${KDN} を もっと`;
         want = Math.max(-7, sim.notch - 1);
       } else {
         const d = c.pred - dist;
         if (Math.abs(d) <= 1) { txt = 'そのまま！ ぴったり とまるよ'; want = sim.notch; }
         else if (d > 1) {
-          txt = `このままだと <b>いきすぎ</b>（${this._steady('pred', d)}m）→ ${KDN} もっと`;
+          txt = `このままだと <b>いきすぎ</b>（${this._steady('pred', d)}m）→ ${KDN} を 1かい`;
           want = Math.max(-7, sim.notch - 1);
         } else {
-          txt = `このままだと <b>てまえ</b>で とまる（${this._steady('pred', -d)}m）→ ${KUP} で ブレーキを よわく`;
+          txt = `このままだと <b>てまえ</b>（${this._steady('pred', -d)}m）→ ${KUP} を 1かい`;
           want = Math.min(-1, sim.notch + 1);
         }
       }
     } else if (h.ats && sim.v > h.ats.pattern - 4) {
       txt = `${icon('warn')} スピードを <b>${Math.round(h.ats.target)}</b> まで おとそう`;
       want = -3;
-    } else if (h.next) {
-      txt = `つぎは <b>${kanaOf(h.next.name) || h.next.name}</b> ／ スピードは <b>${h.limit}</b> まで`;
+    } else if (nx) {
+      if (this._lateHint(h, wet, now)) { txt = lateTxt(); want = 4; }
+      else txt = `つぎは <b>${kanaOf(nx.name) || nx.name}</b> ／ スピードは <b>${h.limit}</b> まで`;
     }
     if (txt !== this._coachTxt) {
       this._coachTxt = txt;
-      el.innerHTML = txt;
+      tx.innerHTML = txt;
       setHidden(el, !txt);
     }
     if (el._hot !== hot) { el._hot = hot; el.classList.toggle('coach-hot', hot); }
+    /* 「いま！」に なった しゅんかんに 1回だけ ピッ(画面を 見ていなくても わかる) */
+    if (hot && !this._hotCued) { this._hotCued = true; this._cue('coachPing', 0.22); }
+    else if (!hot) this._hotCued = false;
 
-    /* つかってほしい ノッチを 運転台(P4: cab.setTarget)と すすむ/ブレーキ ボタンで しめす(ガイド「あり」のときだけ) */
+    /* つかってほしい ノッチを 運転台(P4: cab.setTarget)と うえ/した ボタンで しめす(ガイド「あり」のときだけ) */
     const w = this.settings.guide ? want : null;
     if (w !== this._want) {
       this._want = w;
@@ -1450,12 +1881,11 @@ const App = {
     const wdir = w == null ? '' : w > sim.notch ? 'up' : w < sim.notch ? 'dn' : '';
     if (wdir !== this._wantDir) {
       this._wantDir = wdir;
-      if (!this._tbUp) { this._tbUp = $('#tb-up'); this._tbDn = $('#tb-dn'); }
       this._tbUp.classList.toggle('want', wdir === 'up');
       this._tbDn.classList.toggle('want', wdir === 'dn');
     }
 
-    /* 大型HUD(じそく・せいげん・のこりm/あと秒) */
+    /* 大型HUD(じそく・せいげんの板・つぎの制限 | えきまで / しゅっぱつまで / すぎた) */
     if (!this._bh) {
       this._bh = {
         v: $('#bh-v'), cap: $('#bh-ctx-cap'), num: $('#bh-ctx-num'),
@@ -1468,55 +1898,44 @@ const App = {
     setCls(B.v, sim.v > h.limit + 1 ? 'over' : sim.v > h.limit - 5 ? 'near' : '');
     setText(B.lim, String(h.limit));
     let ln = '';
-    if (h.ats && h.ats.kind === 'limit' && h.ats.target < h.limit && h.ats.at - sim.pos < 700) ln = '→' + Math.round(h.ats.target);
+    if (h.ats && h.ats.kind === 'limit' && h.ats.target < h.limit && h.ats.at - sim.pos < 700) ln = `つぎ <span class="bh-lim bh-lim-s">${Math.round(h.ats.target)}</span>`;
     else if (h.ats && h.ats.kind === 'signal' && h.ats.at - sim.pos < 700) {
       /* 信号の ランプには ことばを そえる(赤い丸だけでは 小2には わからない) */
       ln = h.ats.target === 0 ? '<i class="sig sig-r"></i>とまれ' : `<i class="sig sig-y"></i>${Math.round(h.ats.target)}`;
     }
     setHtml(B.limN, ln);
     setHidden(B.limN, !ln);
-    let cap, num, unit, warn = false;
+    /* こはく色は「いま ブレーキ」(コーチの「いま！」と おなじ きまり)のときだけ */
+    const brakeNow = !h.doorOpen && !this._overrun && !!nx && nx.dist > 0 && nx.dist < 650 && sim.v > 0.5
+      && sim.notch >= 0 && this._toBrake(h, this._brakeCalc(h)) <= 0;
+    h.uiBrakeNow = brakeNow;
+    let cap, num, unit, cls = '';
     if (h.doorOpen) {
       cap = 'しゅっぱつまで';
-      num = String(Math.max(0, Math.ceil((h.next ? h.next.dep : sim._departTime) - sim.t)));
+      num = String(Math.max(0, Math.ceil((nx ? nx.dep : sim._departTime) - sim.t)));
       unit = 'びょう';
-      warn = Number(num) <= 5;
-    } else if (h.next) {
+    } else if (nx && nx.dist < -0.5) {
+      /* 「8」を すぎて とまった: 0m ではなく すぎた ぶん(赤) */
+      cap = 'すぎた'; num = String(Math.round(-nx.dist)); unit = 'm'; cls = ' bh-over';
+    } else if (nx) {
       cap = 'えきまで';
-      const dm = Math.max(0, h.next.dist);
+      const dm = Math.max(0, nx.dist);
       num = dm >= 1000 ? (dm / 1000).toFixed(1) : String(Math.round(dm));
       unit = dm >= 1000 ? 'km' : 'm';
-      warn = dm < 250;
+      if (brakeNow) cls = ' bh-warn';
     } else {
       cap = 'ゴールまで'; num = '—'; unit = '';
     }
     setText(B.num, num);
     setText(B.cap, cap);
     setText(B.unit, unit);
-    setCls(B.row, 'bh-row bh-ctx' + (warn ? ' bh-warn' : ''));
+    setCls(B.row, 'bh-row bh-ctx' + cls);
 
-    /* しゅっぱつスキップボタン(まだ待ち時間があるときだけ)。
-     * とうちゃくの お祝い(判定カード・3.4秒)の あいだは 出さない(お祝いを タップして とばしてしまう) */
-    const celebrating = performance.now() <= (this._celebrateUntil || 0) || !B.card.classList.contains('hidden');
-    const canSkip = !celebrating && !this._overrun && h.doorOpen && ((h.next ? h.next.dep : sim._departTime) - sim.t) > 7;
+    /* しゅっぱつスキップボタン(コーチの中。まだ待ち時間があるときだけ)。
+     * とうちゃくの お祝い(判定カード)の あいだは 出さない(お祝いを タップして とばしてしまう) */
+    const celebrating = now <= (this._celebrateUntil || 0) || !B.card.classList.contains('hidden');
+    const canSkip = !celebrating && !this._overrun && h.doorOpen && ((nx ? nx.dep : sim._departTime) - sim.t) > 7;
     setHidden(B.skip, !canSkip);
-    if (canSkip) {
-      /* コーチが 2〜4行に のびても(せまい たて画面) ボタンが かくれないよう、コーチの すぐ上に おく。
-       * #coach と #btn-skip は おなじ #gl-wrap の中(offsetTop は transform を むしする)。
-       * CSSの bottom(画面サイズ別)より 下には さげない。
-       * レイアウトを読むのは ドアが あいていて、コーチの 文が かわったときだけ(毎フレームは 読まない) */
-      if (B.skip._base == null) {
-        B.skip.style.bottom = ''; B.skip._b = null; B.skip._for = undefined;
-        B.skip._base = parseFloat(getComputedStyle(B.skip).bottom) || 66;
-      }
-      if (B.skip._for !== this._coachTxt) {
-        B.skip._for = this._coachTxt;
-        const par = el.offsetParent;
-        const need = el.classList.contains('hidden') || !par ? 0 : Math.round(par.clientHeight - el.offsetTop + 8);
-        const b = Math.max(B.skip._base, need);
-        if (B.skip._b !== b) { B.skip._b = b; B.skip.style.bottom = b + 'px'; }
-      }
-    } else B.skip._base = null;
     this._updateBrakeGuide(h);
     this._updateRouteStrip();
   },
@@ -1536,8 +1955,42 @@ const App = {
     this.runStreak = 0;   // やりなおしたら「れんぞく」も 0から
     this._resetCoachState();
     if (this._rs) this._rs.idx = null;
+    this._ticks = null;   // sim.reset で スタートの駅が かわる(目もりの かずも)
     this._renderMarks();   // sim.reset で きろくも 0 に もどる
     this.flashMsg(`${rubyStation(this.sim.stops[this.lastStationIdx].name)} から やりなおし`, 2000);
+  },
+
+  /* いきすぎパネルの「もういちど とめる」: 「8」の 180m 手前に もどって、この駅だけ とめなおす。
+   * まえの駅までの きろくは のこる(やりなおし あつかいに しない。この駅の 点は エンジンが へらす)。
+   * エンジンに retryApproach が ないときは まえの駅から(retryStation) */
+  async _retryApproach() {
+    if (this._retrying || !this._overrun || !this.sim) return;
+    const sim = this.sim;
+    if (typeof sim.retryApproach !== 'function') { this._setOverrun(false); this.retryStation(); return; }
+    this._retrying = true;
+    const fade = $('#fade');
+    fade.classList.remove('card');
+    fade.classList.add('on');
+    try {
+      await wait(250);
+      if (this.sim !== sim || this.mode !== 'drive') return;
+      this._setOverrun(false);
+      sim.retryApproach(180);
+      if (this.audio && typeof this.audio.resetRun === 'function') this.audio.resetRun(sim);
+      this.scene._camPos = null;
+      if (this.scene.traffic) this.scene.traffic.reset(sim);
+      this._celebrateUntil = 0;
+      this._clearPops();   // まえの駅の カード・スタンプが のこっていたら しまう
+      this._resetCoachState();
+      if (this._rs) this._rs.idx = null;
+      this._renderMarks();
+      this._pauseDirty = true;
+      await nextFrame();
+      this.flashMsg('「8」の 180m てまえから もういちど', 2200);
+    } finally {
+      this._retrying = false;
+      if (!this._starting) fade.classList.remove('on');
+    }
   },
 
   quitDrive() {
@@ -1580,20 +2033,32 @@ const App = {
     if (this.daytime === 'night') this.grantBadge('night');
     if (this.weather === 'rain') this.grantBadge('rain');
     if (this.weather === 'snow') this.grantBadge('snow');
-    if (res.rank === 'S' || res.rank === 'A') this.grantBadge('rankA');
-    if (res.rank === 'S') this.grantBadge('rankS');
-    /* しゅうてんの おわりの 儀式: ドアが あいて「おつかれさまでした」。
-     * 判定カードと スタンプ(順番待ちの列)の あとに そらからの 景色 → 0.4秒の 暗転で 成績票へ */
+    /* ランクの くんしょうは みじかすぎる 運転では もらえない(1駅で「でんせつ」に ならない) */
+    if (nSt >= 3 && (res.rank === 'S' || res.rank === 'A')) this.grantBadge('rankA');
+    if (nSt >= 5 && res.rank === 'S') this.grantBadge('rankS');
+    /* しゅうてんの おわりの 儀式: ドアが あいて「おつかれさまでした」。ゴールの 音(0.9秒あと)。
+     * 判定カードと スタンプ(順番待ちの列)の あとに そらからの 景色(下に「ゴール」の 字幕) → 0.4秒の 暗転で 成績票へ */
     this._cue('hissLong', 0.24, 0.92);
     this._cue('doorSlide', 0.5);
+    clearTimeout(this._goalCueT);
+    this._goalCueT = setTimeout(() => { if (this.mode === 'drive' && this.sim === sim) this._cue('goal', 0.4); }, 900);
     if (this.announcer) this.announcer.speak('しゅうてん、' + (kanaOf(to) || to) + 'です。おつかれさまでした。');
     const best = { prevSeg, segBest, retried: this._retried };
-    this._queuePop(() => { if (this.mode === 'drive' && this.sim === sim) this._setCam('drone'); }, 2400);
+    this._queuePop(() => {
+      if (this.mode !== 'drive' || this.sim !== sim) return;
+      this._setCam('drone');
+      const lab = $('#cam-label');
+      clearTimeout(this._camLabT);
+      lab.innerHTML = `${rubyStation(to)} <b>ゴール</b> ・ おつかれさまでした`;
+      lab.classList.add('lower3');
+      lab.classList.remove('hidden');
+    }, 3200);
     this._queuePop(async () => {
       if (this.mode !== 'drive' || this.sim !== sim) return;
       const f = $('#fade');
+      f.classList.remove('card');
       f.classList.add('on');
-      await new Promise((r) => setTimeout(r, 400));
+      await wait(400);
       if (this.mode !== 'drive' || this.sim !== sim) { if (!this._starting) f.classList.remove('on'); return; }
       this._clearPops();
       this._showResult(res, best);
@@ -1601,17 +2066,23 @@ const App = {
     }, 0);
   },
 
-  /* つぎの目標(いちばん当てはまるものを1つだけ) */
+  /* つぎの目標(いちばん当てはまるものを1つだけ)。{html, cur, max}: cur/max が あれば 進みぐあいの棒も 出す */
   _nextGoal(res) {
-    const tot = res.total;
+    const tot = res.total, nSt = res.stops.length;
+    /* ランクの くんしょうには 駅の かずが いる(みじかい 運転の 100てんでは もらえない) */
+    if (tot >= 95 && nSt < 5 && !this.save.badges.rankS) return { html: '5えき いじょうで ランクS →「でんせつの うんてんし」', cur: nSt, max: 5 };
+    if (tot >= 85 && nSt < 3 && !this.save.badges.rankA) return { html: '3えき いじょうで ランクA →「めいじん うんてんし」', cur: nSt, max: 3 };
     const up = RANK_LINE.slice().reverse().find(([th]) => tot < th && th - tot <= 8);
-    if (up) return `あと <b>${up[0] - tot}</b>てんで ランク<b>${up[1]}</b>！`;
+    if (up) return { html: `あと <b>${up[0] - tot}</b>てんで ランク<b>${up[1]}</b>！` };
     const near = res.stops.find((st) => Math.abs(st.err) > 0.35 && Math.abs(st.err) <= 1);
-    if (near) return `${rubyStation(near.name)}は あと <b>${cmOf(near.err) - 35}cm</b> で ぴったり だった！`;
-    if (res.overspeed > 0) return 'じどうブレーキ 0かいで ゴールすると くんしょう「あんぜん うんてん」';
+    if (near) return { html: `${rubyStation(near.name)}は あと <b>${cmOf(near.err) - 35}cm</b> で ぴったり だった！` };
+    if (res.overspeed > 0) return { html: 'じどうブレーキ 0かいで ゴールすると くんしょう「あんぜん うんてん」' };
     const b = BADGES.find((x) => !this.save.badges[x.id]);
-    if (b) return `つぎの くんしょう「${b.name}」── <span class="nw">${b.desc}</span>`;
-    return '';
+    if (b) {
+      const pg = this._badgeProg(b.id);
+      return { html: `つぎの くんしょう「${b.name}」── <span class="nw">${b.desc}</span>`, cur: pg ? pg.cur : null, max: pg ? pg.max : null };
+    }
+    return null;
   },
 
   _showResult(res, best) {
@@ -1621,10 +2092,13 @@ const App = {
     rk.textContent = res.rank;
     rk.className = 'res-rank rk-' + res.rank;
     const from = sim.stops[sim.startIdx].name, to = sim.stops[sim.stops.length - 1].name;
-    const tod = { day: '', evening: '　（ゆうがた）', night: '　（よる）' }[this.daytime];
-    const wx = { clear: '', rain: '　（あめ）', snow: '　（ゆき）' }[this.weather];
-    $('#res-svc').innerHTML = `${rubySvc(SERVICES[this.service].name)}　${rubyStation(from)} → ${rubyStation(to)}${wx}${tod}`;
-    $('#res-title').textContent = res.total >= 95 ? 'でんせつの うんてんし' : res.total >= 85 ? 'めいじん うんてんし' : res.total >= 70 ? 'いちにんまえ うんてんし' : res.total >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
+    const nSt = res.stops.length;
+    /* 種別の色の札 + 区間 + じかん・天気(アイコンと ことば) */
+    $('#res-svc').innerHTML = `<span class="rs-chip">${rubySvc(SERVICES[this.service].name)}</span>`
+      + `<span class="nw">${rubyStation(from)} → ${rubyStation(to)}</span>`
+      + `<span class="rs-cond nw">${icon(TOD_ICO[this.daytime])}${TOD_WORD[this.daytime]}　${icon(WX_ICO[this.weather])}${WX_WORD[this.weather]}</span>`;
+    /* 「でんせつ」は 5えき いじょうの ランクS だけ */
+    $('#res-title').textContent = res.total >= 95 && nSt >= 5 ? 'でんせつの うんてんし' : res.total >= 85 ? 'めいじん うんてんし' : res.total >= 70 ? 'いちにんまえ うんてんし' : res.total >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
     /* なぜ その点数か(理由をひとこと) */
     const cnt = { perfect: 0, good: 0, ok: 0, ng: 0 };
     res.stops.forEach((st) => { cnt[gradeOf(Math.abs(st.err)).k]++; });
@@ -1632,11 +2106,15 @@ const App = {
       .filter(([k], i) => cnt[k] > 0 || i === 0).map(([k, w]) => `${w} ${cnt[k]}`).join(' ／ ');
     const avgLate = res.stops.length ? Math.round(res.stops.reduce((a, st) => a + st.late, 0) / res.stops.length) : 0;
     const bd = res.breakdown;
+    /* りゆうの ひとこと(運転中の お知らせは みじかく したので、くわしい せつめいは ここで) */
+    const compWhy = `じどうブレーキ ${res.overspeed}かい ・ ひじょう ${res.ebUsed}かい`
+      + (res.overspeed > 0 ? '（「ブレーキまで」が 0 に なる まえに ブレーキ）'
+        : res.ebUsed > 0 ? '（ひじょうブレーキは ほんとうに あぶない ときだけ。ふだんは B1〜B7）' : '');
     $('#res-breakdown').innerHTML = [
       ['えきに ぴったり とまれた？', bd.stop, 30, stopWhy],
-      ['じかんどおりに はしれた？', bd.time, 30, avgLate <= 5 ? 'じかん どおり！' : `おくれ へいきん ${avgLate}びょう`],
-      ['スピードを まもれた？', bd.comp, 25, `じどうブレーキ ${res.overspeed}かい ・ ひじょう ${res.ebUsed}かい`],
-      ['のりごこち', bd.ride, 15, res.jerkEvents > 0 ? `ガクン ${res.jerkEvents}かい（レバーを いっきに うごかした）` : 'ガクン 0かい'],
+      ['じかんどおりに はしれた？', bd.time, 30, avgLate <= 5 ? 'じかん どおり！' : `おくれ へいきん ${avgLate}びょう（えきの あいだは スピードを あげて はしろう）`],
+      ['スピードを まもれた？', bd.comp, 25, compWhy],
+      ['のりごこち', bd.ride, 15, res.jerkEvents > 0 ? `ガクン ${res.jerkEvents}かい（おきゃくさんが よろけるよ。レバーは 1だんずつ）` : 'ガクン 0かい'],
     ].map(([label, got, max, why]) => {
       const r = got / max;
       const col = r >= 0.9 ? 'var(--green)' : r >= 0.6 ? 'var(--acc)' : 'var(--amber)';
@@ -1647,7 +2125,8 @@ const App = {
     $('#res-stops').innerHTML = '<tr><th></th><th>えき</th><th>とまった ずれ</th><th>おくれ</th></tr>' +
       res.stops.map((st) => {
         const g = gradeOf(Math.abs(st.err));
-        return `<tr><td class="gcol"><span class="gchip" style="--g:${g.col}">${g.mark}</span></td><td>${st.name}<span class="st-kana">${kanaOf(st.name)}</span></td>
+        const rt = st.retry ? '<span class="st-retry">やりなおし</span>' : '';
+        return `<tr><td class="gcol"><span class="gchip" style="--g:${g.col}">${g.mark}</span></td><td>${st.name}<span class="st-kana">${kanaOf(st.name)}</span>${rt}</td>
         <td style="color:${g.col}">${errTxt(st.err)}</td>
         <td class="${st.late > 30 ? 'bad' : ''}">${st.late > 3 ? st.late + 'びょう' : 'ぴったり'}</td></tr>`;
       }).join('');
@@ -1659,13 +2138,28 @@ const App = {
     else if (best.segBest) { rb.className = 'res-best info'; rb.textContent = 'この くかんの はじめての きろく'; }
     else { rb.className = 'res-best info'; rb.textContent = `この くかんの ベスト ${ps.total}てん (${ps.rank})`; }
     const ng = this._nextGoal(res);
-    $('#res-next').innerHTML = ng ? `<span class="rn-cap">つぎの めあて</span>${ng}` : '';
+    $('#res-next').innerHTML = ng
+      ? `<span class="rn-cap">つぎの めあて</span><span class="rn-txt">${ng.html}</span>${ng.max ? this._progHtml({ cur: ng.cur, max: ng.max }) : ''}`
+      : '';
     $('#res-next').classList.toggle('hidden', !ng);
-    /* この運転でもらったスタンプ */
+    /* この運転でもらったスタンプ(96px。下に ランクの ことば) */
     const rs = $('#res-stamps');
     if (this.runStamps.length) {
       rs.innerHTML = `<p>もらった えきスタンプ ${this.runStamps.length}こ</p>`;
-      this.runStamps.slice(0, 8).forEach((r, i) => { const cv = document.createElement('canvas'); drawStamp(cv, r.name, { tier: r.tier, size: 72, seed: i }); rs.appendChild(cv); });
+      const row = document.createElement('div');
+      row.className = 'rst-row';
+      this.runStamps.slice(0, 6).forEach((r, i) => {
+        const it = document.createElement('span');
+        it.className = 'rst t' + r.tier;
+        const cv = document.createElement('canvas');
+        drawStamp(cv, r.name, { tier: r.tier, size: 96, seed: i });
+        const w = document.createElement('span');
+        w.className = 'rst-w';
+        w.textContent = TIER_WORD[r.tier] || '';
+        it.append(cv, w);
+        row.appendChild(it);
+      });
+      rs.appendChild(row);
       rs.classList.remove('hidden');
     } else rs.classList.add('hidden');
     const rbg = $('#res-badges');
@@ -1737,9 +2231,11 @@ const App = {
     const now = performance.now();
     const dt = Math.min(0.1, (now - (this._lastT || now)) / 1000);
     this._lastT = now;
-    if (!this.scene) return;
+    /* WebGLの 文脈が きえている あいだは 描かない(ui/glguard.js が 作りなおして もどす) */
+    if (!this.scene || this._glLost) return;
+    const S = this.scene;
     const m = this.mode;
-    let busy = false;
+    let busy = false, cpuMs = 0;
     if (m === 'drive') {
       if (!this.sim || !this.running && !this.sim.ended) { this._render(0); return; }
       if (this.running && !this.paused) {
@@ -1748,51 +2244,91 @@ const App = {
           if (this._auto) this._auto();
           this.sim.tick(dt);
         }
-        if (this.audio) this.audio.update(this.sim, dt, this.scene.audioEnv());
-        if (this.rainGlass) this.rainGlass.render(dt, this.sim.v, this.scene.cockpit, this.scene._inTunnelNow);
+        if (this.audio) this.audio.update(this.sim, dt, S.audioEnv());
+        if (this.rainGlass) this.rainGlass.render(dt, this.sim.v, S.cockpit, S._inTunnelNow);
       }
+      const c0 = performance.now();
       if (!this.paused) this._render(dt);
       else {
         /* ポーズ中は 止まった絵なので、入ったときと 画面の大きさが かわったときに 1回だけ描く */
         busy = true;
-        if (this._pauseDirty) { this._pauseDirty = false; this._render(0); }
+        if (this._pauseDirty && !S._warming) { this._pauseDirty = false; this._render(0); }
       }
       const h = this.sim.hud();   // 1フレームに1回だけ計算して計器とHUDで使う
-      if (typeof this.cab.setLight === 'function' && this.scene.cockpit) this.cab.setLight(this.scene.cockpit.light);
-      this.cab.render(h);
+      /* コーチが 先(計器が コーチと おなじ 数字・おなじ「いま ブレーキ」を 出す: h.uiLimAt / h.uiBrakeNow) */
       this._updateCoach(h);
+      if (typeof this.cab.setLight === 'function' && S.cockpit) this.cab.setLight(S.cockpit.light);
+      this.cab.render(h);
+      cpuMs = performance.now() - c0;
+      this._updatePin(h);
     } else if (m === 'title') {
-      /* タイトルは 3Dが 主役なので 毎フレーム */
-      if (!document.hidden) {
-        this._attractTick(dt);
-        this._render(dt);
-      }
-    } else if (m === 'result' || m === 'select' || m === 'stamps') {
-      /* ほぼ不透明な画面の うしろ: デモ走行は 毎フレーム すすめ、3Dは 3フレームに1回(約20fps)だけ 描く */
+      /* タイトルは 3Dが 主役。タッチ端末は 2コマに1回(約30fps)にして 熱を おさえる(運転の ために) */
       busy = true;
       if (!document.hidden) {
-        if (m !== 'result') this._attractTick(dt);
+        this._attractTick(dt);
+        this._tAcc = (this._tAcc || 0) + dt;
+        this._tN = ((this._tN || 0) + 1) % 2;
+        if (!this._touch || this._tN === 0 || this._bdFrames > 0) {
+          this._render(Math.min(0.1, this._tAcc));
+          this._tAcc = 0;
+          if (this._bdFrames > 0) this._bdFrames--;
+        }
+      }
+    } else if (m === 'select') {
+      /* 列車えらび: ほぼ不透明な画面の うしろ。デモ走行は 毎フレーム すすめ、3Dは 6コマに1回(約10fps) */
+      busy = true;
+      if (!document.hidden) {
+        this._attractTick(dt);
         this._ovAcc = (this._ovAcc || 0) + dt;
-        this._ovN = ((this._ovN || 0) + 1) % 3;
-        if (this._ovN === 0) { this._render(Math.min(0.1, this._ovAcc)); this._ovAcc = 0; }
+        this._ovN = ((this._ovN || 0) + 1) % 6;
+        if ((this._ovN === 0 || this._bdFrames > 0) && !S._warming) {
+          this._render(Math.min(0.1, this._ovAcc));
+          this._ovAcc = 0;
+          if (this._bdFrames > 0) this._bdFrames--;
+        }
+      }
+    } else if (m === 'result' || m === 'stamps') {
+      /* 成績票・スタンプちょう: うしろの 3Dは 止まった絵。入ったとき(2コマ)と、大きさが かわったとき・
+       * 画面に もどったとき(_pauseDirty)だけ 描く */
+      busy = true;
+      if (!document.hidden) {
+        if (m === 'stamps') this._attractTick(dt);
+        if ((this._pauseDirty || this._bdFrames > 0) && !S._warming) {
+          this._pauseDirty = false;
+          if (this._bdFrames > 0) this._bdFrames--;
+          this._render(0);
+        }
       }
     }
-    /* fpsが持続的に低ければ自動で描画負荷を下げる(間引いて描く画面・ポーズ中は はからない) */
-    if (typeof this.scene.autoQualityTick === 'function') {
+    /* fpsが持続的に低ければ自動で描画負荷を下げる。はかるのは 運転台視点で 運転しているときだけ
+     * (メニュー・タイトル・ほかの視点・ポーズ・暗転・はじまって5秒は はからない)。cpuMs は 描画+計器+コーチの JS 時間 */
+    if (typeof S.autoQualityTick === 'function') {
       if (!this._fast && !this.debug) {
         const fadeOn = (this._fadeEl || (this._fadeEl = $('#fade'))).classList.contains('on');
-        this.scene.autoQualityTick(dt, { busy: busy || fadeOn || now - (this._runT0 || 0) < 5000 });
+        const b = busy || fadeOn || now - (this._runT0 || 0) < 5000 || !(m === 'drive' && S.camMode === 'cab');
+        S.autoQualityTick(dt, { busy: b, cpuMs });
       }
     } else if (!busy) {
       this._fpsT = (this._fpsT || 0) + dt;
       if (this._fpsT > 6) {
         this._fpsT = 0;
-        if (this.scene.fps && this.scene.fps < 33 && !this._fast && !this.debug) {
-          const what = this.scene.stepDownQuality();
-          if (what) console.log('[auto-quality] step down:', what, 'fps=', Math.round(this.scene.fps));
+        if (S.fps && S.fps < 33 && !this._fast && !this.debug) {
+          const what = S.stepDownQuality();
+          if (what) console.log('[auto-quality] step down:', what, 'fps=', Math.round(S.fps));
         }
       }
     }
+  },
+
+  /* 「8」の目印(ui/stoppin.js): 運転台視点・ガイドあり・ドアが しまっている・いきすぎパネルも 判定カードも ないとき */
+  _updatePin(h) {
+    const P = this._pin;
+    if (!P) return;
+    const S = this.scene;
+    const card = this._bh ? this._bh.card : $('#stop-card');
+    const show = !!this.settings.guide && S.camMode === 'cab' && !h.doorOpen && !this._overrun && !this.paused
+      && card.classList.contains('hidden');
+    try { P.update(S.stopPin || null, show); } catch (e) { /* 目印なしでも 運転できる */ }
   },
 
   /* ================= デバッグ(?debug=1) ================= */
@@ -1807,15 +2343,34 @@ const App = {
         if (c.weather) this.weather = c.weather;
         if (c.daytime) this.daytime = c.daytime;
         if (c.dir) this.direction = c.dir;
-        this.line = prepareLine(this.rawLine, this.direction);
+        /* おなじ むきなら いまの 3Dの 路線を つかう(ゲームの 出発と おなじ。ワールドを 作りなおさない) */
+        this._useLine(this.direction);
         this.endIdx = c.end != null ? c.end : null;
         this.startIdx = c.start || 0;
         await this.startDrive(true);
       },
       cam: (m) => { this.camIdx = CAM_MODES.indexOf(m); this._setCam(m); },
       go: (m) => this.go(m),
-      /* 3Dを描いた回数(メニューの うしろが 約20回/秒に なっているかの 確認用) */
+      /* 3Dを描いた回数(メニューの うしろが 間引かれているかの 確認用) */
       renders: () => this._rc || 0,
+      /* 間引いて描く画面(成績票・スタンプちょう・ポーズ)でも つぎの コマを 1回 描かせる */
+      redraw: () => { this._pauseDirty = true; },
+      /* 撮影用: しゅっぱつカード(暗転の中)を 出す / しまう */
+      fadeCard: (on) => {
+        const f = $('#fade');
+        if (on) { this._fillFadeCard(); clearTimeout(this._cardT); f.classList.add('card'); f.classList.add('on'); }
+        else { f.classList.remove('on'); f.classList.remove('card'); f.classList.remove('slow'); }
+      },
+      /* WebGLの 文脈を わざと なくし、0.5秒後に もどす(立ちなおりの 確認用) */
+      loseGL: () => {
+        const r = this.scene && this.scene.renderer;
+        const gl = r ? r.getContext() : null;
+        const ext = gl ? gl.getExtension('WEBGL_lose_context') : null;
+        if (!ext) return false;
+        ext.loseContext();
+        setTimeout(() => { try { ext.restoreContext(); } catch (e) { /* もう 作りなおした */ } }, 500);
+        return true;
+      },
       /* 撮影・確認用: 「8」を m メートル すぎた ところで 止まった ことにする(大オーバーランの パネルを出す) */
       overrun: (m = 15.2) => {
         const sim = this.sim, st = sim.stops[sim.stopIdx];
