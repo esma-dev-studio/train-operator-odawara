@@ -1091,9 +1091,10 @@ export class RailScene {
     const kE = this._kE != null ? this._kE : k;
     const boost = Math.min(2, 1 + 0.9 * (1 - kE));
     this.sun.intensity = L.sun[0] * k;
-    /* 空の光: トンネルの中は灯りの照り返しのような灰色の明かりを足す(壁・天井が真っ黒につぶれない)。
+    /* 空の光: トンネル・ターミナルの中は灯りの照り返しのような灰色の明かりを足す(壁・天井が真っ黒につぶれない。
+     * 出口で急に消えないよう k だけで決める。ターミナルは天井の灯りが多いので控えめに)。
      * 晴れの夜は、都心はビルで空がかくれて少し暗く、郊外は空が広くて明るい(_glowK: 0=都心 1=郊外) */
-    const fill = (k < 1 && !this._inTerminal(this._camS, 30)) ? 0.7 * (1 - k) : 0;   // 出口で急に消えないよう k だけで決める
+    const fill = k < 1 ? (this._inTerminal(this._camS, 30) ? 0.35 : 0.7) * (1 - k) : 0;
     const open = L.key === 'night' ? 0.85 + 0.4 * this._glowK : 1;
     this.hemi.intensity = L.hemi[0] * k * open + fill;
     this.hemi.color.copy(this._hemiSky).lerp(this._hemiInSky, 1 - k);

@@ -266,8 +266,9 @@ float wxVN( vec2 p ) {
 /* 水たまり(雨の日の平らな舗装: ホーム・犬走り・道路・街の地面)。暗くなって、空を鏡のように映す */
 const WX_PUD = `
     if ( uPud > 0.0 ) {
-      wxPud = uWet * uPud * smoothstep( 0.6, 0.7, 0.7 * wxVN( vWxP.xz * 0.25 ) + 0.3 * wxVN( vWxP.xz * 0.9 ) ) * smoothstep( 0.96, 0.99, wxNrm.y );
-      diffuseColor.rgb *= 1.0 - 0.55 * wxPud;
+      /* 2m ほどの大きさのまだらな水たまり(全体の2割ほど) */
+      wxPud = uWet * smoothstep( 0.62, 0.7, 0.7 * wxVN( vWxP.xz * 0.5 ) + 0.3 * wxVN( vWxP.xz * 1.7 ) ) * smoothstep( 0.96, 0.99, wxNrm.y );
+      diffuseColor.rgb *= 1.0 - 0.7 * wxPud;
     }`;
 /* 地面(芝)用: 大きなムラ+遠くの色寄せ、雪は芝の模様を雪の凹凸として残す */
 const WX_MACRO = `
@@ -332,7 +333,7 @@ const WX_PRE = `
 const WX_ROUGH = `
   roughnessFactor = mix( roughnessFactor, 0.18, wxWet * wxUp * 0.85 );
   roughnessFactor = mix( roughnessFactor, 0.85, wxCov );
-  roughnessFactor = mix( roughnessFactor, 0.04, wxPud * ( 1.0 - wxCov ) );`;
+  roughnessFactor = mix( roughnessFactor, 0.03, wxPud * ( 1.0 - wxCov ) );`;
 /* 霧: three の標準の式に、太陽の方向ほど明るい霧(夕方の照り返し)を足す。uFogSun が0なら標準と同じ */
 const WX_FOG = `
 #ifdef USE_FOG
@@ -364,6 +365,9 @@ export function makeWeatherUniforms() {
  * m.userData.puddle なら水たまりができる(材質ごとの値 m.userData.wxPudU.value。あとから0/1を変えてもよい) */
 export function installWeather(m, U) {
   if (!m || !m.isMeshStandardMaterial || m.userData.wx || m.userData.noWeather) return false;
+  /* 古い作り方の U(この部品より前の makeWeatherUniforms)でも動くよう、足りない値は足しておく */
+  const D = makeWeatherUniforms();
+  Object.keys(D).forEach((k) => { if (!U[k]) U[k] = D[k]; });
   const macro = !!(m.userData.wxMacro && m.map && U.uWxMacro.value);
   const prev = m.onBeforeCompile, base = m.customProgramCacheKey();
   if (!m.userData.wxPudU) m.userData.wxPudU = { value: m.userData.puddle ? 1 : 0 };
