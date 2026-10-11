@@ -1505,8 +1505,9 @@ export function buildRiver(rs, o = {}) {
   const e1 = (i) => quadOffAt(i * step, 1, qi);
   const fr = newFrame();
   const members = [], blocks = [];
-  /* 部材の明るさ(インスタンス色): 弦材・床桁は1割暗く、ガセット・手すりは少しだけ */
-  const CH = 0.9, GU = 0.94;
+  /* 部材の明るさ(インスタンス色): 弦材・床桁は見た目で1割暗く、ガセットは少しだけ。
+   * インスタンス色はリニアで掛かるので、見た目(sRGB)の割合を2.2乗して入れる */
+  const CH = Math.pow(0.9, 2.2), GU = Math.pow(0.94, 2.2);
   const rail = [];      // 点検通路の手すり(線): [始点, 終点, 太さm]
   const node = (s, off, y) => { frameInto(F, step, s, fr); return new THREE.Vector3().copy(fr.p).addScaledVector(fr.left, off).setY(fr.p.y + y); };
   const block = (s, off, y, sx, sy, sz) => {
@@ -1578,7 +1579,7 @@ export function buildRiver(rs, o = {}) {
         }
         /* 端の門構(橋門構): 径間の両はしの上の節点に、横に深さ0.9mの板の梁+両はしの方づえ */
         for (const sP of [a + P / 2, a + (np - 0.5) * P]) {
-          members.push([node(sP, pl, YT - 0.9), node(sP, pr, YT - 0.9), 0.22, 0.9, CH]);
+          members.push([node(sP, pl, YT - 0.9), node(sP, pr, YT - 0.9), 0.22, 0.9, 1]);
           const dIn = Math.sign(pr - pl);
           members.push([node(sP, pl, YT - 2.7), node(sP, pl + dIn * 1.6, YT - 1.35), 0.2, 0.2, 1]);
           members.push([node(sP, pr, YT - 2.7), node(sP, pr - dIn * 1.6, YT - 1.35), 0.2, 0.2, 1]);
