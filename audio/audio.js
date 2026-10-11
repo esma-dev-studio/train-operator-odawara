@@ -590,7 +590,9 @@ export class CabAudio {
         break;
       case 'arrived': {
         /* 停止位置の判定チャイム(ドアの音と重ならないよう少しおくらせる) */
-        const e = Math.abs(Number(d.err));
+        /* 判定カード・スタンプと おなじ値で くらべる(エンジンが きろくに のこす 1cm単位の 丸め。
+         * 丸めてから 絶対値: 負の 0.5cm でも エンジンと おなじ 丸めかたになる) */
+        const e = Math.abs(Math.round(Number(d.err) * 100) / 100);
         /* ±10cm以内(金)は いちばん高い4音 'stopGold' */
         const name = !Number.isFinite(e) ? null : e <= 0.10 ? 'stopGold' : e <= 0.35 ? 'stopPerfect' : e <= 1 ? 'stopGood' : 'stopNg';
         /* 判定カードの輪が出る(約0.55秒)のと同じ瞬間に鳴らす */

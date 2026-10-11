@@ -63,6 +63,12 @@ const $ = (s) => document.querySelector(s);
 const SAVE_KEY = 'trainop_v2';
 const SET_KEY = 'trainop_settings';
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+/* 1コマ まつ(裏に いて requestAnimationFrame が こないときも 0.1秒で すすむ) */
+const nextTick = () => Promise.race([nextFrame(), wait(100)]);
+/* 発車メロディの ながさ(audio の renderMelody と おなじ 4.6秒)。鳴っている あいだは「はやく しゅっぱつ」を 出さない */
+const MELODY_SEC = 4.6;
+/* メロディが 鳴っている(または つぎのコマで 鳴る)あいだか */
+const melodyPlaying = (sim) => typeof sim._melodyAt === 'number' && sim.t >= sim._melodyAt && sim.t < sim._melodyAt + MELODY_SEC;
 const store = {
   get(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 保存できなくても続行 */ } },
@@ -120,6 +126,10 @@ const App = {
     /* デモ走行の列車と3Dステージ。
      * 少しずつ作れる(setWorldAsync)ときは、ワールドを あとから 作り、進みぐあいを 路線の帯に出す */
     this.attract = this._makeAttract();
+    /* 起動中(ui/glguard.js を 入れる まえ)に WebGLの文脈が 消えたかを おぼえておく。
+     * もどって きても 環境光などは からっぽなので、glguard を 入れたときに ステージを 作りなおす */
+    const glWrap = $('#gl-wrap');
+    if (glWrap) glWrap.addEventListener('webglcontextlost', (ev) => { if (!this._glGuard && ev.target && ev.target.id === 'gl') this._bootLost = true; }, true);
     try {
       this.scene = new RailScene($('#gl'), this.attract.line, this.attract.sim, {
         quality: this.quality, timeOfDay: this.attract.tod, weather: 'clear',
@@ -153,7 +163,9 @@ const App = {
      * 少しずつ作れる(prewarmAsync)なら 待つ(帯を すすめる)。15秒は 止まったときの 保険 */
     const S = this.scene;
     if (typeof S.prewarmAsync === 'function') {
-      try { await Promise.race([S.prewarmAsync((k) => this.setLoad(0.9 + 0.1 * k)), wait(15000)]); } catch (e) { /* 先読みできなくても続行 */ }
+      try { await Promise.race([S.prewarmAsync((k) => this.setLoad(0.9 + 0.1 * k), 13000), wait(15000)]); } catch (e) { /* 先読みできなくても続行 */ }
+      /* 時間ぎれで もどっても まだ 準備中(描かない)なら、おわるまで よみこみ画面のまま */
+      await this._waitWarm(12000);
     } else if (S.prewarm) { try { S.prewarm(); } catch (e) { /* 先読みできなくても続行 */ } }
     this.setLoad(1, 'じゅんび OK');
     this._installHudMods();
@@ -338,7 +350,7 @@ const App = {
     const S0 = this.scene;
     const heavy = !!this._qualityDirty || (S0 && (S0.line !== nextLine || S0.timeOfDay !== A.tod || S0.weather !== 'clear'));
     if (!heavy || prev === 'boot') {
-      if (this._qualityDirty) this._rebuildScene();
+      if (this._qualityDirty && !this._tryRebuild()) return;
       this._enterAttract();
       return;
     }
@@ -348,25 +360,74 @@ const App = {
     const tok = (this._swapTok = (this._swapTok || 0) + 1);
     clearTimeout(this._retSlowT);
     this._retSlowT = setTimeout(() => { if (tok === this._swapTok && !this._starting) fade.classList.add('slow'); }, 700);
+    const menu = () => this.mode === 'title' || this.mode === 'select' || this.mode === 'stamps';
     nextFrame().then(nextFrame).then(async () => {
       if (tok !== this._swapTok) return;
       try {
-        if (this.mode === 'title' || this.mode === 'select' || this.mode === 'stamps') {
-          if (this._qualityDirty) this._rebuildScene();
+        if (menu()) {
+          if (this._qualityDirty) {
+            if (!this._tryRebuild()) return;
+            /* 新しいステージの ワールドと空は 暗転の中で 少しずつ 作る(いっきに 作ると 数秒 かたまる) */
+            const S1 = this.scene;
+            if (typeof S1.setWorldAsync === 'function') {
+              let broken = false;
+              try { await S1.setWorldAsync(A.line, A.sim); } catch (e) { broken = true; }
+              /* 待つあいだに 出発した(startDrive が この ステージを ととのえる)・べつの 作りなおしが きた */
+              if (tok !== this._swapTok || this.scene !== S1 || !menu()) return;
+              /* 作りかけで 止まった: 路線を わすれさせて、すぐ下の setWorld(_enterAttract)で いっきに 作りなおす */
+              if (broken) S1.line = null;
+            }
+          }
           this._enterAttract();
           /* 新しいステージ(文脈)・新しい じかんや天気は シェーダが からっぽ。暗いうちに 作っておく
            * (明けてから render の 先読みで 画面が かたまらないように。10秒は 止まったときの 保険) */
           const S = this.scene;
           if (S && typeof S.prewarmAsync === 'function') {
             try { await Promise.race([S.prewarmAsync(), wait(10000)]); } catch (e) { /* noop */ }
+            /* 時間ぎれで もどっても 準備中(描かない)なら、おわるまで 暗転のまま */
+            await this._waitWarm(12000);
           } else if (S && S.prewarm) { try { S.prewarm(); } catch (e) { /* noop */ } }
           this._pauseDirty = true;
         }
       } finally {
         clearTimeout(this._retSlowT);
-        if (tok === this._swapTok && !this._starting) { fade.classList.remove('on'); fade.classList.remove('slow'); }
+        /* WebGLの 立ちなおり中(ui/glguard.js)は 暗転を のこす(作りなおしてから glguard が 明ける) */
+        if (tok === this._swapTok && !this._starting && !this._glLost) { fade.classList.remove('on'); fade.classList.remove('slow'); }
       }
     });
+  },
+
+  /* 画質の 作りなおし。作れなかった(WebGLの文脈が とれない など)ときは ui/glguard.js の 立ちなおり
+   * (暗転のまま 少しあとで もういちど)に まかせて false */
+  _tryRebuild() {
+    try {
+      this._rebuildScene();
+      return true;
+    } catch (e) {
+      console.warn('[rebuild] failed', e);
+      this._handOffGl();
+      return false;
+    }
+  },
+
+  /* WebGLの文脈が つかえない: ui/glguard.js に「消えた」と しらせる(暗転・一時停止・少しあとで 作りなおし)。
+   * glguard が ないときは false */
+  _handOffGl() {
+    const G = this._glGuard;
+    if (!G || typeof G.markLost !== 'function') return false;
+    try { G.markLost(1500); } catch (e) { return false; }
+    return true;
+  },
+
+  /* シェーダの準備(prewarmAsync)を 時間で 切りあげても、ステージが まだ 準備中(_warming: 描かない)なら
+   * おわるまで まつ(1コマずつ みる。maxMs は 止まったときの 保険)。暗転を 明ける まえに つかう */
+  async _waitWarm(maxMs) {
+    const t0 = performance.now();
+    while (performance.now() - t0 < maxMs) {
+      const S = this.scene;
+      if (!S || !S._warming || this._glLost) return;
+      await nextTick();
+    }
   },
 
   /* ================= 画面遷移 ================= */
@@ -880,21 +941,31 @@ const App = {
     if (this.audio && typeof this.audio.cue === 'function') { try { this.audio.cue(name, gain, rate); } catch (e) { /* noop */ } }
   },
 
-  /* 画質の変更はステージを作り直す(タイトルに戻ったとき) */
+  /* 画質の変更はステージを作り直す(タイトルに戻ったとき。ui/glguard.js の 立ちなおりでも つかう)。
+   * 新しいステージの ワールドと空は あとから 少しずつ(setWorldAsync があるとき): 呼んだ側が 暗転の中で
+   * setWorldAsync を 待つか、setWorld(_enterAttract)で 作る(コンストラクタで いっきに 作ると 数秒 かたまる)。
+   * 作れなかった(WebGLの文脈が とれない など)ときは 投げる(キャンバスも this.scene も 入れかえない) */
   _rebuildScene() {
     this._qualityDirty = false;
     this.quality = this._qp || this.settings.quality || this._defQuality();
+    const S0 = this.scene;
+    /* 古いステージが 少しずつ 作っている とちゅう(ワールド・シェーダの準備・空)なら やめさせる
+     * (死んだ文脈の ために ワールドを もう1つ 作りつづけない) */
+    if (S0 && typeof S0.cancelAsync === 'function') { try { S0.cancelAsync(); } catch (e) { /* noop */ } }
     /* 同じキャンバスに作り直すと古いGPU資源が残るので、文脈ごと捨てて新しいキャンバスにする */
-    try { this.scene.renderer.forceContextLoss(); this.scene.renderer.dispose(); } catch (e) { /* noop */ }
-    const old = $('#gl');
-    const cv = old.cloneNode(false);
-    old.replaceWith(cv);
+    try { S0.renderer.forceContextLoss(); S0.renderer.dispose(); } catch (e) { /* noop */ }
+    const oldCv = $('#gl');
+    const cv = oldCv.cloneNode(false);
     const A = this.attract;
     this._attractLine(A, this.line);   // 新しいステージは さいしょから プレイヤーの路線で(2回 作らない)
-    this.scene = new RailScene(cv, A.line, A.sim, {
+    const scene = new RailScene(cv, A.line, A.sim, {
       quality: this.quality, timeOfDay: A.tod, weather: 'clear', autoQ: !this._qp && !this.settings.quality,
       debug: this.debug,
+      deferWorld: typeof RailScene.prototype.setWorldAsync === 'function',
     });
+    /* 作れてから 入れかえる */
+    oldCv.replaceWith(cv);
+    this.scene = scene;
     this.scene.guide = this.settings.guide;
     this.scene.setCameraMode(this._attractSeq(A)[A.camI] || 'chase');
     this._bd = null;
@@ -1020,7 +1091,9 @@ const App = {
     $('#btn-overrun-retry').addEventListener('click', () => this._retryApproach());
     /* このまま つぎの駅へ: その駅は ×(0てん)で とうちゃく あつかいにして、ドアを あける */
     $('#btn-overrun-go').addEventListener('click', () => {
-      if (!this._overrun) return;
+      /* 「もういちど とめる」の 暗転中(0.25秒)は むし(2つの ボタンを つづけて おすと、とうちゃく あつかいの あとで
+       * まえの駅からの やりなおしに なり、それまでの きろくが きえる) */
+      if (!this._overrun || this._retrying) return;
       this._setOverrun(false);
       /* acceptOverrun は とうちゃく あつかいに する(先に よぶ)。しゅうてんでは そのまま 成績票へ すすむので、ひとことは 出さない */
       if (this.sim && typeof this.sim.acceptOverrun === 'function' && this.sim.acceptOverrun() && !this.sim.finished) {
@@ -1059,7 +1132,10 @@ const App = {
     /* はやく しゅっぱつ: メロディは のこす(ならし おわったら ドアが しまる)。エンジンが 古いときは すぐ しまる */
     $('#btn-skip').addEventListener('click', () => {
       if (!canOp()) return;
-      const keep = typeof this.sim.retryApproach === 'function';
+      /* メロディが 鳴っている あいだは むし(2回 おすと ドアチャイム・戸じめが メロディに かさなる) */
+      if (melodyPlaying(this.sim)) return;
+      /* メロディを のこせるのは まだ 鳴らしていない ときだけ(鳴りおえていたら すぐ しまる) */
+      const keep = typeof this.sim.retryApproach === 'function' && !this.sim._melodyDone;
       if (this.sim.skipDwell({ keepMelody: true })) this.flashMsg(keep ? 'メロディが おわったら ドアが しまるよ' : 'ドアが しまります！', 1600);
     });
 
@@ -1167,20 +1243,30 @@ const App = {
       await wait(380);
       /* 先に 運転画面に する(メニューの 画面を けして カードを 見せる。運転は beginRun まで はじまらない) */
       this.go('drive');
-      /* むきが かわる(ワールドの 作りなおし)ときは、少しずつ 作る(暗転の中で。beginRun の setWorld は 軽い道すじになる) */
-      if (S0 && S0.line !== this.line && typeof S0.setWorldAsync === 'function') {
+      /* むきが かわる(ワールドの 作りなおし)ときは、少しずつ 作る(暗転の中で。beginRun の setWorld は 軽い道すじになる)。
+       * 作りかけで 止まっている ステージ(_worldOk === false)も 作りなおす */
+      let yieldOne = true;
+      if (S0 && (S0.line !== this.line || S0._worldOk === false) && typeof S0.setWorldAsync === 'function') {
         try {
           const pre = new TrainSim(this.line, { service: this.service, weather: this.weather, timetable: this.timetable, endIdx: this.endIdx });
           pre.reset(Math.min(this.startIdx, pre.stops.length - 2));
           await S0.setWorldAsync(this.line, pre);
-        } catch (e) { /* beginRun の setWorld で 作る */ }
+        } catch (e) {
+          /* 作りかけで 止まった: 路線を わすれさせて、beginRun の setWorld で いっきに 作りなおす
+           * (同じ路線と みて 作りなおさないと、街や ほかの列車が ない ワールドで はしる) */
+          if (this.scene === S0) S0.line = null;
+        }
+        /* 作りおえた すぐあとに 1コマ ゆずると、loop の render が 新しいワールドの シェーダを その場で
+         * ぜんぶ 作って(prewarm(true)) 止まる。そのまま beginRun → prewarmAsync へ(あいだに コマを はさまない。
+         * 路線を わすれさせた ときも 路線なしで 描かない) */
+        yieldOne = false;
       }
-      await nextFrame();
+      if (yieldOne) await nextFrame();
       this.beginRun(this.startIdx);
       /* シェーダーの先読み: 少しずつ作れるなら(prewarmAsync) 待つ。ないときは いっきに。
-       * prewarmAsync は 中で 空まち3秒+コンパイルまち6秒までに おさえてある。ここの 10秒は そのうえの 保険
-       * (中より 先に 切ると、描画が 止まったまま 運転が はじまってしまう)。
-       * 待つあいだは 時計を止める(暗いうちに 発車までの びょうが へらない) */
+       * prewarmAsync は 中で 空まち3秒+コンパイル(または 分けて準備)まち 約8.5秒までに おさえてある。ここの 10秒は そのうえの 保険。
+       * 保険で 先に 切れても、まだ 準備中(描かない)なら 下で おわるまで 暗転のまま まつ
+       * (描画が 止まったまま 運転が はじまらない)。待つあいだは 時計を止める(暗いうちに 発車までの びょうが へらない) */
       this.running = false;
       const S = this.scene;
       if (typeof S.prewarmAsync === 'function') {
@@ -1194,15 +1280,27 @@ const App = {
       /* カードを 読める ように、はやい 端末でも 1.3秒(もういちど・つづきは 0.6秒)は 見せる */
       const hold = (again ? 600 : 1300) - (performance.now() - tCard);
       if (hold > 0) await wait(hold);
+      /* WebGLの 文脈が きえて ui/glguard.js が 作りなおし中なら、おわるまで 暗転のまま まつ
+       * (glguard は 出発の じゅんび中(_starting)は 暗転を 明けない。ここで 明けると 描けない画面が 出る) */
+      const tLost = performance.now();
+      while (this._glLost && performance.now() - tLost < 60000) await wait(100);
+      await this._waitWarm(12000);
       if (this.mode === 'drive' && this.sim && !this.sim.ended) this.running = true;
       this._runT0 = performance.now();
       await nextFrame();   // 運転台の さいしょの1コマが 描けてから 明ける
+      if (this._glLost) {
+        /* 作りなおしが まだ おわらない(または いま 消えた): 暗転は glguard が 作りなおしてから 明ける。
+         * 運転は 一時停止で まつ(明けたら ポーズの メニューから つづける) */
+        if (this.running && !this.paused) this.setPaused(true);
+        return;   // finally は とおる(_starting を おろす)
+      }
       fade.classList.remove('on');
     } finally {
       this._starting = false;
       clearTimeout(this._slowT);
       const f = $('#fade');
-      f.classList.remove('slow');
+      /* glguard の 作りなおし中は「じゅんび中」の 棒を のこす */
+      if (!this._glLost) f.classList.remove('slow');
       /* カードは 暗転が 明けきってから はずす(明けている とちゅうで 消えない) */
       clearTimeout(this._cardT);
       this._cardT = setTimeout(() => { if (!this._starting) f.classList.remove('card'); }, 500);
@@ -1939,7 +2037,9 @@ const App = {
     /* しゅっぱつスキップボタン(コーチの中。まだ待ち時間があるときだけ)。
      * とうちゃくの お祝い(判定カード)の あいだは 出さない(お祝いを タップして とばしてしまう) */
     const celebrating = now <= (this._celebrateUntil || 0) || !B.card.classList.contains('hidden');
-    const canSkip = !celebrating && !this._overrun && h.doorOpen && ((nx ? nx.dep : sim._departTime) - sim.t) > 7;
+    /* 発車メロディが 鳴っている あいだも 出さない(「メロディが おわったら しまる」の あとに もういちど おして
+     * メロディの とちゅうで ドアチャイムが なり、ドアが しまって しまう) */
+    const canSkip = !celebrating && !this._overrun && h.doorOpen && ((nx ? nx.dep : sim._departTime) - sim.t) > 7 && !melodyPlaying(sim);
     setHidden(B.skip, !canSkip);
     this._updateBrakeGuide(h);
     this._updateRouteStrip();
@@ -1978,10 +2078,12 @@ const App = {
     fade.classList.add('on');
     try {
       await wait(250);
-      if (this.sim !== sim || this.mode !== 'drive') return;
+      /* 待つあいだに いきすぎが ほかの 道で おわった(とうちゃく あつかい など)ときは なにも しない */
+      if (this.sim !== sim || this.mode !== 'drive' || !this._overrun) return;
       this._setOverrun(false);
-      /* エンジンが もどせなかった(ドアが あいた など)ときは まえの駅から */
-      if (sim.retryApproach(180) === false) { this.retryStation(); return; }
+      /* エンジンが もどせなかったときは まえの駅から(ドアが あいた・しゅうてんで おわった ときは やりなおさない:
+       * それまでの きろくや 成績票を けさない) */
+      if (sim.retryApproach(180) === false) { if (!sim.doorOpen && !sim.finished) this.retryStation(); return; }
       if (this.audio && typeof this.audio.resetRun === 'function') this.audio.resetRun(sim);
       this.scene._camPos = null;
       if (this.scene.traffic) this.scene.traffic.reset(sim);
@@ -1995,7 +2097,7 @@ const App = {
       this.flashMsg('「8」の 180m てまえから もういちど', 2200);
     } finally {
       this._retrying = false;
-      if (!this._starting) fade.classList.remove('on');
+      if (!this._starting && !this._glLost) fade.classList.remove('on');   // WebGLの 立ちなおり中は glguard が 明ける
     }
   },
 

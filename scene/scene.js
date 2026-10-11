@@ -502,6 +502,8 @@ export class RailScene {
     this._frB = newFrame();
     this._shadowDirty = true;
     this._shadowHold = 0;
+    this._shAge = 0;                 // 前に影を描いてからの時間(秒)。中画質で動いている間は 1秒30回まで(_updateShadow)
+    this._dead = false;              // 捨てたステージ(cancelAsync)。少しずつの作業は つぎの確認で やめる
     this._backdrop = false;          // メニュー・一時停止の背景(影もブルームも止める)
     this._staleMats = [];            // 作り直しで外した材質(次の準備のあとで捨てる=同じシェーダを使い回す)
     this._staleTex = [];
@@ -735,6 +737,7 @@ export class RailScene {
   /* 路線(方向)が変わったときはワールドを作り直す。同じ路線なら信号(種別で変わる)だけ。
    * 作り直しは _worldSteps の手順を順に(ここでは一気に)。setWorldAsync は同じ手順を1コマずつ */
   setWorld(line, sim) {
+    if (this._dead) return;   // 捨てたステージには もう作らない
     /* 少しずつ作っている途中(setWorldAsync)に呼ばれた: 同じ路線なら残りをここで一気に作ってから、ちがえば作りなおし */
     if (this._buildQ) {
       const q = this._buildQ;
@@ -848,6 +851,8 @@ export class RailScene {
    * 同じ路線なら setWorld と同じ軽い道ですぐ終わる */
   async setWorldAsync(line, sim, onProgress) {
     const prog = typeof onProgress === 'function' ? onProgress : null;
+    /* 捨てたステージ(cancelAsync)には もう作らない */
+    if (this._dead) { if (prog) prog(1); return; }
     if (!this._buildQ && line === this.line && this.world.children.length) {
       this.setWorld(line, sim);
       if (prog) prog(1);
@@ -856,6 +861,7 @@ export class RailScene {
     /* もう同じ路線を作っている途中なら、そちらが終わるのを待つ */
     if (this._buildQ && line === this._buildLine && this._buildP) {
       await this._buildP;
+      if (this._dead) return;
       if (this.sim !== sim) this.setWorld(line, sim);
       if (prog) prog(1);
       return;
@@ -909,6 +915,24 @@ export class RailScene {
     if (!this._deferHold) return;
     this._deferHold = false;
     this._warming = Math.max(0, (this._warming || 0) - 1);
+  }
+
+  /* このステージを捨てる前に(画質の作りなおし・文脈が消えたときの作りなおし。main.js の _rebuildScene)。
+   * 少しずつ作っている途中のワールド(setWorldAsync)・シェーダの準備(prewarmAsync)・空(HDR)の仕上げを やめさせ、
+   * 作ったワールドも手ばなす(新しいステージを作るあいだ、2つぶんの町を メモリに もたない)。2回 呼んでもよい */
+  cancelAsync() {
+    if (this._dead) return;
+    this._dead = true;
+    this._worldGen++;   // run()・_warmSliced・_gpuIdle は つぎの確認で ぬける
+    this._buildQ = null;
+    this._buildLine = null;
+    this._buildHold = false;
+    this._deferHold = false;
+    this._warming = 0;   // 待っている側(_untilDrawable など)を 止めたままにしない
+    try { this._disposeWorld(); } catch (e) { /* noop */ }
+    this._town = null;
+    this._occ = null;
+    this.frames = null;   // もう描かない(render は frames がないと すぐ戻る)
   }
 
   /* 動くもの(作ったあとに位置・向き・大きさが変わる物)の目印 userData.dyn を、
@@ -1228,14 +1252,21 @@ export class RailScene {
    * ・ない(iPadのSafari・ソフト描画): 材質ごとに「作る→リンクを待つ→1回描く」を 12ms ずつに分けて、
    *   あいだで ほかのタスクに ゆずる(_warmSliced)。描くところまでしないと、GPU側の準備が最初のコマに残る
    * ワールドも見え方も変わっていなければ(_needPrewarm も _worldNew もない)カメラを置くだけで すぐ終わる。
-   * onProgress(0..1) で進み具合を知らせる。完成を待っている間に届いた描画(render)は描かずに戻る */
-  async prewarmAsync(onProgress) {
+   * onProgress(0..1) で進み具合を知らせる。完成を待っている間に届いた描画(render)は描かずに戻る。
+   * 先に はじまった準備(タイトルへ戻る暗転の中など)が まだ描画を止めていれば、それが終わるまで返さない
+   * (返すと 呼んだ側が暗転を明けて、絵が止まったまま運転が はじまる)。
+   * maxMs: 空まちも ふくめた 全体の時間の めやす(呼ぶ側の 10秒の保険より 前に終わる)。
+   *   分けて準備しているうちに こえたら、のこりは 仕上げで いっきに作る(暗転の中。ふつうの prewarm と同じ) */
+  async prewarmAsync(onProgress, maxMs) {
     const prog = typeof onProgress === 'function' ? onProgress : null;
     const tell = (k) => { if (prog) { try { prog(k); } catch (e) { /* noop */ } } };
     const r = this.renderer;
-    if (!r || !this.scene || this.glLost) { tell(1); return; }
+    if (!r || !this.scene || this.glLost || this._dead) { tell(1); return; }
+    const deadline = performance.now() + (maxMs > 0 ? maxMs : 8500);
     if (!this._needPrewarm && !this._worldNew && this._booted && !this._lateN) {
       this._placeView();
+      /* 準備は いらないが、先に はじまった準備が まだ続いていれば 描けるようになるまで待つ */
+      if (this._warming) await this._untilDrawable(15000);
       tell(1);
       return;
     }
@@ -1244,7 +1275,7 @@ export class RailScene {
     /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
     this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
     const cap = (ms) => new Promise((res) => setTimeout(res, ms));
-    let env0 = null, sliced = false;
+    let env0 = null, sliced = false, cut = false;
     const gen = this._worldGen;
     try {
       /* 使う空(HDR)を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる)。
@@ -1254,6 +1285,7 @@ export class RailScene {
       const ld = wk ? this._envLoad[wk] : null;
       if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
         await Promise.race([ld, cap(3000)]);
+        if (this._dead) return;   // 待つあいだに捨てられた(cancelAsync)
       }
       if (this._lateN) this._promoteEnv(true);
       this._needPrewarm = false;
@@ -1270,20 +1302,27 @@ export class RailScene {
           p = this._compileMain(true);
         } catch (e) { p = null; }
         r.setRenderTarget(prev);
-        /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒で先へ(描かないまま止まらないように) */
-        if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+        /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒(全体の めやすの のこり)で先へ(描かないまま止まらないように)。
+         * まだのものは 仕上げの1回の描画で そろう */
+        const left = Math.max(1000, Math.min(6000, deadline - performance.now()));
+        if (p) { try { await Promise.race([p, cap(left)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
       } else {
         sliced = true;
         const sig0 = this._warmSig();
-        await this._warmSliced(gen, tell);
+        cut = await this._warmSliced(gen, tell, deadline);
         /* 準備のあいだに 晴れの空(HDR)が届いて差しかわるなどで _needPrewarm がまた立った:
          * 見え方の目印(_warmSig)が同じなら シェーダは同じなので そのまま下ろす。ちがえば もう1回だけ分けて準備する
          * (立てたままにすると、つぎの render が いっきに準備して止まる) */
         if (this._needPrewarm && gen === this._worldGen && !this.glLost) {
           this._needPrewarm = false;
           if (this._warmSig() !== sig0) {
-            this._placeView();
-            await this._warmSliced(gen, tell);
+            /* 時間切れなら 分けずに 仕上げで いっきに */
+            if (performance.now() < deadline) {
+              this._placeView();
+              cut = await this._warmSliced(gen, tell, deadline);
+            } else {
+              cut = true;
+            }
           }
           env0 = this.scene.environment;
         }
@@ -1291,13 +1330,21 @@ export class RailScene {
     } finally {
       this._warming = Math.max(0, (this._warming || 0) - 1);
     }
-    if (this._warming) return;   // あとから呼ばれた準備がまだ続いている(仕上げはそちらで)
-    if (this.glLost) return;
+    /* ほかの準備(先に はじまった prewarmAsync・少しずつ作るワールド)がまだ続いている: 仕上げは そちらで。
+     * ここは 描けるようになるまで待ってから返す(すぐ返すと、呼んだ側が 描けないまま 暗転を明ける) */
+    if (this._warming) { await this._untilDrawable(15000); return; }
+    if (this.glLost || this._dead) return;
     const rt0 = r.getRenderTarget();
     try {
       this._placeView();   // 待っている間に動いたかもしれないので置きなおす
-      /* 分けて作ったときは、仕上げ(にじみ・影)も もう作ってある。のこりの確認に1回描くだけ */
-      if (sliced) this._prewarmFinal(); else this._prewarmTail();
+      if (sliced && !cut) {
+        /* 分けて作ったときは、仕上げ(にじみ・影)も もう作ってある。のこりの確認に1回描くだけ */
+        this._prewarmFinal();
+      } else {
+        /* 時間切れ(cut)なら、のこりを ここで いっきに作る(ふつうの prewarm と同じ。まだ暗転の中) */
+        if (cut) { r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null); this._compileMain(false); }
+        this._prewarmTail();
+      }
     } catch (e) { /* noop */ }
     r.setRenderTarget(rt0);
     this._flushStale();
@@ -1325,8 +1372,10 @@ export class RailScene {
    *   3) 三角形1つだけ本番と同じ描画先・同じ光の数で描く(リンク結果の読みとりとGPUの描画の準備)
    *   4) もう一度 GPU側を待つ
    * フェンスがない(WebGL1)ときは 3) で1つずつ待つことになるが、1回分が小さいので長くは止まらない。
-   * ワールドが作り直されたら(gen)・文脈が消えたら やめる */
-  async _warmSliced(gen, tell) {
+   * ワールドが作り直されたら(gen)・文脈が消えたら やめる。
+   * deadline(performance.now() の時刻)を こえたら やめて true を返す(のこりは 呼んだ側の仕上げで いっきに) */
+  async _warmSliced(gen, tell, deadline) {
+    const until = deadline > 0 ? deadline : Infinity;
     const r = this.renderer;
     const gl = r.getContext();
     const fences = !!(gl && typeof gl.fenceSync === 'function');
@@ -1346,11 +1395,13 @@ export class RailScene {
     const addLights = (sc) => sc.traverse((o) => { if (o.isLight) lights.push([o, o.layers.mask]); });
     addLights(this.scene);
     if (ovl) addLights(ovl.scene);
-    const bg0 = this.scene.background;
     const sm = r.shadowMap;
-    const st = { ac: true, smAuto: false, smNeed: false, rt: null };
+    /* 背景は 1回分ごとに覚えて もどす(最初に覚えた物に もどすと、あいだに届いて差しかわった空(HDR)を
+     * 古い空(捨てた代わりの青空・雨の灰色)に もどしてしまう) */
+    const st = { ac: true, smAuto: false, smNeed: false, rt: null, bg: null };
     const set = () => {
       st.ac = r.autoClear; st.smAuto = sm.autoUpdate; st.smNeed = sm.needsUpdate; st.rt = r.getRenderTarget();
+      st.bg = this.scene.background;
       cam.layers.set(WARM_LAYER);
       for (let i = 0; i < lights.length; i++) lights[i][0].layers.enable(WARM_LAYER);
       r.autoClear = false;
@@ -1359,7 +1410,7 @@ export class RailScene {
     const unset = () => {
       cam.layers.mask = camMask;
       for (let i = 0; i < lights.length; i++) lights[i][0].layers.mask = lights[i][1];
-      this.scene.background = bg0;
+      this.scene.background = st.bg;
       r.autoClear = st.ac;
       sm.autoUpdate = st.smAuto; sm.needsUpdate = st.smNeed;
       r.setRenderTarget(st.rt);
@@ -1397,9 +1448,10 @@ export class RailScene {
       }
     };
     const prog = () => (r.info.programs ? r.info.programs.length : 0);
-    let i = 0, waits = 0, longest = 0;
+    let i = 0, waits = 0, longest = 0, cut = false;
     while (i < items.length) {
       if (gen !== this._worldGen || this.glLost) break;
+      if (performance.now() > until) { cut = true; break; }
       const t = performance.now(), p0 = prog(), i0 = i;
       set();
       try {
@@ -1409,7 +1461,7 @@ export class RailScene {
         }
       } finally { unset(); }
       longest = Math.max(longest, performance.now() - t);
-      if (fences && prog() > p0) { await this._gpuIdle(gen); waits++; }
+      if (fences && prog() > p0) { await this._gpuIdle(gen, until); waits++; }
       if (gen !== this._worldGen || this.glLost) break;
       const t2 = performance.now();
       set();
@@ -1417,7 +1469,7 @@ export class RailScene {
         for (let k = i0; k < i; k++) { try { drawItem(items[k]); } catch (e) { /* noop */ } }
       } finally { unset(); }
       longest = Math.max(longest, performance.now() - t2);
-      if (fences) { await this._gpuIdle(gen); waits++; } else await yieldTask(0);
+      if (fences) { await this._gpuIdle(gen, until); waits++; } else await yieldTask(0);
       tell(Math.min(0.99, i / total));
     }
     this._shadowDirty = true;
@@ -1425,14 +1477,16 @@ export class RailScene {
       const c = { A: 0, B: 0, C: 0, D: 0 };
       items.forEach((it) => { c[it.k]++; });
       console.log('[p6] warm sliced: main ' + c.A + ' / overlay ' + c.B + ' / post ' + c.C + ' / shadow ' + c.D +
-        ' / programs ' + prog() + ' / gpu waits ' + waits + ' / longest slice ' + Math.round(longest) + 'ms');
+        ' / programs ' + prog() + ' / gpu waits ' + waits + ' / longest slice ' + Math.round(longest) + 'ms' +
+        (cut ? ' / time up at ' + i + '/' + items.length : ''));
     }
+    return cut;
   }
 
   /* GPU側(シェーダのリンク・描画の準備)が いま出した命令まで終わるのを待つ。
    * フェンスの状態は ほかのタスクの合間に のぞくだけなので、待つあいだ画面(しゅっぱつカードなど)は止まらない。
-   * 30秒・ワールドの作り直し・文脈が消えたら 待つのをやめる */
-  async _gpuIdle(gen) {
+   * 30秒・deadline(performance.now() の時刻。なければ なし)・ワールドの作り直し・文脈が消えたら 待つのをやめる */
+  async _gpuIdle(gen, deadline) {
     const gl = this.renderer.getContext();
     let sync = null;
     try { sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush(); } catch (e) { sync = null; }
@@ -1443,11 +1497,18 @@ export class RailScene {
         await yieldTask(n < 2 ? 0 : 6);
         if (gen !== this._worldGen || this.glLost || gl.isContextLost()) break;
         if (gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED) break;
-        if (performance.now() - t0 > 30000) break;
+        if (performance.now() - t0 > 30000 || (deadline > 0 && performance.now() > deadline)) break;
       }
     } catch (e) { /* noop */ } finally {
       try { gl.deleteSync(sync); } catch (e) { /* noop */ }
     }
+  }
+
+  /* ほかの準備(先に はじまった prewarmAsync・少しずつ作るワールド)が終わって 描けるようになる(_warming が 0)まで待つ。
+   * 文脈が消えた・捨てたステージ・maxMs を こえたら やめる */
+  async _untilDrawable(maxMs) {
+    const t0 = performance.now();
+    while (this._warming && !this.glLost && !this._dead && performance.now() - t0 < maxMs) await yieldTask(16);
   }
 
   /* 準備で描く代表(材質・物の種類・形の並びが同じなら1つだけ)。ワールドの中の見えていない物
@@ -1723,6 +1784,12 @@ export class RailScene {
 
   /* HDRが届いた: 背景は立方体に変換し、環境光は小さくした版から作る。元の画像はGPU・CPUとも捨てる */
   _onHdr(k, url, t) {
+    if (this._dead) {
+      /* 捨てたステージ(cancelAsync): 空は作らない。読めた画像も すぐ手ばなす */
+      try { t.dispose(); t.image.data = null; } catch (e) { /* noop */ }
+      try { THREE.Cache.remove(url); } catch (e) { /* noop */ }
+      return false;
+    }
     const r = this.renderer;
     t.mapping = THREE.EquirectangularReflectionMapping;
     /* 太陽の円盤を抑えてから環境光を作る(影がはっきり出る) */
@@ -1964,10 +2031,16 @@ export class RailScene {
     /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
     if (act || force) this._shadowHold = 4;
     else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
-    /* 中画質(と軽量化の段階)では、動いている間の描きなおしは1フレームおき(1秒30回)。
-     * 止まっている物の影は、描いたときの影の行列で見るので ずれない(自列車の影だけ1フレーム遅れる) */
+    /* 中画質(と軽量化の段階)では、動いている間の描きなおしは 1秒30回まで(60fps なら1コマおき)。
+     * 描いたコマの数ではなく時間で決める(タッチ端末のタイトルは 1秒30コマに おさえて描くので、
+     * コマの数で1つおきにすると 1秒15回になって 走るデモ列車の影が ちらつく)。
+     * 止まっている物の影は、描いたときの影の行列で見るので ずれない
+     * (自列車と 近くを動く ほかの列車の影は 最大1コマ遅れる)。
+     * dt が 0 の 1回だけの描きなおし(一時停止中など)は 時間が すすまないので、またずに描く */
     const alt = this._shadowLite || this.quality !== 'high';
-    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!alt || (this._frame & 1) === 0 || !act)));
+    this._shAge = (this._shAge || 0) + (dt > 0 ? dt : 0);
+    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!alt || !act || !(dt > 0) || this._shAge >= 0.028)));
+    if (want) this._shAge = 0;
     r.shadowMap.needsUpdate = want;
     if (this._shadowHold > 0) this._shadowHold--;
     this._shadowDirty = false;
@@ -2024,7 +2097,7 @@ export class RailScene {
     return null;
   }
 
-  /* CPUが重いときに1段下げる: 遠くを描く距離を 0.8倍(0.6倍まで) → 動いている間の影を1フレームおき。
+  /* CPUが重いときに1段下げる: 遠くを描く距離を 0.8倍(0.6倍まで) → (高画質だけ)動いている間の影を1フレームおき。
    * 解像度は下げない(CPUの重さは画素の数で変わらない) */
   _stepCpu() {
     const P = this._perf;
@@ -2035,7 +2108,9 @@ export class RailScene {
       this._savePerf();
       return 'drawFar';
     }
-    if (!this._shadowLite && this.renderer.shadowMap.enabled) {
+    /* 影の1フレームおきが効くのは高画質だけ(中は はじめから 1秒30回まで。_updateShadow)。
+     * 中では この段を とばして、すぐ GPU側の段(stepDownQuality)へ(むだな8秒を待たない) */
+    if (!this._shadowLite && this.quality === 'high' && this.renderer.shadowMap.enabled) {
       this._shadowLite = true;
       P.shadowLite = true;
       this._savePerf();

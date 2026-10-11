@@ -43,6 +43,8 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
+/* ページ全体の ゆれ(ひっぱると はねる)を とめる。ビューポートには ルート(html)の指定が きく */
+html { overscroll-behavior: none; }
 body {
   font-family: "Zen Kaku Gothic New", "Hiragino Sans", "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
   background: var(--bg);
@@ -448,7 +450,8 @@ body:not(.cam-cab) #brake-guide { top: 62%; }
 .tb .ico { width: 24px; height: 24px; stroke-width: 2.6; }
 .tb span { display: block; font-size: var(--fs-cap); font-weight: 700; color: #a9becb; }
 .tb:active, .tb.pressed { background: rgba(47, 157, 196, 0.55); border-color: var(--hi); transform: translateY(1px); }
-.tb { -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+/* おしたまま くりかえす ボタン: 指が すこし ずれても ページの スクロール(pointercancel)に とられない */
+.tb { -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; }
 /* うえの ボタン: すすむ側(N・P)は みどり、ブレーキ中(ゆるめる)は 水色 / したの ボタン: ブレーキは だいだい、ひじょうは 赤 */
 #touch-btns[data-mode="p"] #tb-up { border-color: rgba(52, 208, 124, 0.6); }
 #touch-btns[data-mode="p"] #tb-up .ico { color: var(--green); }
@@ -1670,6 +1673,8 @@ body.ov-open #coach { z-index: 31; }
   opacity: 0; transition: opacity 0.3s;
 }
 #fade.on.slow:not(.card) .fade-msg { opacity: 1; }
+/* WebGLの 作りなおしが なんども だめなときの ことば(ui/glguard.js)。ながいので 2行まで おりかえす */
+.fade-msg.help { width: min(86vw, 520px); text-align: center; letter-spacing: 0.06em; line-height: 1.6; }
 
 /* ---- しゅっぱつカード: 暗転の中に この運転の 種別・区間・じかん・天気・めあて(じゅんびの 待ち時間を 出発の 合図に) ----
  * 画面ぜんたい(運転台の パネルの上も)を おおう: 運転画面に かわっても カードが 上下に ずれない */
