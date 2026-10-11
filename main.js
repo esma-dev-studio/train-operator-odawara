@@ -1034,9 +1034,12 @@ const App = {
      * うえ・したは レバーを1段ずつ動かすのと同じ。おしたしゅんかんに うごき、おしたままだと つづけて うごく。
      * くりかえしは P4 と B7 で とまる(ひじょう(EB)は べつに もういちど おしたときだけ) */
     const canOp = () => this._canOp();
-    this._pressBtn($('#tb-up'), () => {
+    this._pressBtn($('#tb-up'), (rep) => {
       if (!canOp()) return false;
       const n0 = this.sim.notch;
+      /* ブレーキ中に おした「ゆるめる」は、おしたままでも N で とまる(そのまま すすむ に はいらない) */
+      if (!rep) this._upFromB = n0 < 0;
+      else if (this._upFromB && n0 >= 0) return false;
       this.sim.setNotch(Math.min(4, n0 + 1));
       if (this.sim.notch === n0) return false;   // ドアが あいていて すすめない など
       this._flashGrip();
@@ -1977,7 +1980,8 @@ const App = {
       await wait(250);
       if (this.sim !== sim || this.mode !== 'drive') return;
       this._setOverrun(false);
-      sim.retryApproach(180);
+      /* エンジンが もどせなかった(ドアが あいた など)ときは まえの駅から */
+      if (sim.retryApproach(180) === false) { this.retryStation(); return; }
       if (this.audio && typeof this.audio.resetRun === 'function') this.audio.resetRun(sim);
       this.scene._camPos = null;
       if (this.scene.traffic) this.scene.traffic.reset(sim);
