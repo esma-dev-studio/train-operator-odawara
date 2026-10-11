@@ -28,14 +28,41 @@ const UP = new THREE.Vector3(0, 1, 0);
 const RAIL_HALF = 1.067 / 2 + 0.032;   // 軌間はレール頭部の内側で測るので、頭部中心は少し外
 const DS = THREE.DoubleSide;
 
-/* 画質プリセット */
+/* 画質プリセット。samples = ブルーム経由で描くときの描画先のMSAA(中・高は いつもこの道で描く) */
 const QUALITY = {
-  high: { dpr: 1.75, shadow: 2048, shadowsOn: true, aniso: 8, bloom: true, trainDetail: 'high' },
-  mid:  { dpr: 1.35, shadow: 1024, shadowsOn: true, aniso: 4, bloom: true, trainDetail: 'mid' },
-  low:  { dpr: 1.0,  shadow: 0,    shadowsOn: false, aniso: 2, bloom: false, trainDetail: 'low' },
+  high: { dpr: 1.75, shadow: 2048, shadowsOn: true, aniso: 8, bloom: true, samples: 4, trainDetail: 'high' },
+  mid:  { dpr: 1.35, shadow: 1024, shadowsOn: true, aniso: 4, bloom: true, samples: 2, trainDetail: 'mid' },
+  low:  { dpr: 1.0,  shadow: 0,    shadowsOn: false, aniso: 2, bloom: false, samples: 0, trainDetail: 'low' },
 };
 /* 自動軽量化でたどりついた段階の保存先 {q, dpr, shadowLevel, bloom} */
 const PERF_KEY = 'trainop_perf';
+
+/* HDR(半精度RGBA)を縦横半分に(2x2の平均)。環境光(PMREM)はこの小さい版から作る
+ * (2048x1024 のままだと作業用の描画先だけで約50MB。1024x512 なら256の立方体で約6MB) */
+function downsampleHdr(t) {
+  const img = t.image, W = img.width, H = img.height, d = img.data;
+  const w = W >> 1, h = H >> 1;
+  const out = new Uint16Array(w * h * 4);
+  const f16 = THREE.DataUtils.fromHalfFloat, t16 = THREE.DataUtils.toHalfFloat;
+  for (let y = 0; y < h; y++) {
+    const r0 = 2 * y * W * 4, r1 = r0 + W * 4;
+    for (let x = 0; x < w; x++) {
+      const a = r0 + x * 8, b = r1 + x * 8, o = (y * w + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        out[o + c] = t16((f16(d[a + c]) + f16(d[a + 4 + c]) + f16(d[b + c]) + f16(d[b + 4 + c])) * 0.25);
+      }
+      out[o + 3] = d[a + 3];
+    }
+  }
+  const s = new THREE.DataTexture(out, w, h, THREE.RGBAFormat, THREE.HalfFloatType);
+  s.mapping = THREE.EquirectangularReflectionMapping;
+  s.colorSpace = t.colorSpace;
+  s.minFilter = s.magFilter = THREE.LinearFilter;
+  s.generateMipmaps = false;
+  s.flipY = t.flipY;
+  s.needsUpdate = true;
+  return s;
+}
 
 /* 路線データから5mごとのフレーム（位置・進行方向・左方向）を作る */
 function buildFrames(line) {
@@ -417,14 +444,30 @@ export class RailScene {
       } catch (e) { /* 読めなければ既定のまま */ }
     }
 
+    /* キャンバスのMSAAは残す(運転台の重ね描き renderOverlay がキャンバスに直接描くため) */
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    /* シェーダのエラー確認(ログの取り出し)は1本ごとに完成を待つので重い。?debug=1 のときだけ */
+    this.renderer.debug.checkShaderErrors = !!opts.debug;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, this._perf.dpr));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = LOOK.day.exposure;
     if (Q.shadowsOn) {
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      /* 影は「何かが動いたときだけ」描きなおす(render の moving 判定)。止まっている間は前の影をそのまま使う */
+      this.renderer.shadowMap.autoUpdate = false;
     }
+    this._shadowDirty = true;
+    this._shadowHold = 0;
+    this._backdrop = false;          // メニュー・一時停止の背景(影もブルームも止める)
+    this._staleMats = [];            // 作り直しで外した材質(次の準備のあとで捨てる=同じシェーダを使い回す)
+    this._staleTex = [];
+    this._cellReg = [];              // 遠いと描かないメッシュの一覧 {obj, cx, cz, r}
+    this._cullX = 1e9; this._cullZ = 1e9; this._cullFar = -1;
+    this._nSetSize = 0;              // 実際に大きさを変えた回数(確認用)
+    this._booted = false;            // 最初の準備(prewarm)が済んだか。済んだあとに届いた空は、すぐには差しかえない
+    this._envLate = {}; this._lateN = 0;
+    this._envLoad = {};
     this.scene = new THREE.Scene();
     /* 霧は1つだけ作り、あとは色と距離を書きかえるだけ(作り直すと全材質の再判定でカクつく) */
     this.scene.fog = new THREE.Fog(LOOK.day.fogFallback, LOOK.day.fog[1], LOOK.day.fog[2]);
@@ -506,7 +549,7 @@ export class RailScene {
       sc.near = 20; sc.far = 950;
       this.sun.shadow.bias = -0.0003;
       this.sun.shadow.normalBias = 0.08;
-      if (this._perf.shadowLevel) { this.renderer.shadowMap.autoUpdate = false; this._shadowLite = true; }
+      if (this._perf.shadowLevel) this._shadowLite = true;
     }
     this._shadowBox('cab');
     this.scene.add(this.sun);
@@ -522,25 +565,17 @@ export class RailScene {
     this.scene.add(this.headlight);
     this.scene.add(this.headlight.target);
 
-    /* ---- 空と環境光: HDRI(晴/曇) + 夕方は大気散乱の空(Sky) + 夜は手続きの夜空 ---- */
+    /* ---- 空と環境光: HDRI(晴/曇) + 夕方は大気散乱の空(Sky) + 夜は手続きの夜空 ----
+     * 晴れのHDRは起動時に読む。曇り(雨・雪)は使うときに読む(ensureEnv)。
+     * 環境光はどれも 256 の立方体にそろえる(大きさが同じならシェーダも同じ=昼夜・天気の切替でコンパイルしない) */
     this.env = {};
     this._pmrem = new THREE.PMREMGenerator(this.renderer);
     this._pmrem.compileEquirectangularShader();
-    const rl = new RGBELoader();
-    [['clear', './assets/sky/sky_clear.hdr'], ['rain', './assets/sky/sky_overcast.hdr']].forEach(([k, url]) => {
-      rl.load(url, (t) => {
-        t.mapping = THREE.EquirectangularReflectionMapping;
-        if (k === 'clear') {
-          /* 太陽の円盤を抑えてから環境光を作る(影がはっきり出る) */
-          const dir = prepareClearHdr(t);
-          if (dir) this._sunDir.copy(dir);
-        }
-        this.env[k] = { bg: t, ibl: this._pmrem.fromEquirectangular(t).texture, hor: horizonRadiance(t) };
-        this._applyWeather();
-      });
-    });
+    this._wetBg = new THREE.Color(this.weather === 'snow' ? 0xc9cfd5 : 0x8d959c);   // 曇りの空がまだ無いときの雨・雪の背景色
     this._buildEveningSky();
     this._buildNightSky();
+    this.ensureEnv('clear');
+    if (this.weather !== 'clear') this.ensureEnv('rain');
 
     /* ---- 雨・雪の粒(カメラ近傍だけ) ---- */
     this.weatherFx = new WeatherFx(this.scene, this.camera);
@@ -561,18 +596,24 @@ export class RailScene {
 
   setTimeOfDay(t) {
     this.timeOfDay = t;
+    /* 走行中に届いて待たせていた空は、ここ(運転開始・タイトルへ戻る暗転の中)で使いはじめる */
+    if (this._lateN) this._promoteEnv(false);
+    this._shadowDirty = true;
     this._applyWeather();
   }
 
   /* 路線(方向)が変わったときはワールドを作り直す。同じ路線なら信号(種別で変わる)だけ */
   setWorld(line, sim) {
     this.sim = sim;
+    this._shadowDirty = true;
+    if (this._lateN) this._promoteEnv(false);
     if (line === this.line && this.world.children.length) {
       this._buildSignals();
       if (this.traffic) this.traffic.reset(sim);
       this._installWeatherChunk();
       this._resetCamFeel();
       this._kInit = false;   // 新しい運転の最初のフレームで目の慣れを合わせ直す
+      this._cullX = 1e9;
       return;
     }
     this._disposeWorld();
@@ -609,8 +650,12 @@ export class RailScene {
     /* 占有グリッドは街・木・丘を置くときだけ使う(十数MBあるので捨てる)。
      * これより前に捨てると occFree がどこでも「空き」と答え、線路や道路の上に木が生えるので、丘のあとで */
     this._occ = null;
-    this._splitInstances();
+    const cells = this._splitInstances();
+    /* 帯の結合で増えたメッシュ(差分)も、遠ければ描かない対象にする */
+    const pre = new Set(this.world.children);
     this._splitRibbons();
+    this.world.children.forEach((o) => { if (!pre.has(o)) cells.push(o); });
+    this._registerCells(cells);
     this.traffic = new Traffic(this, sim);
     this._installWeatherChunk();
     this._resetCamFeel();
@@ -626,10 +671,11 @@ export class RailScene {
     this._mergeStat = mergeRibbons(this.world, 150);
   }
 
+  /* 戻り値: 作ったセル(InstancedMesh)の一覧。遠いと描かない対象(_registerCells)にする */
   _splitInstances() {
     const CELL = 700;
     const m4 = new THREE.Matrix4(), p = new THREE.Vector3(), col = new THREE.Color();
-    const targets = [];
+    const targets = [], made = [];
     this.world.children.forEach((o) => {
       if (o.isInstancedMesh && o.count > 48 && !o.userData.noSplit) targets.push(o);
     });
@@ -652,8 +698,10 @@ export class RailScene {
         c.castShadow = im.castShadow; c.receiveShadow = im.receiveShadow;
         c.renderOrder = im.renderOrder;
         c.userData = { ...im.userData };
+        c.userData.cullCell = true;   // 遠いと描かない(visible はこちらで決める。切りかえたいときは material.visible で)
         c.computeBoundingSphere();
         g.add(c);
+        made.push(c);
       });
       g.visible = im.visible;
       this.world.remove(im);
@@ -661,11 +709,15 @@ export class RailScene {
       this.world.add(g);
       if (this.stationLamps === im) this.stationLamps = g;
     });
+    return made;
   }
 
+  /* 形はすぐ捨てる。材質(とそのテクスチャ)は _staleMats に入れておき、新しいワールドの準備(prewarm)の
+   * あとで捨てる。同じ種類のシェーダが一度0本になって作り直される(リンクしなおし)のを防ぐ */
   _disposeWorld() {
     const keep = this._keep;
     const geos = new Set(), mats = new Set(), texs = new Set();
+    this._cellReg = [];
     /* 車両(TrainKit)の形状・材質は共有なので捨てず、編成ごとの表記だけ解放する */
     if (this.traffic) this.traffic.dispose();
     this.traffic = null;
@@ -683,10 +735,10 @@ export class RailScene {
     mats.forEach((m) => {
       if (keep.has(m)) return;
       ['map', 'normalMap', 'emissiveMap', 'alphaMap', 'roughnessMap'].forEach((k) => { if (m[k] && !keep.has(m[k])) texs.add(m[k]); });
-      m.dispose();
+      this._staleMats.push(m);
     });
     geos.forEach((g) => g.dispose());
-    texs.forEach((t) => t.dispose());
+    texs.forEach((t) => this._staleTex.push(t));
     this.world.clear();
     this.signalMeshes = [];
     this._sigGroup = null;
@@ -716,21 +768,34 @@ export class RailScene {
     return spots;
   }
 
-  /* ---------- ブルーム(夜・夕方の灯りのにじみ) ---------- */
+  /* ---------- 描画の道(中・高はいつもブルーム用の描画先→出力パス。低は直接描く) ----------
+   * 道を1本にすると、材質ごとのシェーダも1組で済む(直接描く版とブルーム版の2組を作らない)。
+   * ブルームは要るときだけ bloom.enabled で通す(_bloomOn)。切りかえてもシェーダは変わらない */
   _initPost() {
     const Q = QUALITY[this.quality];
     this.composer = null;
     this.bloom = null;
-    if (!Q.bloom || this._perf.bloom === false) return;
+    if (!Q.bloom) return;
     try {
       const gl = this.renderer.getContext();
       const isGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-      const rt = new THREE.WebGLRenderTarget(8, 8, { type: THREE.HalfFloatType, samples: isGL2 ? (this.quality === 'high' ? 4 : 2) : 0 });
-      this.composer = new EffectComposer(this.renderer, rt);
-      this.composer.addPass(new RenderPass(this.scene, this.camera));
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.82);
-      this.composer.addPass(this.bloom);
-      this.composer.addPass(new OutputPass());
+      const rt = new THREE.WebGLRenderTarget(8, 8, { type: THREE.HalfFloatType, samples: isGL2 ? Q.samples : 0 });
+      const comp = new EffectComposer(this.renderer, rt);
+      comp.addPass(new RenderPass(this.scene, this.camera));
+      const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.55, 0.82);
+      /* 中: にじみの計算は1/4の解像度で(最後の重ね合わせは元の解像度のまま)。
+       * 1/4 にすると いちばん粗い段が画面ぜんたいに広がって明るくなりすぎる(ターミナルで平均+7)ので、
+       * 各段の重みを0.74倍にして 1/2 のときの明るさにそろえる(ターミナル・夜とも平均の差0.1以内で実測) */
+      if (this.quality === 'mid') {
+        const ss = bloom.setSize.bind(bloom);
+        bloom.setSize = (w, h) => ss(Math.max(1, w >> 1), Math.max(1, h >> 1));
+        bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74));
+      }
+      comp.addPass(bloom);
+      comp.addPass(new OutputPass());
+      bloom.enabled = false;
+      this.composer = comp;
+      this.bloom = bloom;
       if (this._w) this.composer.setSize(this._w, this._h);
     } catch (e) {
       this.composer = null;
@@ -739,48 +804,318 @@ export class RailScene {
     this._needPrewarm = true;
   }
 
-  /* ブルーム経由で描くか(夜・夕方・雨雪・トンネルやターミナルの中) */
+  /* ブルーム用の描画先を通して描くか(中・高はいつも。霧の色の選び方もこれで決まる) */
   _usePost() {
-    return !!this.composer && (this._k < 0.95 || this.timeOfDay !== 'day' || this.weather !== 'clear');
+    return !!this.composer;
+  }
+
+  /* ブルームを効かせるか(夜・夕方・雨雪・トンネルやターミナルの中)。メニューの背景では止める。
+   * _kE は目の慣れ(露出)の値(なければ 1) */
+  _bloomOn() {
+    const kk = Math.min(this._k, this._kE != null ? this._kE : 1);
+    return this._perf.bloom !== false && !this._backdrop && (kk < 0.95 || this.timeOfDay !== 'day' || this.weather !== 'clear');
   }
 
   /* 使うシェーダを走り出す前に全部コンパイルしておく(走行中のカクつき防止)。
-   * 直接描く場合とブルーム用の描画先に描く場合でシェーダが別なので、使うほうを両方。
+   * 中・高はブルーム用の描画先に描く版だけ(直接描く版は作らない)。低は直接描く版。
    * 背景(HDRの箱)とブルームの各パスはシーンの外にあって compile() では作られないので、実際に1回描いて作らせる。
-   * (背景を空のシーンで描くと、光源0個の使わない版ができ、しかも本番の版への切りかえが起きなくなる) */
-  prewarm() {
+   * placed: 呼び出し元(render)がもう今の運転の位置にカメラを置いた */
+  prewarm(placed) {
     this._needPrewarm = false;
+    this._booted = true;
     const r = this.renderer;
     if (!r || !this.scene) return;
-    const direct = !this.composer || (this.timeOfDay === 'day' && this.weather === 'clear');
+    if (placed !== true) this._placeView();
     const rt0 = r.getRenderTarget();
     try {
-      if (direct) {
-        r.setRenderTarget(null);
-        r.compile(this.scene, this.camera);
-      }
-      if (this.composer) {
-        r.setRenderTarget(this.composer.renderTarget1);
-        r.compile(this.scene, this.camera);
-        /* 昼の晴れ(ふだんは直接描く)でも、トンネルやターミナルに入るとブルーム経由に切りかわる。
-         * そのときに背景・にじみ・合成・出力のシェーダを作ると止まるので、ここで1回通しておく */
-        if (direct) {
-          this.composer.render(0);
-          /* いまブルーム経由で描いている(ターミナルの中など)なら、外に出たときの直接描く版も */
-          if (this._usePost()) { r.setRenderTarget(null); r.render(this.scene, this.camera); }
-        }
-      }
-      if (r.shadowMap.enabled && this.sun && this.sun.castShadow) this._prewarmShadows();
+      r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+      this._compileMain(false);
+      this._prewarmTail();
     } catch (e) { /* 失敗しても描画時にコンパイルされるだけ */ }
     r.setRenderTarget(rt0);
+    this._flushStale();
+  }
+
+  /* 運転台を別に重ね描きする(renderOverlay がある)ときは、その部品をシーン本体のコンパイルから外す
+   * (ブルーム用の描画先の版を作っても使わないため)。戻り値は compileAsync の Promise か null */
+  _compileMain(async) {
+    const r = this.renderer, ck = this.cockpit;
+    const ovl = ck && typeof ck.renderOverlay === 'function' && ck.scene && ck.scene.isScene && ck.root ? ck : null;
+    let par = null;
+    if (ovl && ovl.root.parent && ovl.root.parent !== ovl.scene) { par = ovl.root.parent; par.remove(ovl.root); }
+    try {
+      if (async && typeof r.compileAsync === 'function') return r.compileAsync(this.scene, this.camera);
+      r.compile(this.scene, this.camera);
+      return null;
+    } finally {
+      if (par) par.add(ovl.root);
+    }
+  }
+
+  /* 運転開始の暗転中に使う版: シェーダの完成を待つ間、ほかの処理を止めない(compileAsync)。
+   * 完成を待っている間に届いた描画(render)は描かずに戻る(未完成のシェーダを待って止まらないように) */
+  async prewarmAsync() {
+    this._needPrewarm = false;
+    this._booted = true;
+    const r = this.renderer;
+    if (!r || !this.scene) return;
+    /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
+    this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
+    const cap = (ms) => new Promise((res) => setTimeout(res, ms));
+    try {
+      /* 雨・雪の空を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる) */
+      const wk = this.weather !== 'clear' ? 'rain' : 'clear';
+      const ld = this._envLoad[wk];
+      if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
+        await Promise.race([ld, cap(3000)]);
+      }
+      if (this._lateN) this._promoteEnv(true);
+      this._needPrewarm = false;
+      this._placeView();
+      const prev = r.getRenderTarget();
+      let p = null;
+      try {
+        r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+        p = this._compileMain(true);
+      } catch (e) { p = null; }
+      r.setRenderTarget(prev);
+      /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒で先へ(描かないまま止まらないように) */
+      if (p) { try { await Promise.race([p, cap(6000)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+    } finally {
+      this._warming = Math.max(0, (this._warming || 0) - 1);
+    }
+    if (this._warming) return;   // あとから呼ばれた準備がまだ続いている(仕上げはそちらで)
+    const rt0 = r.getRenderTarget();
+    try {
+      this._placeView();   // 待っている間に動いたかもしれないので置きなおす
+      this._prewarmTail();
+    } catch (e) { /* noop */ }
+    r.setRenderTarget(rt0);
+    this._flushStale();
+    this._needPrewarm = false;
+    try { this.render(0); } catch (e) { /* noop */ }
+  }
+
+  /* prewarm の後半(同期): 運転台の重ね描き・背景とブルーム各パス・影の深度シェーダ */
+  _prewarmTail() {
+    const r = this.renderer;
+    /* 運転台の重ね描き(キャンバスへ直接描く)の材質。まだカメラの子のままでも、重ね描き用の版を作る */
+    const ck = this.cockpit;
+    if (ck && ck.scene && ck.scene.isScene) {
+      r.setRenderTarget(null);
+      r.compile(ck.root && typeof ck.renderOverlay === 'function' ? ck.root : ck.scene, this.camera, ck.scene);
+    }
+    const shadows = r.shadowMap.enabled && this.sun && this.sun.castShadow;
+    if (this.composer) {
+      /* 背景・にじみ・合成・出力のシェーダは描いて作る(ブルームを一時的に通す)。
+       * 影の深度シェーダの準備も同じ1コマで(コマを1つ減らす) */
+      const be = this.bloom ? this.bloom.enabled : false;
+      if (this.bloom) this.bloom.enabled = true;
+      try {
+        if (shadows) this._prewarmShadowsWith(() => this.composer.render(0));
+        else this.composer.render(0);
+      } finally { if (this.bloom) this.bloom.enabled = be; }
+    } else if (shadows) {
+      this._prewarmShadowsWith(null);
+    }
+    /* 低(直接描く)は背景の箱のシェーダが最初のコマで作られる(暗転の中なので、ここでは描かない) */
+    this._shadowDirty = true;
+  }
+
+  /* 遠くて描かないことにしているセルも、影の種類を数えるために一時的に見せてから _prewarmShadows */
+  _prewarmShadowsWith(draw) {
+    const reg = this._cellReg, hid = [];
+    for (let i = 0; i < reg.length; i++) if (!reg[i].obj.visible) { reg[i].obj.visible = true; hid.push(reg[i].obj); }
+    try { this._prewarmShadows(draw); } finally { for (let i = 0; i < hid.length; i++) hid[i].visible = false; }
+  }
+
+  /* いまの運転(sim)の位置にカメラ・太陽・光の慣れを置く(render(0) と同じ置き方)。
+   * 準備(prewarm)を古いカメラ位置(タイトルのデモ)でしないため */
+  _placeView() {
+    const sim = this.sim;
+    if (!sim || !this.line || !this.frames) return;
+    const L = this.line.meta.length;
+    const s = Math.max(0, Math.min(L - 2, sim.pos));
+    const f = frameAt(this.frames, this.step, s);
+    this._camFeel(0, s, f);
+    this._placeCamera(s, f, 0);
+    this._updateLightLevel(0);
+    this._placeSun(s, f);
+    this._updateSleepers(s);
+    const eye = this.camera.position;
+    if (this.eveSky) this.eveSky.position.copy(eye);
+    if (this.nightSky) this.nightSky.position.copy(eye);
+    this.camera.updateMatrixWorld();
+    this._cullTick(true);
+  }
+
+  /* 作り直しで外した材質・テクスチャを、新しいワールドの準備が済んでから捨てる */
+  _flushStale() {
+    if (!this._staleMats.length && !this._staleTex.length) return;
+    const mats = this._staleMats, texs = this._staleTex;
+    this._staleMats = []; this._staleTex = [];
+    /* 新しいワールドでも使っている(部品ごとに使い回している)材質・テクスチャは捨てない */
+    const used = new Set();
+    this.scene.traverse((o) => {
+      if (!o.material) return;
+      [].concat(o.material).forEach((m) => {
+        used.add(m);
+        ['map', 'normalMap', 'emissiveMap', 'alphaMap', 'roughnessMap'].forEach((k) => { if (m[k]) used.add(m[k]); });
+      });
+    });
+    mats.forEach((m) => { if (!used.has(m)) { try { m.dispose(); } catch (e) { /* noop */ } } });
+    texs.forEach((t) => { if (!used.has(t)) { try { t.dispose(); } catch (e) { /* noop */ } } });
+  }
+
+  /* メニュー・一時停止の背景として描く(on): 影の描きなおしとブルームを止める(最後の影はそのまま) */
+  setBackdrop(on) {
+    const b = !!on;
+    if (b === this._backdrop) return;
+    this._backdrop = b;
+    if (!b) this._shadowDirty = true;
+  }
+
+  /* 空(HDR)を用意する: 'clear'(晴れ) / 'rain'・'snow'(曇り)。読みこみ済みなら何もしない。
+   * 戻り値は Promise(読めたら true)。曇りは使うまで読まない(メモリと通信の節約) */
+  ensureEnv(key) {
+    const k = key === 'snow' || key === 'rain' ? 'rain' : key === 'clear' ? 'clear' : null;
+    if (!k) return Promise.resolve(false);
+    if ((this.env[k] && !this.env[k].placeholder) || this._envLate[k]) return Promise.resolve(true);
+    /* 曇りが届くまでの代わり: 背景は色、環境光は晴れ(なければ夕方)のもの。
+     * 環境光を null にすると全シェーダが別の版になり、届いたときに全部コンパイルしなおしになるため */
+    if (k === 'rain' && !this.env.rain) {
+      const st = (this.env.clear && this.env.clear.ibl) || (this.env.evening && this.env.evening.ibl) || null;
+      if (st) this.env.rain = { bg: this._wetBg, ibl: st, placeholder: true };
+    }
+    if (!this._envLoad[k]) this._envLoad[k] = this._loadHdr(k);
+    return this._envLoad[k];
+  }
+
+  _loadHdr(k) {
+    const url = k === 'clear' ? './assets/sky/sky_clear.hdr' : './assets/sky/sky_overcast.hdr';
+    return new Promise((resolve) => {
+      new RGBELoader().load(url, (t) => {
+        let ok = false;
+        try { ok = this._onHdr(k, url, t); } catch (e) { ok = false; }
+        resolve(ok);
+      }, undefined, () => resolve(false));
+    });
+  }
+
+  /* HDRが届いた: 背景は立方体に変換し、環境光は小さくした版から作る。元の画像はGPU・CPUとも捨てる */
+  _onHdr(k, url, t) {
+    const r = this.renderer;
+    t.mapping = THREE.EquirectangularReflectionMapping;
+    /* 太陽の円盤を抑えてから環境光を作る(影がはっきり出る) */
+    const sunDir = k === 'clear' ? prepareClearHdr(t) : null;
+    const hor = horizonRadiance(t);
+    let bg = null, cube = null;
+    try {
+      cube = new THREE.WebGLCubeRenderTarget(Math.max(16, t.image.height >> 1), { type: THREE.HalfFloatType });
+      cube.fromEquirectangularTexture(r, t);
+      bg = cube.texture;
+    } catch (e) { if (cube) cube.dispose(); cube = null; }
+    const own = k !== 'clear' || !this._pmrem;
+    const pm = own ? new THREE.PMREMGenerator(r) : this._pmrem;
+    let ibl = null, small = null;
+    try {
+      small = t.image.width > 1024 ? downsampleHdr(t) : null;
+      ibl = pm.fromEquirectangular(small || t).texture;
+    } catch (e) { ibl = null; }
+    if (small) small.dispose();
+    /* 環境光づくりの道具(と作業用の大きな描画先)は、晴れ・夕方・夜がそろったら捨てる */
+    pm.dispose();
+    if (!own) this._pmrem = null;
+    if (bg) {
+      t.dispose();
+      t.image.data = null;
+    } else {
+      bg = t;   // 立方体にできなかったときは元の画像を背景に
+    }
+    try { THREE.Cache.remove(url); } catch (e) { /* noop */ }
+    if (!ibl) return false;
+    this._envLate[k] = { env: { bg, ibl, hor, cube }, sunDir };
+    this._lateN++;
+    /* 最初の準備の前・止まっているときは すぐ使う。走っている最中なら、つぎの時間帯・天気・路線の切替(暗転中)まで待つ */
+    const sim = this.sim;
+    /* いまは使っていない(先読み): 見た目は変えない。待たせている晴れの空(太陽の向きも変わる)は巻きこまない */
+    if (k === 'rain' && this.weather === 'clear') this._promoteEnv(false, 'rain');
+    else if (!this._booted || !sim || sim.ended || sim.v < 0.05) this._promoteEnv(true);
+    return true;
+  }
+
+  /* 届いて待たせていた空を使いはじめる。apply: すぐ見た目に反映する / only: その空だけ(なければ全部) */
+  _promoteEnv(apply, only) {
+    if (!this._lateN) return;
+    const L = this._envLate;
+    Object.keys(L).forEach((k) => {
+      if (only && k !== only) return;
+      const e = L[k];
+      const old = this.env[k];
+      this.env[k] = e.env;
+      if (e.sunDir) this._sunDir.copy(e.sunDir);
+      /* 曇りの代わりに晴れの環境光を使っていたら、晴れの側も差しかえておく */
+      if (k === 'clear' && this.env.rain && this.env.rain.placeholder) this.env.rain.ibl = e.env.ibl;
+      if (old && old.cube && old.cube !== e.env.cube) old.cube.dispose();
+      delete L[k];
+    });
+    this._lateN = Object.keys(L).length;
+    this._shadowDirty = true;
+    if (apply) this._applyWeather();
+  }
+
+  /* 遠いセル(全線を約700m/750mごとに分けたメッシュ)を登録する。
+   * 登録するのは _splitInstances と mergeRibbons が作ったものと、userData.cullCell の付いたものだけ
+   * (木・架線・駅の灯り・人など、ほかで visible を切りかえる物は入れない) */
+  _registerCells(added) {
+    this._cellReg = [];
+    this.world.updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    const seen = new Set();
+    const reg = (o) => {
+      if (seen.has(o) || !o.isMesh || !o.geometry) return;
+      seen.add(o);
+      let bs = null;
+      if (o.isInstancedMesh) {
+        if (!o.boundingSphere) o.computeBoundingSphere();
+        bs = o.boundingSphere;
+      } else {
+        if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+        bs = o.geometry.boundingSphere;
+      }
+      if (!bs || !(bs.radius >= 0)) return;
+      v.copy(bs.center).applyMatrix4(o.matrixWorld);
+      const sc = o.matrixWorld.getMaxScaleOnAxis();
+      this._cellReg.push({ obj: o, cx: v.x, cz: v.z, r: bs.radius * sc });
+    };
+    added.forEach(reg);
+    this.world.traverse((o) => { if (o.userData && o.userData.cullCell) reg(o); });
+    this._cullX = 1e9; this._cullFar = -1;
+  }
+
+  /* 遠景クリップ(camera.far)より遠いセルは描かない(視錐台の判定も影の判定もしない)。
+   * 8フレームに1回か、視点が40m以上動いたとき・遠景クリップが変わったときだけ */
+  _cullTick(force) {
+    const reg = this._cellReg;
+    if (!reg.length) return;
+    const eye = this.camera.position, far = this.camera.far;
+    const dx = eye.x - this._cullX, dz = eye.z - this._cullZ;
+    if (!force && (this._frame & 7) !== 0 && dx * dx + dz * dz < 1600 && far === this._cullFar) return;
+    this._cullX = eye.x; this._cullZ = eye.z; this._cullFar = far;
+    const lim = far + 50, ex = eye.x, ez = eye.z;
+    for (let i = 0; i < reg.length; i++) {
+      const c = reg[i];
+      c.obj.visible = Math.hypot(c.cx - ex, c.cz - ez) - c.r < lim;
+    }
   }
 
   /* 影の深度シェーダも先に作る。compile() は影のぶんを作らず、影は影の箱の中の物しか描かれないので、
    * 遠くにある種類の物は走行中にはじめて作られてカクつく。そこで種類ごとに1つ、カリングを外して1回描く。
    * 共有の深度材質は map/side が変わってもシェーダを選びなおさないので、needsUpdate で毎回選びなおさせる。
    * 遠い木のかたまり(LODで今は影なし)も、近づくと影を落とすので数に入れる。
-   * さわった設定(カリング・影・onBeforeShadow)は、描画が失敗しても必ず元にもどす */
-  _prewarmShadows() {
+   * さわった設定(カリング・影・onBeforeShadow)は、描画が失敗しても必ず元にもどす。
+   * draw: 描く関数(ブルーム用のパスまで通す composer.render など)。なければシーンを1回描く */
+  _prewarmShadows(draw) {
     const r = this.renderer;
     const lod = new Map(((this._town && this._town.treeCells) || []).map((c) => [c.mesh, c.shadow]));
     const reps = new Map();
@@ -807,8 +1142,11 @@ export class RailScene {
         };
       });
       r.shadowMap.needsUpdate = true;
-      r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
-      r.render(this.scene, this.camera);
+      if (typeof draw === 'function') draw();
+      else {
+        r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+        r.render(this.scene, this.camera);
+      }
     } finally {
       saved.forEach(({ o, fc, cs, own, obs }) => {
         o.frustumCulled = fc;
@@ -817,6 +1155,37 @@ export class RailScene {
         else delete o.onBeforeShadow;
       });
     }
+  }
+
+  /* 影は動くものがあるときだけ描きなおす(止まった駅・一時停止・メニューでは前の影のまま)。
+   * 動くもの: 自列車(速度・ドア開閉と人の動き)・近くのほかの列車・踏切・影の箱の移動・明示の作りなおし(_shadowDirty) */
+  _updateShadow(dt) {
+    const r = this.renderer, sun = this.sun;
+    if (!r.shadowMap.enabled || !sun || !sun.castShadow) { this._shadowDirty = false; return; }
+    const sim = this.sim;
+    const tg = sun.target.position;
+    if (!this._shTgt) this._shTgt = new THREE.Vector3(1e9, 0, 0);
+    /* act: 速く動くもの(毎フレーム) / slow: ゆっくり動くもの(ホームを歩く人・踏切の棒。3フレームに1回で足りる) */
+    let act = false, slow = false;
+    /* 影の箱が動いた(2cm以上。止まっていても位置が計算の誤差でわずかにゆれるので、小さい差は数えない) */
+    if (tg.distanceToSquared(this._shTgt) > 0.0004) { this._shTgt.copy(tg); act = true; }
+    if (!act && dt > 0 && sim) {
+      if (sim.v > 0.5) act = true;
+      else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(this._camS, 250)) act = true;
+      else if (sim.doorOpen) slow = true;
+      else {
+        const cs = this.crossSpots;
+        if (cs) for (let i = 0; i < cs.length; i++) if (Math.abs(cs[i] - sim.pos) < 450) { slow = true; break; }
+      }
+    }
+    const force = this._shadowDirty;
+    /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
+    if (act || force) this._shadowHold = 4;
+    else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
+    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!this._shadowLite || (this._frame & 1) === 0 || !act)));
+    r.shadowMap.needsUpdate = want;
+    if (this._shadowHold > 0) this._shadowHold--;
+    this._shadowDirty = false;
   }
 
   /* fps低下時に段階的に画質を落とす: 解像度 → 影(小さく・1フレームおき) → ブルーム。
@@ -832,27 +1201,25 @@ export class RailScene {
       this._savePerf();
       return 'dpr';
     }
-    if (r.shadowMap.enabled && !this._shadowLite) {
+    /* 影: 夜・雨(太陽の影がない)では下げても軽くならないので、この段はとばす */
+    if (r.shadowMap.enabled && !this._shadowLite && this.sun && this.sun.castShadow) {
       const sh = this.sun.shadow;
       sh.mapSize.set(512, 512);
       if (sh.map) { sh.map.dispose(); sh.map = null; }
       r.shadowMap.autoUpdate = false;
       r.shadowMap.needsUpdate = true;
+      this._shadowDirty = true;
       this._shadowLite = true;
       P.shadowLevel = 1;
       this._savePerf();
       return 'shadow';
     }
-    if (this.composer && this._usePost()) {
-      const c = this.composer;
-      c.renderTarget1.dispose();
-      c.renderTarget2.dispose();
-      c.passes.forEach((p) => { if (p.dispose) p.dispose(); });
-      this.composer = null;
-      this.bloom = null;
+    /* ブルーム: 描画の道(ブルーム用の描画先→出力)はそのまま、にじみのパスだけ止める。
+     * シェーダは変わらないので、走行中にコンパイルは起きない */
+    if (this.bloom && P.bloom !== false && this._bloomOn()) {
+      this.bloom.enabled = false;
       P.bloom = false;
       this._savePerf();
-      this._needPrewarm = true;   // これからは直接描くので、そのシェーダを用意しなおす
       return 'bloom';
     }
     return null;
@@ -905,11 +1272,20 @@ export class RailScene {
         this.composer.setPixelRatio(this.renderer.getPixelRatio());
         this.composer.setSize(this._w, this._h);
       }
+      this._dprApplied = this.renderer.getPixelRatio();
+      this._nSetSize++;
+      this._shadowDirty = true;
     }
   }
 
   setWeather(w) {
     this.weather = w;
+    /* 雨・雪の空(曇り)は使うときに読む。届くまでは代わりの背景色・環境光 */
+    if (w === 'snow') this._wetBg.setHex(0xc9cfd5);
+    else if (w === 'rain') this._wetBg.setHex(0x8d959c);
+    if (w !== 'clear') this.ensureEnv('rain');
+    if (this._lateN) this._promoteEnv(false);
+    this._shadowDirty = true;
     this._applyWeather();
   }
 
@@ -1969,10 +2345,15 @@ export class RailScene {
     return this.sim._departTime || this.sim.t;
   }
 
+  /* 大きさが変わっていなければ何もしない(キャンバスの大きさを書きなおすと、描画バッファを取りなおして消すため) */
   resize(w, h) {
+    if (w === this._w && h === this._h && this._dprApplied === this.renderer.getPixelRatio()) return;
     this._w = w; this._h = h;
     this.renderer.setSize(w, h, false);
     if (this.composer) this.composer.setSize(w, h);
+    this._dprApplied = this.renderer.getPixelRatio();
+    this._nSetSize++;
+    this._shadowDirty = true;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.cockpit.layoutFor(w / h);
@@ -1981,6 +2362,8 @@ export class RailScene {
   /* カメラ: 'cab'(運転台) / 'chase'(うしろ上) / 'side'(よこ) / 'front'(線路わきで待ちかまえる) / 'drone'(上空) */
   setCameraMode(mode) {
     this.camMode = mode;
+    this._shadowDirty = true;
+    this._cullX = 1e9;
     this._frontCamS = null;
     this._camPos = null;   // 切り替えたら補間せずに新しい位置へ
     const ext = mode !== 'cab';
@@ -2189,6 +2572,8 @@ export class RailScene {
 
   /* 毎フレーム描画 */
   render(dt) {
+    /* prewarmAsync がシェーダの完成を待っている間は描かない(未完成のシェーダで止まらないように) */
+    if (this._warming) return;
     this.clockT += dt;
     const sim = this.sim;
     const L = this.line.meta.length;
@@ -2236,8 +2621,10 @@ export class RailScene {
     /* 停止位置の光の目印(つぎに とまる駅だけ) */
     const nxt = sim.stops[sim.stopIdx];
     if (this.guide !== false && nxt && !sim.doorOpen && nxt.stopAt - sim.pos < 650 && nxt.stopAt - sim.pos > -2) {
-      const fb = frameAt(this.frames, this.step, Math.min(L - 2, nxt.stopAt));
-      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, 2.3);
+      /* 「8」の標識が停止位置より a8 m 先に立つとき(駅の側で _stop8Ahead を決める)は、その柱の位置に */
+      const a8 = this._stop8Ahead || 0;
+      const fb = frameAt(this.frames, this.step, Math.min(L - 2, nxt.stopAt + a8));
+      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, a8 ? 1.93 : 2.3);
       this.stopBeam.position.y += 4.4;
       this._beamMat.opacity = 0.5 + 0.22 * Math.sin(this.clockT * 4);
       this.stopBeam.visible = true;
@@ -2261,16 +2648,28 @@ export class RailScene {
     }
     let light = tod === 'night' ? 0.16 : tod === 'evening' ? 0.55 : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1;
     if (indoorEye) light = Math.min(light, 0.3);
-    this.cockpit.update(dt, { light, night: tod === 'night', wiper: this.weather === 'rain' && !indoorEye && this.camMode === 'cab' });
+    /* ワイパー: 雨は 'on'(つづけて)、雪は 'int'(間をあけて)、屋内・外のカメラでは止める */
+    const wiper = indoorEye || this.camMode !== 'cab' ? false : this.weather === 'rain' ? 'on' : this.weather === 'snow' ? 'int' : false;
+    this.cockpit.update(dt, { light, night: tod === 'night', wiper, snow: this.weather === 'snow' && !indoorEye });
     if (this.weatherFx) this.weatherFx.update(dt, sim.v / 3.6, indoorEye && this.camMode === 'cab');
 
+    /* 走っている間に届いた空(HDR)は、止まっているときに使いはじめる */
+    if (this._lateN && (sim.ended || sim.v < 0.05)) this._promoteEnv(true);
     /* 時間帯・天気が変わった直後は、描く前に使うシェーダをまとめて準備 */
-    if (this._needPrewarm) this.prewarm();
-    /* 軽量化の段階: 影は1フレームおきに更新 */
-    if (this._shadowLite) this.renderer.shadowMap.needsUpdate = (this._frame & 1) === 0;
+    if (this._needPrewarm) this.prewarm(true);
+    this._updateShadow(dt);
+    /* 遠景クリップより遠いセルは描かない */
+    this._cullTick(false);
     this._frame++;
-    if (this._usePost()) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      if (this.bloom) this.bloom.enabled = this._bloomOn();
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
+    /* 運転台の重ね描き(キャンバスへ直接。あれば) */
+    const ck = this.cockpit;
+    if (ck && typeof ck.renderOverlay === 'function') ck.renderOverlay(this.renderer, this.camera);
 
     /* fps計測(自動軽量化・デバッグ用) */
     if (dt > 0) {

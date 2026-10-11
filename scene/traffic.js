@@ -226,6 +226,19 @@ export class Traffic {
     }
   }
 
+  /* 位置 s から d m 以内を「走っている」ほかの列車がいるか(影を描きなおすかの判定用。配列を作らない) */
+  anyNear(s, d) {
+    const list = this.list;
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (t.done || t.dwell > 0 || !(t.v > 0)) continue;
+      const tail = t.s - t.dir * t.nCars * CAR;
+      const lo = Math.min(t.s, tail), hi = Math.max(t.s, tail);
+      if (hi > s - d && lo < s + d) return true;
+    }
+    return false;
+  }
+
   passingInfo() {
     const sim = this.rs.sim;
     return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 700);
