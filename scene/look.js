@@ -46,7 +46,7 @@ export const LOOK = {
   /* 雨: 晴れより暗い くもり空。ぬれた地面(明るい空と暗い地面の差がつく)・水たまり・遠くは雨のかすみ */
   rain: {
     sun: [0.3, 0xd0d8e2], hemi: [0.5, 0xa4b2c0, 0x4a4e4a],
-    exposure: 0.82, bg: 0.5, env: 0.65, wire: 0.9, fog: [null, 18, 480], fogFallback: 0x9da4a8,
+    exposure: 0.82, bg: 0.42, env: 0.65, wire: 0.9, fog: [null, 18, 480], fogFallback: 0x9da4a8,
     bloom: [2.0, 0.25, 0.3], head: 0, wet: 1, snow: 0,
   },
   snow: {
@@ -530,9 +530,10 @@ export function makeNightSky(geometry) {
         float r = nsHash( floor( g ) );
         float star = step( 0.9965, r ) * smoothstep( 0.38, 0.0, length( fract( g ) - 0.5 ) ) * smoothstep( 0.05, 0.22, h ) * uStars;
         c += vec3( 0.9, 0.95, 1.0 ) * star * ( 0.5 + 1.6 * fract( r * 37.0 ) );
-        /* 月: 本当の大きさに近い小さな円盤と、うすいかさ(大きいと空の主役になってしまう) */
+        /* 月: 本当の大きさに近い小さな円盤と、うすいかさ(大きいと空の主役になってしまう)。
+         * 雨・雪の夜(uStars=0)は雲の向こう: 円盤は見えず、かさだけ うすく残る */
         float m = dot( d, uMoon );
-        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.99996, 0.99998, m ) * 1.7 + pow( max( m, 0.0 ), 300.0 ) * 0.08 );
+        c += vec3( 1.0, 0.96, 0.86 ) * ( smoothstep( 0.99996, 0.99998, m ) * 1.7 * uStars + pow( max( m, 0.0 ), 300.0 ) * 0.08 * ( 0.4 + 0.6 * uStars ) );
         gl_FragColor = vec4( c, 1.0 );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

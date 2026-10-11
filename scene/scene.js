@@ -1150,6 +1150,16 @@ export class RailScene {
     }
   }
 
+  /* 準備(prewarm)の印を立てたとき: 遠くて影を間引いたセルの影をもとにもどす。
+   * 準備は影を落とす物の種類ごとに影の深度シェーダを作るので、間引いたままだと遠くにしかない種類が抜け、
+   * 走行中に近づいたときに作られてカクつく(描画の中の prewarm(true) は _cullTick(true) を通らない)。
+   * 次の _cullTick で また間引く */
+  _shadowCastAll() {
+    const reg = this._cellReg;
+    for (let i = 0; i < reg.length; i++) if (reg[i].cs0) reg[i].obj.castShadow = true;
+    this._cullFar = -1;
+  }
+
   /* 影の深度シェーダも先に作る。compile() は影のぶんを作らず、影は影の箱の中の物しか描かれないので、
    * 遠くにある種類の物は走行中にはじめて作られてカクつく。そこで種類ごとに1つ、カリングを外して1回描く。
    * 共有の深度材質は map/side が変わってもシェーダを選びなおさないので、needsUpdate で毎回選びなおさせる。
@@ -1514,7 +1524,7 @@ export class RailScene {
     const env0 = this.scene.environment;
     const pk = (night ? 'n' : '-') + (eveSky ? 'e' : '-') + (wet ? 'w' : '-') +
       (this.scene.background && this.scene.background.isTexture ? 'b' : '-') + '|' + (env0 ? env0.uuid : '');
-    if (pk !== this._progKey) this._needPrewarm = true;
+    if (pk !== this._progKey) { this._needPrewarm = true; this._shadowCastAll(); }
     this._progKey = pk;
   }
 
@@ -1631,7 +1641,7 @@ export class RailScene {
     /* 車両の材質は空の映りこみを弱めない(ステンレスのつや) */
     if (this.trainKit) Object.values(this.trainKit.M).forEach((m) => { if (m && m.userData) m.userData.envKeep = true; add(m); });
     this._kEnv = -1;
-    if (fresh) this._needPrewarm = true;
+    if (fresh) { this._needPrewarm = true; this._shadowCastAll(); }
   }
 
   /* 戻り値: はじめて見た材質なら true(this._envMats にまだ無かった) */

@@ -75,7 +75,7 @@ export class WeatherFx {
     this.snow.frustumCulled = false;
     this.snow.visible = false;
     scene.add(this.snow);
-    for (let i = 0; i < this.nRain; i++) this._seed(this.rainP, i, true);
+    for (let i = 0; i < this.nRain; i++) this._seed(this.rainP, i, true, false, true);
     for (let i = 0; i < this.nSnow; i++) { this._seed(this.snowP, i, true, true); this.snowPh[i] = this._r() * 6.28; }
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
@@ -91,10 +91,12 @@ export class WeatherFx {
    * near=true(雪)は奥行きを手前に寄せる(遠くの粒は1〜2画素で見えないので、近くを多く)。
    * 雨は遠くに多め(遠くのすじは短く うすい「雨のかすみ」になる)。
    * 近くの粒は、横は画面に入る幅に寄せ、上端は画面の上のすぐ外にする
-   * (箱いっぱいに散らすと近くの粒の多くが画面の外になり、上端から入れ直すと画面に入るまで十数秒かかる) */
-  _seed(arr, i, anyY, near) {
+   * (箱いっぱいに散らすと近くの粒の多くが画面の外になり、上端から入れ直すと画面に入るまで十数秒かかる)。
+   * view=true(雨): 近くのすじも、横は画面に入る幅(運転台の画角の少し外まで)に置く
+   * (箱の幅いっぱいだと、近くのすじの半分以上が画面の外で、雨がほとんど見えない) */
+  _seed(arr, i, anyY, near, view) {
     const z = 1 + (near ? Math.pow(this._r(), 1.8) : Math.pow(this._r(), 0.7)) * BOX.z;
-    const w = near ? Math.min(BOX.x, 4 + 1.4 * z) : BOX.x;
+    const w = near ? Math.min(BOX.x, 4 + 1.4 * z) : view ? Math.min(BOX.x, 4 + 1.8 * z) : BOX.x;
     const fl = this._floor;
     arr[i * 3] = (this._r() - 0.5) * w;
     arr[i * 3 + 1] = anyY ? fl + this._r() * (TOP - fl) : near ? Math.min(TOP, 1 + 0.6 * z) : TOP;
@@ -147,7 +149,7 @@ export class WeatherFx {
           x = (this._r() - 0.5) * BOX.x;
           y = fl + this._r() * (TOP - fl);
           z = BOX.z * (0.55 + 0.45 * this._r());
-        } else if (y < fl) { this._seed(P, i, false); x = P[i * 3]; y = P[i * 3 + 1]; z = P[i * 3 + 2]; }
+        } else if (y < fl) { this._seed(P, i, false, false, true); x = P[i * 3]; y = P[i * 3 + 1]; z = P[i * 3 + 2]; }
         if (z > BOX.z + 1) z -= BOX.z;
         P[i * 3] = x; P[i * 3 + 1] = y; P[i * 3 + 2] = z;
         const wx = C.x + right.x * x + fwd.x * z, wy = C.y + y, wz = C.z + right.z * x + fwd.z * z;
