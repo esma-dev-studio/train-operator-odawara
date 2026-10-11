@@ -1769,7 +1769,6 @@ const App = {
     const redAhead = h.ats && h.ats.kind === 'signal' && h.ats.target === 0;
     const redNear = redAhead && h.ats.at - sim.pos < 150;
     const wet = this.weather === 'rain' || this.weather === 'snow';
-    const lateTxt = () => `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`;
     /* スピード オーバーの チャイムは こえた ときに 1回だけ(制限より おそくなったら また鳴る) */
     if (sim.v > h.limit + 0.5) {
       if (!this._overChimed && !h.doorOpen) { this._overChimed = true; this._cue('atsChime', 0.3); }
@@ -1839,7 +1838,7 @@ const App = {
       const dist = nx.dist;
       if (sim.notch >= 0) {
         const toBrake = this._toBrake(h, c);
-        if (toBrake > 200 && this._lateHint(h, wet, now)) { txt = lateTxt(); want = 4; }
+        if (toBrake > 200 && this._lateHint(h, wet, now)) { txt = `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`; want = 4; }
         else if (toBrake > 40) txt = `ブレーキまで あと <b>${this._steady('toBrake', toBrake)}</b> m`;
         else if (toBrake > 0) { txt = `そろそろ！ ${KDN}を 3〜4かい`; want = -4; }
         else { txt = `いま！ ${KDN}`; hot = true; want = -4; }
@@ -1861,7 +1860,7 @@ const App = {
       txt = `${icon('warn')} スピードを <b>${Math.round(h.ats.target)}</b> まで おとそう`;
       want = -3;
     } else if (nx) {
-      if (this._lateHint(h, wet, now)) { txt = lateTxt(); want = 4; }
+      if (this._lateHint(h, wet, now)) { txt = `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`; want = 4; }
       else txt = `つぎは <b>${kanaOf(nx.name) || nx.name}</b> ／ スピードは <b>${h.limit}</b> まで`;
     }
     if (txt !== this._coachTxt) {

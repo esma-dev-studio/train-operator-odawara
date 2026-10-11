@@ -1430,7 +1430,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   :root { --hud-top-h: 136px; }
   #bighud, .hud-top .gl-btn { height: 56px; }
   #touch-btns { bottom: 64px; }
-  #brake-guide, body:not(.cam-cab) #brake-guide { top: calc(var(--hud-top-y) + 14px); transform: none; animation-name: bgInP; }
+  body #brake-guide, body:not(.cam-cab) #brake-guide { top: calc(var(--hud-top-y) + 14px); transform: none; animation-name: bgInP; }
   #coach { left: calc(50% - 44px); max-width: calc(100% - 200px); }
   /* お知らせも コーチの 上(よむ場所を 1つに。右上の ブレーキめやすと かさならない) */
   #msg-center { top: auto; bottom: 116px; left: calc(50% - 44px); max-width: calc(100% - 200px); }
@@ -1466,7 +1466,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   #bh-ctx-num { font-size: 1.15rem; }
   #drive-head { padding: 2px 12px 3px; }
   #rs-win { height: 22px; }
-  #brake-guide, body:not(.cam-cab) #brake-guide {
+  body #brake-guide, body:not(.cam-cab) #brake-guide {
     top: calc(var(--hud-top-y) + 6px); transform: scale(0.72); transform-origin: top right; animation-name: bgInS;
   }
   #stamp-pop { top: calc(var(--hud-top-y) + 6px); }
