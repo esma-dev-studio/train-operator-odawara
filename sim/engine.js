@@ -122,6 +122,8 @@ export class TrainSim {
       lateSum: 0,
     };
     this._lastA = 0;
+    this._lastAtsOn = false;       // ジャーク計測用: 前のコマでATSブレーキが入っていたか
+    this._lastSlip = false;        // 同: 前のコマで滑走していたか
     this._doorPhase = 'boarding';  // boarding→closing→ready→run
     this._stopEval = null;
     this._departTime = this.timetable[stopIdx].dep;
@@ -387,9 +389,15 @@ export class TrainSim {
     let a = this.accelCur - effB + aGrade + aRes;
     if (this.v <= 0 && a < 0) a = 0;
 
-    /* --- ジャーク計測（乗り心地）: 通常のノッチ操作では出ない急変だけ数える --- */
+    /* --- ジャーク計測（乗り心地）: 通常のノッチ操作では出ない急変だけ数える。
+     * ATSの自動ブレーキが入った・切れた瞬間と、滑走が始まった・止まった瞬間は
+     * 運転士のレバー操作ではないので「ガクン」に数えない(画面の理由表示を上書きしない) --- */
+    const atsStep = (atsBrake > 0) !== this._lastAtsOn;
+    const slipStep = this.slipping !== this._lastSlip;
+    this._lastAtsOn = atsBrake > 0;
+    this._lastSlip = this.slipping;
     const jerk = Math.abs(a - this._lastA) / dt;
-    if (jerk > 4.5 && this.v > 3) {
+    if (jerk > 4.5 && this.v > 3 && !atsStep && !slipStep) {
       if (this.t - (this._lastJerkT || -9) > 1.0) {
         this.score.jerkEvents++;
         /* 画面で「ガクン」を見せる(dir: +1=前へ押された/-1=つんのめった) */

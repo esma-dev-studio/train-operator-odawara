@@ -16,6 +16,10 @@
   --green: #34d07c;
   --cab-h: 178px;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  /* ホーム画面の アプリ(ステータスバーの下まで描く)・スマホ横の ノッチ: 上の帯(.hud-top)を よける */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
   /* HUDパネルの共通トーン(3D画面の上に重ねる板はすべてこれ) */
   --hud-bg: rgba(8, 12, 15, 0.82);
   --hud-bd: rgba(140, 180, 205, 0.32);
@@ -1245,11 +1249,13 @@ body #cab .lever-grip { left: -4px; right: -4px; }
  * 画面デザイン 第3版: 上の帯・いきすぎパネル・コーチのキー表示・この運転の きろく・
  * スタンプの台紙・せまい/ひくい画面。(ここより上の古い指定を 上書きする)
  * ========================================================= */
-:root { --hud-top-h: 74px; }
+/* --hud-top-h: 上の帯の 下はしまで(px のまま。tools/e2e.mjs が 数で読む)。
+ * --hud-top-y: そこに ステータスバー・ノッチの ぶん(--safe-t)を たしたもの。帯の下に 出す部品は こちらを つかう */
+:root { --hud-top-h: 74px; --hud-top-y: calc(var(--hud-top-h) + var(--safe-t)); }
 
 /* ---- 上の帯: 大型HUD | 路線 | してん・ポーズ。上のはしと高さを 1本に そろえる ---- */
 .hud-top {
-  position: absolute; top: 10px; left: 12px; right: 12px; z-index: 7;
+  position: absolute; top: calc(10px + var(--safe-t)); left: calc(12px + var(--safe-l)); right: calc(12px + var(--safe-r)); z-index: 7;
   display: flex; align-items: stretch; gap: 10px; pointer-events: none;
 }
 .hud-top > * { position: static; transform: none; pointer-events: auto; }
@@ -1268,9 +1274,9 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 #rs-win { height: 24px; }
 .rs-all { margin-top: 2px; }
 .hud-top .gl-btn { height: 64px; }   /* タイトルの せってい(.t-gear)は そのまま */
-#cam-label { top: calc(var(--hud-top-h) + 8px); }
-#stop-card, #badge-toast { top: calc(var(--hud-top-h) + 12px); }
-#msg-center { top: calc(var(--hud-top-h) + 24px); }
+#cam-label { top: calc(var(--hud-top-y) + 8px); }
+#stop-card, #badge-toast { top: calc(var(--hud-top-y) + 12px); }
+#msg-center { top: calc(var(--hud-top-y) + 24px); }
 
 /* この運転の ◎○△×(さいきんの10えき)。あたらしいのが右。はみ出したら ふるいほう(左)から かくれる */
 #rs-marks { flex: 1 1 auto; min-width: 0; display: flex; gap: 4px; justify-content: flex-end; align-items: center; overflow: hidden; }
@@ -1286,7 +1292,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 @media (min-width: 861px) and (min-height: 541px) {
   body.mode-drive.cam-cab #bighud .bh-limw { display: none; }
   /* スタンプは 判定カードの 右どなりに(カードの下の「はやく しゅっぱつ」と かさねない) */
-  #stamp-pop { top: calc(var(--hud-top-h, 84px) + 8px); left: calc(50% + 232px); width: 170px; transform: none; }
+  #stamp-pop { top: calc(var(--hud-top-y, 84px) + 8px); left: calc(50% + 232px); width: 170px; transform: none; }
   #stamp-pop p { max-width: 170px; width: auto; white-space: normal; line-height: 1.45; padding: 5px 12px; font-size: var(--fs-body); }
 }
 @media (min-width: 861px) and (max-width: 1100px) {
@@ -1317,7 +1323,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 /* 背の低い横画面(スマホの横): 帯は 44px。見出しの文字は はぶく */
 @media (max-height: 540px) and (orientation: landscape) {
   :root { --hud-top-h: 52px; }
-  .hud-top { top: 6px; left: 8px; right: 8px; gap: 6px; flex-wrap: nowrap; }
+  .hud-top { top: calc(6px + var(--safe-t)); left: calc(8px + var(--safe-l)); right: calc(8px + var(--safe-r)); gap: 6px; flex-wrap: nowrap; }
   #bighud, #drive-head, .hud-top .gl-btn { height: 44px; min-height: 0; }
   #bighud { order: 0; flex: none; padding: 0 10px; gap: 8px; border-radius: 10px; }
   #bighud > .bh-row { flex: none; }
@@ -1330,9 +1336,9 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   #drive-head { padding: 2px 12px 3px; }
   #rs-win { height: 22px; }
   #brake-guide, body:not(.cam-cab) #brake-guide {
-    top: calc(var(--hud-top-h) + 6px); transform: scale(0.72); transform-origin: top right; animation-name: bgInS;
+    top: calc(var(--hud-top-y) + 6px); transform: scale(0.72); transform-origin: top right; animation-name: bgInS;
   }
-  #stamp-pop { top: calc(var(--hud-top-h) + 6px); }
+  #stamp-pop { top: calc(var(--hud-top-y) + 6px); }
 }
 
 /* ---- 大きく いきすぎた: 暗い幕 + カード(レバーは うごかない) ---- */

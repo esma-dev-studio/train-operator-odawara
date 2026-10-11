@@ -473,8 +473,11 @@ export class RailScene {
     this.scene.fog = new THREE.Fog(LOOK.day.fogFallback, LOOK.day.fog[1], LOOK.day.fog[2]);
     /* 遠景クリップは霧の終わりに合わせる(_applyLightLevel)。霧の向こうを描かないぶん描画が減る */
     this.camera = new THREE.PerspectiveCamera(58, 16 / 9, 0.3, LOOK.day.fog[2] + 60);
-    this.scene.add(this.camera);   // 運転台(cockpit)をカメラの子として描くため
+    this.scene.add(this.camera);   // 運転台(cockpit)は作るときだけカメラの子(すぐ下の useOverlay で自分のシーンへ移る)
     this.cockpit = new Cockpit(this.camera);
+    /* 運転台は最初から重ね描き用の自分のシーンへ移す(まだ何もコンパイルしていないので捨てるシェーダがない。
+     * 最初の renderOverlay で移すと、prewarm が作った重ね描き用のシェーダまで捨ててしまう) */
+    if (typeof this.cockpit.useOverlay === 'function') this.cockpit.useOverlay();
     this.camMode = 'cab';
     this._camBlend = 1;
     this.clockT = 0;
@@ -575,7 +578,7 @@ export class RailScene {
     this._buildEveningSky();
     this._buildNightSky();
     this.ensureEnv('clear');
-    if (this.weather !== 'clear') this.ensureEnv('rain');
+    if (this.weather !== 'clear' && this.timeOfDay !== 'night') this.ensureEnv('rain');
 
     /* ---- 雨・雪の粒(カメラ近傍だけ) ---- */
     this.weatherFx = new WeatherFx(this.scene, this.camera);
@@ -596,6 +599,8 @@ export class RailScene {
 
   setTimeOfDay(t) {
     this.timeOfDay = t;
+    /* 雨・雪のまま昼・夕方になったら曇りの空が要る(夜は夜空だけなので読まない) */
+    if (t !== 'night' && this.weather !== 'clear') this.ensureEnv('rain');
     /* 走行中に届いて待たせていた空は、ここ(運転開始・タイトルへ戻る暗転の中)で使いはじめる */
     if (this._lateN) this._promoteEnv(false);
     this._shadowDirty = true;
@@ -862,15 +867,20 @@ export class RailScene {
     /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
     this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
     const cap = (ms) => new Promise((res) => setTimeout(res, ms));
+    let env0 = null;
     try {
-      /* 雨・雪の空を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる) */
-      const wk = this.weather !== 'clear' ? 'rain' : 'clear';
-      const ld = this._envLoad[wk];
+      /* 使う空(HDR)を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる)。
+       * どの空を使うかは _applyAtmosphere と同じ決め方: 夜は夜空・晴れの夕方は夕焼けの空(どちらも待つ物がない) */
+      const tod = this.timeOfDay, wet = this.weather !== 'clear';
+      const wk = tod === 'night' ? null : wet ? 'rain' : tod === 'evening' ? null : 'clear';
+      const ld = wk ? this._envLoad[wk] : null;
       if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
         await Promise.race([ld, cap(3000)]);
       }
       if (this._lateN) this._promoteEnv(true);
       this._needPrewarm = false;
+      /* シェーダの完成を待つ間に空が届いて差しかわったら、仕上げの準備(_needPrewarm)を消さない */
+      env0 = this.scene.environment;
       this._placeView();
       const prev = r.getRenderTarget();
       let p = null;
@@ -892,7 +902,7 @@ export class RailScene {
     } catch (e) { /* noop */ }
     r.setRenderTarget(rt0);
     this._flushStale();
-    this._needPrewarm = false;
+    if (this.scene.environment === env0) this._needPrewarm = false;
     try { this.render(0); } catch (e) { /* noop */ }
   }
 
@@ -981,11 +991,11 @@ export class RailScene {
     const k = key === 'snow' || key === 'rain' ? 'rain' : key === 'clear' ? 'clear' : null;
     if (!k) return Promise.resolve(false);
     if ((this.env[k] && !this.env[k].placeholder) || this._envLate[k]) return Promise.resolve(true);
-    /* 曇りが届くまでの代わり: 背景は色、環境光は晴れ(なければ夕方)のもの。
+    /* 届くまでの代わり: 背景は色、環境光は曇りなら晴れ(なければ夕方)、晴れなら夕方のもの(どれも 256 の立方体)。
      * 環境光を null にすると全シェーダが別の版になり、届いたときに全部コンパイルしなおしになるため */
-    if (k === 'rain' && !this.env.rain) {
-      const st = (this.env.clear && this.env.clear.ibl) || (this.env.evening && this.env.evening.ibl) || null;
-      if (st) this.env.rain = { bg: this._wetBg, ibl: st, placeholder: true };
+    if (!this.env[k]) {
+      const st = (k === 'rain' && this.env.clear && this.env.clear.ibl) || (this.env.evening && this.env.evening.ibl) || null;
+      if (st) this.env[k] = { bg: k === 'rain' ? this._wetBg : new THREE.Color(0xa8c4dd), ibl: st, placeholder: true };
     }
     if (!this._envLoad[k]) this._envLoad[k] = this._loadHdr(k);
     return this._envLoad[k];
@@ -1038,8 +1048,12 @@ export class RailScene {
     this._lateN++;
     /* 最初の準備の前・止まっているときは すぐ使う。走っている最中なら、つぎの時間帯・天気・路線の切替(暗転中)まで待つ */
     const sim = this.sim;
-    /* いまは使っていない(先読み): 見た目は変えない。待たせている晴れの空(太陽の向きも変わる)は巻きこまない */
-    if (k === 'rain' && this.weather === 'clear') this._promoteEnv(false, 'rain');
+    /* いまは使っていない(先読み): 見た目は変えない。待たせているほかの空(晴れは太陽の向きも変わる)は巻きこまない。
+     * 使うかどうかは _applyAtmosphere と同じ決め方: 夜は夜空だけ・曇りは雨雪のときだけ・
+     * 晴れの空は昼と、雨雪の夕方(太陽の向き・曇りの代わりの環境光)で使う(晴れの夕方は夕焼けの空) */
+    const tod = this.timeOfDay, wet = this.weather !== 'clear';
+    const used = tod !== 'night' && (k === 'rain' ? wet : (wet || tod !== 'evening'));
+    if (!used) this._promoteEnv(false, k);
     else if (!this._booted || !sim || sim.ended || sim.v < 0.05) this._promoteEnv(true);
     return true;
   }
@@ -1170,8 +1184,16 @@ export class RailScene {
     /* 影の箱が動いた(2cm以上。止まっていても位置が計算の誤差でわずかにゆれるので、小さい差は数えない) */
     if (tg.distanceToSquared(this._shTgt) > 0.0004) { this._shTgt.copy(tg); act = true; }
     if (!act && dt > 0 && sim) {
+      /* ほかの列車は「影の箱が地面にとどく範囲」の中で動いていたら描きなおす(カメラのまわりだけ見ると、
+       * そらからの視点などで箱の先のほうに動かない影が残る)。
+       * 太陽の向きの前後は 上下の幅÷sin(高さ)(太陽から 430m の所に置くので far で打ち切り)、横は左右の幅 */
+      const sc = sun.shadow.camera, sd = this._curSunDir || this._sunDir;
+      const sinE = Math.max(0.09, Math.min(0.99, sd.y / sd.length()));
+      const reach = 30 + Math.hypot(Math.max(sc.right, -sc.left),
+        Math.min(Math.max(sc.top, -sc.bottom) / sinE, (sc.far - 430) / Math.sqrt(1 - sinE * sinE)));
+      const shS = this._shS != null ? this._shS : this._camS;
       if (sim.v > 0.5) act = true;
-      else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(this._camS, 250)) act = true;
+      else if (this.traffic && typeof this.traffic.anyNear === 'function' && this.traffic.anyNear(shS, reach)) act = true;
       else if (sim.doorOpen) slow = true;
       else {
         const cs = this.crossSpots;
@@ -1244,6 +1266,9 @@ export class RailScene {
     const A = this._aq || (this._aq = { t: 0, n: 0, hitch: -1e9, bad: 0, good: 0, mx: 0, forgot: false });
     const now = performance.now();
     if (dt >= 0.09) A.hitch = now;
+    /* 間引いて描く画面・ポーズ中・暗転中・出発直後は はからない(その間の rAF の間隔は 3Dの重さを表さない)。
+     * はかりかけの4秒も捨てる(なめらか・重いのどちらにも数えない) */
+    if (busy) { A.t = 0; A.n = 0; A.mx = 0; return null; }
     A.t += dt; A.n++;
     if (dt > A.mx) A.mx = dt;
     if (A.t < 4 - 1e-6) return null;   // 1/30秒を120回足しても4にわずかに届かないので少し余裕を見る
@@ -1283,7 +1308,7 @@ export class RailScene {
     /* 雨・雪の空(曇り)は使うときに読む。届くまでは代わりの背景色・環境光 */
     if (w === 'snow') this._wetBg.setHex(0xc9cfd5);
     else if (w === 'rain') this._wetBg.setHex(0x8d959c);
-    if (w !== 'clear') this.ensureEnv('rain');
+    if (w !== 'clear' && this.timeOfDay !== 'night') this.ensureEnv('rain');
     if (this._lateN) this._promoteEnv(false);
     this._shadowDirty = true;
     this._applyWeather();
@@ -1559,6 +1584,20 @@ export class RailScene {
     if (tk && tk.M) { for (const key in tk.M) if (tk.M[key] === m) m.userData.envKeep = true; }
     if (!m.userData.noWeather) installWeather(m, this.U);
     if (m.userData.puddle && m.userData.wxPudU) m.userData.wxPudU.value = 1;
+    /* 駅の材質(st-st)は屋根の天井・屋根の上・ベンチなども同じ材質なので、水たまりは屋根のない床だけ。
+     * 見分けは駅の頂点属性 stE(屋根のない床=0.1 / 屋根の下の床=0.22 / 天井0.15・照明の帯1 / ほか0) */
+    if (m.name === 'st-st' && m.userData.wx && !m.userData.wxPudMask) {
+      m.userData.wxPudMask = true;
+      const prevPm = m.onBeforeCompile, keyPm = m.customProgramCacheKey;
+      m.onBeforeCompile = (sh, r) => {
+        prevPm.call(m, sh, r);
+        if (sh.fragmentShader.indexOf('varying float vStE;') < 0) return;   // stE が無い作り方なら今までどおり
+        sh.fragmentShader = sh.fragmentShader.replace('wxPud = uWet *',
+          'wxPud = step( 0.05, vStE ) * ( 1.0 - step( 0.125, vStE ) ) * uWet *');
+      };
+      m.customProgramCacheKey = () => keyPm.call(m) + '|pm';
+      m.needsUpdate = true;
+    }
     if (m.userData.env0 === undefined) m.userData.env0 = m.envMapIntensity;
     this._envMats.add(m);
   }
@@ -2654,11 +2693,14 @@ export class RailScene {
     const sun = this.sun, dir = this._curSunDir || this._sunDir;
     const [tgt, lx, ly] = this._tv;
     const mode = this.camMode;
+    /* _shS: 影の箱の中心の線路上の位置(ほかの列車が影の箱の中で動いているかを見るのに使う) */
     if (mode === 'front' && this._frontCamS != null) {
       tgt.copy(f.p).lerp(frameAt(this.frames, this.step, Math.min(this.line.meta.length - 2, this._frontCamS)).p, 0.5);
+      this._shS = (s + this._frontCamS) / 2;
     } else {
       const ahead = mode === 'cab' ? 60 : mode === 'drone' ? 110 : mode === 'chase' ? 30 : -20;
       tgt.copy(f.p).addScaledVector(f.t, ahead);
+      this._shS = s + ahead;
     }
     if (sun.castShadow) {
       lx.crossVectors(UP, dir).normalize();

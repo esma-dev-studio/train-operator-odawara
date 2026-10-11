@@ -111,6 +111,7 @@ const App = {
       this.scene = new RailScene($('#gl'), this.attract.line, this.attract.sim, {
         quality: this.quality, timeOfDay: this.attract.tod, weather: 'clear',
         autoQ: !qp && !this.settings.quality,   // 画質「じどう」のときだけ、前回の軽量化レベルを引きつぐ
+        debug: this.debug,   // ?debug=1 のときだけ シェーダのエラーを コンソールに出す
       });
       this.scene.guide = this.settings.guide;
     } catch (err) {
@@ -276,6 +277,9 @@ const App = {
         if (this.mode === 'title' || this.mode === 'select' || this.mode === 'stamps') {
           if (this._qualityDirty) this._rebuildScene();
           this._enterAttract();
+          /* 新しいステージ(文脈)は シェーダが からっぽ。暗いうちに 作っておく
+           * (明けてから render の 先読みで 画面が かたまらないように。路線だけ かわったときは ほぼ つくりおきで すぐ) */
+          if (this.scene && this.scene.prewarm) { try { this.scene.prewarm(); } catch (e) { /* noop */ } }
         }
       } finally {
         if (!this._starting) fade.classList.remove('on');
@@ -679,6 +683,7 @@ const App = {
     this._attractLine(A, this.line);   // 新しいステージは さいしょから プレイヤーの路線で(2回 作らない)
     this.scene = new RailScene(cv, A.line, A.sim, {
       quality: this.quality, timeOfDay: A.tod, weather: 'clear', autoQ: !this._qp && !this.settings.quality,
+      debug: this.debug,
     });
     this.scene.guide = this.settings.guide;
     this.scene.setCameraMode(this._attractSeq(A)[A.camI] || 'chase');
@@ -747,7 +752,8 @@ const App = {
     $('#btn-to-settings').addEventListener('click', () => this.openSettings());
     $('#btn-set-close').addEventListener('click', () => {
       $('#screen-settings').classList.remove('active');
-      if (this._qualityDirty && this.mode !== 'drive' && this.mode !== 'result') this._rebuildScene();
+      /* 画質の作り直しも 暗転の中で(シェーダの 先読みまで すませてから 明ける) */
+      if (this._qualityDirty && (this.mode === 'title' || this.mode === 'select' || this.mode === 'stamps')) this._returnToAttract();
     });
     $('#cf-no').addEventListener('click', () => $('#confirm-modal').classList.add('hidden'));
     $('#cf-yes').addEventListener('click', () => { $('#confirm-modal').classList.add('hidden'); this._resetRecords(); });
@@ -767,7 +773,8 @@ const App = {
     $('#btn-overrun-go').addEventListener('click', () => {
       if (!this._overrun) return;
       this._setOverrun(false);
-      if (this.sim && typeof this.sim.acceptOverrun === 'function' && this.sim.acceptOverrun()) {
+      /* acceptOverrun は とうちゃく あつかいに する(先に よぶ)。しゅうてんでは そのまま 成績票へ すすむので、ひとことは 出さない */
+      if (this.sim && typeof this.sim.acceptOverrun === 'function' && this.sim.acceptOverrun() && !this.sim.finished) {
         /* はんていカードの あとに ひとこと(カードの上に かさねない) */
         this._queuePop(() => this.flashMsg('つぎは もっと はやく ブレーキ！', 2000), 0);
       }
@@ -880,13 +887,15 @@ const App = {
       this.go('drive');
       await nextFrame();
       this.beginRun(this.startIdx);
-      /* シェーダーの先読み: 少しずつ作れるなら(prewarmAsync) 待つ(ながくても6秒)。ないときは いっきに。
+      /* シェーダーの先読み: 少しずつ作れるなら(prewarmAsync) 待つ。ないときは いっきに。
+       * prewarmAsync は 中で 空まち3秒+コンパイルまち6秒までに おさえてある。ここの 10秒は そのうえの 保険
+       * (中より 先に 切ると、描画が 止まったまま 運転が はじまってしまう)。
        * 待つあいだは 時計を止める(暗いうちに 発車までの びょうが へらない) */
       this.running = false;
       const S = this.scene;
       if (typeof S.prewarmAsync === 'function') {
         try {
-          await Promise.race([S.prewarmAsync(), new Promise((r) => setTimeout(r, 6000))]);
+          await Promise.race([S.prewarmAsync(), new Promise((r) => setTimeout(r, 10000))]);
         } catch (e) { /* 先読みできなくても続行 */ }
       } else if (S.prewarm) {
         try { S.prewarm(); } catch (e) { /* noop */ }
@@ -933,6 +942,14 @@ const App = {
     if (typeof this.cab.setService === 'function') {
       this.cab.setService({ svcHtml: rubySvc(svcName), color: SVC_COLOR[this.service], destHtml: rubyStation(dest) + ' ゆき' });
     }
+    /* 計器盤(#cab)は 暗転(#fade)の そとにあり、先読み中は loop が 計器を 描かない。
+     * まえの運転の 表示(駅・レバー・夜の暗さ)が 残らないよう、新しい運転の 計器と 明るさを ここで1回 書いておく
+     * (明るさは scene の render と おなじ きめかた。先読み中は cockpit.light が うごかないため) */
+    if (typeof this.cab.setLight === 'function') {
+      this.cab.setLight(this.daytime === 'night' ? 0.16 : this.daytime === 'evening' ? 0.55
+        : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1);
+    }
+    try { this.cab.render(this.sim.hud()); } catch (e) { /* noop */ }
     this._runT0 = performance.now();
     if (this.audio) {
       this.audio.ensure();
@@ -1013,8 +1030,11 @@ const App = {
       clearTimeout(this._msgT);
       $('#msg-center').classList.add('hidden');
       $('#ov-txt').innerHTML = `「8」より <b>${Math.round(e.err)}m</b> さきで とまったよ`;
-      /* 「このまま つぎの駅へ」は エンジンに acceptOverrun が あるときだけ */
-      $('#btn-overrun-go').classList.toggle('hidden', !(this.sim && typeof this.sim.acceptOverrun === 'function'));
+      /* 「このまま つぎの駅へ」は エンジンに acceptOverrun が あるときだけ。しゅうてんでは つぎの駅が ないので「このまま おわる」 */
+      const ovGo = $('#btn-overrun-go');
+      ovGo.classList.toggle('hidden', !(this.sim && typeof this.sim.acceptOverrun === 'function'));
+      const lastSt = this.sim && this.sim.stopIdx >= this.sim.stops.length - 1;
+      ovGo.innerHTML = lastSt ? 'このまま おわる' : 'このまま つぎの<ruby>駅<rt>えき</rt></ruby>へ';
       this._setOverrun(true);
     }
     if (type === 'ats-brake') {
@@ -1504,6 +1524,9 @@ const App = {
   retryStation() {
     this._retried = true;   // とちゅうからやり直した運転はベスト記録に残さない
     this.sim.reset(this.lastStationIdx);
+    /* おなじ sim なので 音の「運転ごとの きおく」は かってに もどらない。いまの レバー・ブレーキに あわせる
+     * (やりなおしで カチャ(ノッチ)・プシューを ならさない) */
+    if (this.audio && typeof this.audio.resetRun === 'function') this.audio.resetRun(this.sim);
     this.scene._camPos = null;
     this.setPaused(false);
     this._setOverrun(false);

@@ -528,6 +528,14 @@ export class CabAudio {
     }
   }
 
+  /* やりなおし(おなじ sim を reset した): 運転ごとの きおくだけ いまの値に あわせなおす。
+   * update は sim が かわったときしか _resetRun しないので、ここで よぶ(ノッチの カチャ・ブレーキの プシューを ならさない) */
+  resetRun(sim) {
+    if (!sim) return;
+    this._sim = sim;
+    this._resetRun(sim);
+  }
+
   _resetRun(sim) {
     const pos = sim && Number.isFinite(sim.pos) ? sim.pos : 0;
     this._lastN = sim ? sim.notch : null;   // やりなおし・新しい運転ではカチャと鳴らさない

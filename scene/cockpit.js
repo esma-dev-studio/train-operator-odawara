@@ -3,12 +3,12 @@
  * 画面比率に合わせて「窓枠・ピラー・運転台の天板・ワイパー」を配置する。
  * 計器はHTML(#cab)側。ここは"窓から見える運転台のふち"だけを担当。
  *
- * 描き方: はじめはカメラの子として本体のシーンで描く。描画側が renderOverlay() を
- * 呼ぶようになると、自分のシーン(this.scene)へ移り、本体を描いたあとに深度だけ消して
+ * 描き方: はじめはカメラの子として本体のシーンで描く。描画側が useOverlay() か renderOverlay() を
+ * 呼ぶと、自分のシーン(this.scene)へ移り、本体を描いたあとに深度だけ消して
  * 上から描く(トーンマッピング・ブルーム・霧の影響を受けない)。
  * 材質はすべて MeshBasic(toneMapped:false)。色は計器盤(#cab)と同じ式で暗くする:
  *   #cab::after は rgb(2,4,7) を (1-明るさ)*0.62 だけ重ねる → shade() も同じ。
- * 外との約束: renderOverlay(renderer, camera) / setHeadOffset(dx,dy,pitch,roll) /
+ * 外との約束: useOverlay() / renderOverlay(renderer, camera) / setHeadOffset(dx,dy,pitch,roll) /
  *   update(dt, {light, night, wiper, snow}) / windowRects() / wiperScreen() / layoutFor(aspect)
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
@@ -219,7 +219,7 @@ export class Cockpit {
     this.root = new THREE.Group();
     this.root.renderOrder = 10;
     camera.add(this.root);
-    /* 上に重ねて描くとき用の自分のシーン(はじめは空。renderOverlay がはじめて呼ばれたら移る) */
+    /* 上に重ねて描くとき用の自分のシーン(はじめは空。useOverlay か 最初の renderOverlay で移る) */
     this.scene = new THREE.Scene();
     this._own = false;
     /* 頭の動き(運転台は車体に固定。目は少しだけ動く) */
@@ -277,22 +277,27 @@ export class Cockpit {
     }
   }
 
+  /* 重ね描き(自分のシーン)に切りかえる。描画側が最初の準備(prewarm)より前に呼んでおけば、
+   * まだ何もコンパイルしていないので捨てるシェーダがない(呼ばなければ最初の renderOverlay で切りかえる) */
+  useOverlay() {
+    if (this._own) return;
+    this._own = true;
+    if (this.root.parent) this.root.parent.remove(this.root);
+    this.root.position.set(0, 0, 0);
+    this.root.rotation.set(0, 0, 0);
+    this.root.updateMatrix();
+    this.scene.add(this.root);
+    this.root.matrixAutoUpdate = false;
+    /* 本体のシーン用に作られていたシェーダは もう使わないので手放す(材質ごとに作りおきされて残るため)。
+     * 次に描くときに上描き用だけが作られる */
+    [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill]
+      .forEach((m) => m.dispose());
+  }
+
   /* 本体を描いたあとに呼ぶ: 深度だけ消して運転台を上から描く(トーンマッピング・ブルームなし) */
   renderOverlay(renderer, camera) {
     if (!renderer || !camera) return;
-    if (!this._own) {
-      this._own = true;
-      if (this.root.parent) this.root.parent.remove(this.root);
-      this.root.position.set(0, 0, 0);
-      this.root.rotation.set(0, 0, 0);
-      this.root.updateMatrix();
-      this.scene.add(this.root);
-      this.root.matrixAutoUpdate = false;
-      /* 本体のシーン用に作られていたシェーダは もう使わないので手放す(材質ごとに作りおきされて残るため)。
-       * 次に描くときに上描き用だけが作られる */
-      [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill]
-        .forEach((m) => m.dispose());
-    }
+    if (!this._own) this.useOverlay();
     if (!this.root.visible) return;
     this.root.matrix.multiplyMatrices(camera.matrixWorld, this._off);
     this.root.matrixWorldNeedsUpdate = true;
