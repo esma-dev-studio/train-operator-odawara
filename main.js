@@ -409,8 +409,10 @@ const App = {
         const a = stops[Math.min(stops.length - 2, L.startIdx || 0)];
         const b = stops[L.endIdx == null ? stops.length - 1 : Math.min(stops.length - 1, L.endIdx)];
         const tod = TOD_WORD[L.daytime] ? L.daytime : 'day', wx = WX_WORD[L.weather] ? L.weather : 'clear';
-        sub = `<span class="nw">${rubySvc(svc.name)}</span> <span class="nw">${rubyStation(a.name)} → ${rubyStation(b.name)}</span>`
-          + ` <span class="nw q-cond">${icon(TOD_ICO[tod])}${TOD_WORD[tod]} ${icon(WX_ICO[wx])}${WX_WORD[wx]}</span>`;
+        /* 小さい 1行なので かなで(ふりがなを つけると 字が ばらける) */
+        const k = (n) => kanaOf(n) || n;
+        sub = `<span class="nw">${SVC_KANA[svc.name] || svc.name}</span>　<span class="nw">${k(a.name)} → ${k(b.name)}</span>`
+          + `<span class="nw q-cond">${icon(TOD_ICO[tod])}${TOD_WORD[tod]} ${icon(WX_ICO[wx])}${WX_WORD[wx]}</span>`;
       } catch (e) { sub = ''; }
     }
     const show = ok && !!sub;
