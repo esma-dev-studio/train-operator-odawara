@@ -540,7 +540,7 @@ function buildStairs(rs, B, st, S, ob) {
     const fb = frameOf(rs, st.s - STAIR.foot + 0.3);
     [-0.98, 0.98].forEach((x) => {
       const l = lat + x;
-      B.post(fb.p.x + fb.left.x * l, fb.p.y + 1.05, fb.p.z + fb.left.z * l, 2.55, 0x8d959b, 1.5);
+      B.post(fb.p.x + fb.left.x * l, fb.p.y + 1.05, fb.p.z + fb.left.z * l, 2.75, 0x8d959b, 1.5);
     });
     /* 跨線橋: 階段の上から橋までの踊り場(屋根つき)と、それをささえる柱 */
     if (S.kind === 'foot') {
@@ -627,7 +627,6 @@ export function buildStations(rs) {
   const housGeo = new THREE.BoxGeometry(2.4, 0.55, 0.15);
   const clockB = bakerFor(rs, M.clock, M.clock);
   const stripB = bakerFor(rs, M.strip, M.strip, { build: { recv: false } });
-  const FB = bakerFor(rs, M.fixture, M.fixture, { build: { recv: false } });
   /* 発車標(オレンジのLED): 全線で画像2枚(この電車の向き / 反対の向き)・描画2回 */
   const ledMat = (tex) => {
     const m = new THREE.MeshBasicMaterial({ map: tex, color: new THREE.Color(2.2, 2.2, 2.2) });
@@ -761,7 +760,8 @@ export function buildStations(rs) {
             B.post(c.x, f.p.y + 1.05, c.z, 4.0, 0x6f777d, 1.6);
             q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
             c.y = f.p.y + 1.05 + 4.0;
-            FB.geo(lampGeo.head, { m: m4.compose(c, q, one), white: true });
+            /* 灯具は駅の形に焼きこむ(自発光1=夜は屋根の照明の帯と同じ明るさ。昼は消えた灯具。描画回数はふえない) */
+            B.geo(lampGeo.head, { m: m4.compose(c, q, one), white: true, col: 0xfffaf0, e: 1 });
             c.y += 0.08;
             B.geo(lampGeo.cap, { m: m4.compose(c, q, one), col: 0x3a4045, white: true });
             pools.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: qFloor(f), sx: Math.abs(P.back - P.edge) + 0.4, sy: 7 });
