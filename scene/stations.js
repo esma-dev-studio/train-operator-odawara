@@ -432,8 +432,8 @@ function platformEnd(rs, B, sEnd, sg, out) {
   const P = sideOf(sg), T = _pe;
   frameInto(rs, sEnd, T.f0);
   frameInto(rs, sEnd + out * 5, T.f1);
-  /* (a) 係員用のスロープ: ホームのうしろ寄り1.2m、端から外へ5mで地面近くまで下る */
-  const li = P.back - 1.25 * sg, lo = P.back - 0.05 * sg;
+  /* (a) 係員用のスロープ: ホームのうしろ寄り1m、端から外へ5mで地面近くまで下る */
+  const li = P.back - 1.05 * sg, lo = P.back - 0.05 * sg;
   const pt = (f, lat, y) => [f.p.x + f.left.x * lat, f.p.y + y, f.p.z + f.left.z * lat];
   const a1 = pt(T.f0, li, 1.05), a2 = pt(T.f0, lo, 1.05), b1 = pt(T.f1, li, 0.15), b2 = pt(T.f1, lo, 0.15);
   const a1d = pt(T.f0, li, -0.4), a2d = pt(T.f0, lo, -0.4), b1d = pt(T.f1, li, -0.4), b2d = pt(T.f1, lo, -0.4);
@@ -449,10 +449,10 @@ function platformEnd(rs, B, sEnd, sg, out) {
   B.geo(g, { white: true, col: 0x9e9b94 });
   /* (b) 端の柵(へりから0.35m 〜 スロープの手前。高さ1.1m) */
   const ff = frameInto(rs, sEnd - out * 0.3, T.ff);
-  const la = P.edge + 0.35 * sg, lb = P.back - 1.3 * sg;
+  const la = P.edge + 0.35 * sg, lb = P.back - 1.1 * sg;
   B.geo(fenceQuad(ff, la, lb, 1.05, 2.15));
   /* (c) スロープの入口の黄色い棒(黒い帯3本)と、ちょうつがいの柱 */
-  const g0 = P.back - 1.3 * sg, g1 = P.back - 0.05 * sg, gm = (g0 + g1) / 2, gl = Math.abs(g1 - g0);
+  const g0 = P.back - 1.1 * sg, g1 = P.back - 0.05 * sg, gm = (g0 + g1) / 2, gl = Math.abs(g1 - g0);
   if (!_gateGeo) _gateGeo = { bar: new THREE.BoxGeometry(1, 0.05, 0.05), band: new THREE.BoxGeometry(0.12, 0.058, 0.058) };
   T.q.setFromAxisAngle(UPV, Math.atan2(ff.t.x, ff.t.z));      // 箱の x = 線路の左右
   T.c.copy(ff.p).addScaledVector(ff.left, gm); T.c.y = ff.p.y + 2.0;
@@ -1513,10 +1513,12 @@ export function buildCrowds(rs) {
       }
       /* ホームの先のほう(止まった運転台の前に見えるところ)にも数人。
        * 左は窓のすぐ横ではなく 7.5m 以上先の うしろ寄り(視界をふさがない) */
-      const nFront = isTerm ? 0 : 3 + Math.floor(rnd() * 2);
-      for (let i = 0, tries = 0; i < nFront && tries < 40; tries++) {
-        const s = side > 0 ? st.s + 7.5 + rnd() * 6 : st.s + 4 + rnd() * 9.5;
-        const lat = side > 0 ? 3.95 + rnd() * 0.65 : -6.6 - rnd() * 0.7;
+      /* 新宿(島式ホーム)は人が多い: 発車を待つ運転台の前の島にも */
+      const nFront = isTerm ? 6 + Math.floor(rnd() * 3) : 3 + Math.floor(rnd() * 2);
+      const frontLen = isTerm ? sMax - st.s - 4 : 9.5;
+      for (let i = 0, tries = 0; i < nFront && tries < 60; tries++) {
+        const s = side > 0 && !isTerm ? st.s + 7.5 + rnd() * 6 : st.s + 4 + rnd() * frontLen;
+        const lat = isTerm ? (side > 0 ? 2.7 + rnd() * 1.2 : -6.5 - rnd() * 1.2) : side > 0 ? 3.95 + rnd() * 0.65 : -6.6 - rnd() * 0.7;
         if (!free(s, lat, 0.3)) continue;
         put(s, lat, side, (rnd() - 0.5) * 2.6);
         i++;
