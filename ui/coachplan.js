@@ -39,8 +39,13 @@ export function makePlanState() {
     res: { kind: 'none', cur: 0, best: 0, steps: 0, eCur: null, eBest: null },
   };
 }
+/* st なしで よばれたときの おきば */
+const _spare = makePlanState();
 
 export function brakePlan(sim, dist, st) {
+  /* よぶ側が makePlanState をつかわず {} を わたしたときも こわれない(はじめの1回だけ 中身を そろえる) */
+  if (!st) st = _spare;
+  if (!st.res) { const s0 = makePlanState(); for (const k in s0) st[k] = s0[k]; }
   const r = st.res;
   const notch = sim.notch;
   const t = sim.t;

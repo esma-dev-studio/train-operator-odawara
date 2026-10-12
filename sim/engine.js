@@ -201,6 +201,9 @@ export class TrainSim {
       if (s < 300 || inWin(s)) continue;     // ずらした先も ホームなら やめる(駅が つづくところ)
       blocks.push({ s, kind: 'block' });
     }
+    /* 閉そく信号が 立ちうる位置(種別に よらない。下の「250m より近いものは やめる」の前)。
+     * 線路わきの標識(勾配標)が どの種別の 信号とも かさならないように scene/signage.js が つかう */
+    this.blockSpots = blocks.map((b) => b.s);
     /* 前に のこした信号(出発信号もふくむ)から 250m より近い閉塞信号は やめる(信号が 2つ ならばない) */
     const all = deps.concat(blocks).sort((a, b) => a.s - b.s);
     const sigs = [];

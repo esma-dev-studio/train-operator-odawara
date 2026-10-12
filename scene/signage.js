@@ -555,7 +555,12 @@ export function buildBoards(rs, plat, inPlat, ahead) {
   const busy = [];
   rs.line.limits.forEach((z) => busy.push(z.from - 15, z.to + 10));
   rs.line.stations.forEach((st) => [300, 200, 100, 50].forEach((dd) => busy.push(st.s + A8 - dd)));
-  if (rs.sim && rs.sim.signals) rs.sim.signals.forEach((g) => busy.push(g.s, g.s - 25));
+  /* 信号機(と 25m 手前の 地上子)。種別を かえても 路線(ワールド)は 作りなおさないので、
+   * どの種別でも 立ちうる位置(閉そく信号の候補 sim.blockSpots・すべての駅の 出発信号 st.s+40)を よける */
+  const sigAt = (s) => busy.push(s, s - 25);
+  if (rs.sim && rs.sim.blockSpots) rs.sim.blockSpots.forEach(sigAt);
+  else if (rs.sim && rs.sim.signals) rs.sim.signals.forEach((g) => sigAt(g.s));
+  rs.line.stations.forEach((st) => sigAt(st.s + 40));
   const cross = rs.crossSpots || [];
   const pegGap = (s) => { const d = up ? L - pad - s : s - pad; return Math.abs(d - Math.round(d / 50) * 50); };
   const free = (s) => s > 30 && s < L - 30 && !skip(s) && pegGap(s) > 2 &&

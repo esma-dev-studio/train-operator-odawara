@@ -14,6 +14,7 @@
  *   noseX() = そのときの 先頭の位置(画面の px)。判定カードの 列車の先頭は そこから すべりだす。
  * 毎フレーム update(pin, ok) と ruler(d, v, ok) を呼ぶ。DOM を書きかえるのは 値が かわったときだけ
  * (transform・opacity・CSS変数。1要素ずつ)。#coach の位置は resize と ものさしを出すときだけ 読む。
+ * お知らせ(#msg-center)が ものさしの場所に出ているあいだは、ものさしを その上へ よける(出た/消えたときだけ 読む)。
  * 使い方: const p = createStopPin(hudEl, { label: false }); p.resize(w, h);
  *         p.update(scene.stopPin, show); p.ruler(dist, v, show); if (p.rulerOn) …; p.noseX(); p.hide();
  * ========================================================= */
@@ -154,11 +155,15 @@ export function createStopPin(hudEl, opts) {
   }
   const nose = rl ? rl.querySelector('.sr-nose') : null;
   const coach = doc ? doc.getElementById('coach') : null;
+  /* お知らせ(main.js の #msg-center)。広い画面では コーチの すぐ上 = ものさしと おなじ場所に出るので、
+   * 出ているあいだは ものさしを その上へ よける(お知らせの 字を かくさない) */
+  const msg = doc ? doc.getElementById('msg-center') : null;
+  const msgOn = () => !!(msg && !msg.classList.contains('hidden'));
   const wrapOf = () => (host && host.closest ? host.closest('#gl-wrap') : null) || host;
 
   let W = 0, H = 0;
   let on = false, lx = -1e9, ly = -1e9, ls = -1, lm = -1, lf = -1;
-  let rOn = false, rx = -1, rBottom = -1, rWidth = -1, frozen = false, fzT = 0, nx = null;
+  let rOn = false, rx = -1, rBottom = -1, rWidth = -1, frozen = false, fzT = 0, nx = null, mOn = false;
   if (host && host.getBoundingClientRect) {
     /* 最初の大きさ(あとは resize で受けとる。毎フレーム読まない) */
     const r = wrapOf().getBoundingClientRect();
@@ -169,16 +174,26 @@ export function createStopPin(hudEl, opts) {
     on = v;
     el.classList.toggle('on', v);
   };
-  /* ものさしの はばと 高さ(コーチの上 12px)。resize と 出すときだけ(レイアウトを読むので 毎フレームは よばない) */
+  /* ものさしの はばと 高さ(コーチの上 12px)。resize・出すとき・お知らせが 出た/消えたときだけ
+   * (レイアウトを読むので 毎フレームは よばない) */
   const placeRuler = () => {
     if (!rl) return;
     const w = Math.max(160, Math.min(RW, Math.round(W * 0.6)));
+    if (w !== rWidth) { rWidth = w; rl.style.width = w + 'px'; rl.style.marginLeft = -w / 2 + 'px'; }
     let bottom = 14 + 46 + 12;   // コーチが かくれているときの 目安(1行の コーチの上)
+    const wr = wrapOf().getBoundingClientRect();
     if (coach && coach.offsetHeight > 0) {
-      const cr = coach.getBoundingClientRect(), wr = wrapOf().getBoundingClientRect();
+      const cr = coach.getBoundingClientRect();
       if (cr.height > 0 && wr.height > 0) bottom = Math.round(wr.bottom - cr.top + 12);
     }
-    if (w !== rWidth) { rWidth = w; rl.style.width = w + 'px'; rl.style.marginLeft = -w / 2 + 'px'; }
+    /* お知らせが ものさしの 場所に かさなって 出ているときは、お知らせの 8px 上へ */
+    if (mOn && wr.height > 0) {
+      const mr = msg.getBoundingClientRect(), rr = rl.getBoundingClientRect();
+      const top = wr.bottom - bottom - RH, bot = wr.bottom - bottom;
+      if (mr.height > 0 && mr.top < bot && mr.bottom > top && mr.left < rr.right && mr.right > rr.left) {
+        bottom = Math.round(wr.bottom - mr.top + 8);
+      }
+    }
     if (bottom !== rBottom) { rBottom = bottom; rl.style.bottom = bottom + 'px'; }
   };
   /* 先頭の位置(画面の px)を おぼえる。レイアウトを読むので 止まったとき・かくれるときだけ */
@@ -259,7 +274,8 @@ export function createStopPin(hudEl, opts) {
         showRuler(false);
         return;
       }
-      if (!rOn) { nx = null; placeRuler(); }
+      if (!rOn) { nx = null; mOn = msgOn(); placeRuler(); }
+      else if (msgOn() !== mOn) { mOn = !mOn; placeRuler(); }   // お知らせが 出た/消えた(クラスを 見るだけ。レイアウトは 読まない)
       const x = Math.round(rulerX(d) * 10) / 10;
       if (x !== rx && nose) { rx = x; nose.style.transform = 'translateX(' + (x - 100).toFixed(1) + '%)'; }
       showRuler(true);
