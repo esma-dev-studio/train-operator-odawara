@@ -46,6 +46,8 @@ export function brakePlan(sim, dist, st) {
   const t = sim.t;
   /* まえの けいさんを つかう(150ms たっていない・段が おなじ・やりなおしで 位置が とんでいない) */
   if (t >= st.t && t - st.t < EVERY && notch === st.notch && Math.abs(dist - st.dist) < 20) return r;
+  /* しばらく よばれなかった・位置が とんだ(つぎの駅・やりなおし)ときは、まえの めあてを わすれる */
+  if (t < st.t || t - st.t > 1 || Math.abs(dist - st.dist) >= 20) st.kind = 'none';
   st.t = t; st.notch = notch; st.dist = dist;
 
   r.cur = notch; r.best = notch; r.steps = 0; r.eCur = null; r.eBest = null;

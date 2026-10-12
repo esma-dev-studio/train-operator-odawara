@@ -65,7 +65,7 @@ function drive(policy, react) {
     if (lastDir && dir !== lastDir) per.rev++;
     lastDir = dir;
   };
-  /* こどもが いま ねらう段(null = 自動運転に まかせる) */
+  /* こどもが いま ねらう段(null = 自動運転に まかせる / 'coast' = 「ブレーキまで あと ◯m」: 駅のための ブレーキは まだ かけない) */
   const want = () => {
     const nx = sim.stops[sim.stopIdx];
     if (!nx || sim.doorOpen) return null;
