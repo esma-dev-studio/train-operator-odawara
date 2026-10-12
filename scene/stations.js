@@ -1360,12 +1360,13 @@ export function buildTerminal(rs) {
     const sx = snap(x);
     stripB.geo(profileStrip(F, i0 + 1, i1 - 1, [[sx - 0.16, H - 0.05, 0], [sx + 0.16, H - 0.05, 1]]));
   });
-  /* ホームの床の灯りの帯(屋内なので いつも。つぎ目のない帯) */
+  /* ホームの床の灯りの帯(屋内なので いつも。つぎ目のない帯)。昼は屋根の下の明るさ合わせで明るくなるので
+   * 控えめに(0.36 では床が白いプラスチックのように見えた。床の p50 を 180〜190 に) */
   [mid(PLAT.L), mid(PLAT.R)].forEach((lat) => {
     for (let s = Math.ceil((pa + 4) / 6) * 6 + 3; s < pb - 2; s += 6) {
       frameInto(rs, s, f);
       flatT(f, tf);
-      W.indoorStrips.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: Math.abs(PLAT.L.back - PLAT.L.edge) + 0.4, sy: 12, k: 0.36 });
+      W.indoorStrips.push({ p: f.p.clone().addScaledVector(f.left, lat).setY(f.p.y + 1.062), q: new THREE.Quaternion().setFromRotationMatrix(m4.makeBasis(f.left.clone().negate(), tf, UPV)), sx: Math.abs(PLAT.L.back - PLAT.L.edge) + 0.4, sy: 12, k: 0.12 });
     }
   });
 
@@ -1451,11 +1452,11 @@ export function buildTerminal(rs) {
    * 絵はみな発車標と同じ画像(TERM_EX)・同じ材質で、描画は発車標といっしょ(ふえない)。枠・改札機は駅の形に焼きこむ */
   const exUV = (r) => ledT0.userData.uvPx(r[0], ey + r[1], r[2], ey + r[3]);
   const posterUV = TERM_EX.poster.map(exUV);
-  /* 壁の広告(3.2x1.4m・まん中はレール面から2.2m)を12mごとに両がわの壁へ。柱と同じ位置はよける。
-   * 黒い枠(3.4x1.6x0.12)の前に、内がわを向けて */
+  /* 壁の広告(3.2x1.4m・まん中はレール面から2.2m)を12mごとに両がわの壁へ(s0 から 12m おき: くだりの出発の
+   * 最初の画面で 13m・25m 先の2枚が 左の壁に見える)。柱と同じ位置はよける。黒い枠(3.4x1.6x0.12)の前に、内がわを向けて */
   const frameGeo = new THREE.BoxGeometry(0.12, 1.6, 3.4);
   let pk = 0;
-  for (let s = T.s0 + 6 - 12 * Math.floor((T.s0 + 6 - (T.a + 6)) / 12); s < T.b - 3; s += 12) {
+  for (let s = T.s0 + 12 - 12 * Math.floor((T.s0 + 12 - (T.a + 6)) / 12); s < T.b - 3; s += 12) {
     if (colS.some((x) => Math.abs(x - s) < 2.2)) continue;
     frameInto(rs, s, f);
     q.setFromAxisAngle(UPV, Math.atan2(f.t.x, f.t.z));
@@ -2059,17 +2060,24 @@ function crowdRes(rs) {
     [new THREE.BoxGeometry(0.26, 0.82, 0.18).translate(0, 0.41, 0), 0x2c3138, { stPants: 1 }],
     [new THREE.BoxGeometry(0.2, 0.26, 0.21).translate(0, 1.58, 0), 0x6b5444],
   ], EXN);
-  /* 足もとの影: 黒い だ円のぼかし(光だまりと同じ材質の作り・合成はふつう。プログラムは光だまりと同じ 'pool')。
-   * 光だまりの絵(まん中だけ濃い)では くつにかくれて見えないので、ふちまで なだらかに濃い絵を使う */
+  /* 足もとの影: 黒い だ円(光だまりと同じ材質の作り・合成はふつう。プログラムは光だまりと同じ 'pool')。
+   * 運転台の低い目線からは だ円のまん中が くつにかくれ、明るい床はトーンマッピングの肩で うすい影が消えるので、
+   * 半径の0.78倍までは同じ濃さ・ふちだけ なめらかに消える形にする(まん中だけ濃い光だまりの絵では見えない)。
+   * 画素を直接書く(64x64) */
   const shTex = canvasTexture(64, 64, (c) => {
-    const g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.45, 'rgba(255,255,255,0.8)');
-    g.addColorStop(0.8, 'rgba(255,255,255,0.28)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+    const im = c.createImageData(64, 64);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const r = Math.hypot(x + 0.5 - 32, y + 0.5 - 32) / 32;
+        const t = Math.min(1, Math.max(0, (r - 0.78) / 0.22));
+        const o = (y * 64 + x) * 4;
+        im.data[o] = im.data[o + 1] = im.data[o + 2] = 255;
+        im.data[o + 3] = r >= 1 ? 0 : Math.round(255 * (1 - t * t * (3 - 2 * t)));
+      }
+    }
+    c.putImageData(im, 0, 0);
   });
-  const shMat = makePoolMaterial(shTex, { color: 0x000000, opacity: 0.38 });
+  const shMat = makePoolMaterial(shTex, { color: 0x000000, opacity: 0.55 });
   shMat.blending = THREE.NormalBlending;
   shMat.name = 'st-footshadow';
   const shGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
@@ -2217,7 +2225,7 @@ export function buildCrowds(rs) {
      * 光だまりと同じプログラム('pool')で、合成だけ ふつう(加算でない)。歩く人には つけない */
     const shIm = new THREE.InstancedMesh(R.shGeo, R.shMat, items.length);
     items.forEach((it, i) => {
-      sc.set(0.75 * it.sc, 1, 0.55 * it.sc);      // 肩のはばの向きに長い だ円
+      sc.set(1.1 * it.sc, 1, 0.85 * it.sc);       // 肩のはばの向きに長い だ円(運転台の低い目線からも くつの外に見える大きさ)
       p.copy(it.p); p.y += 0.012;
       shIm.setMatrixAt(i, m4.compose(p, q.setFromAxisAngle(UPV, it.yaw), sc));
     });

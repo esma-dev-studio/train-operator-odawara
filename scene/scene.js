@@ -3624,14 +3624,15 @@ export class RailScene {
     } else if (mode === 'side') {
       /* 防音壁(高さ1.9m)ごしでも車体が見えるよう、少し高い位置から。
        * 多摩川の橋の上(前後12mをふくむ)は右がわから: 左の 13.5m は急行線のトラスの面(13.25)のすぐ外で、
-       * 部材が画面をふさぐ。右は自分のトラスの右の面(-6.25)の 7.25m 外で、トラス1つごしに電車が見える */
+       * 部材が画面をふさぐ。右は自分のトラスの右の面(-6.25)の 10.75m 外(-17m)で、トラス1つごしに電車が見える
+       * (近いと手前の斜材が太く写って画面の1割ちかくをふさぐ) */
       const fc = at(s - 22);
       const inT = this._inTunnel(s - 22) || this._inTerminal(s - 22, 6);
       const rv = this.line.sections.river;
       let onBr = false;
       for (let i = 0; i < rv.length; i++) if (s - 22 >= rv[i].from - 12 && s - 22 <= rv[i].to + 12) onBr = true;
-      const p = fc.p.clone().addScaledVector(fc.left, inT ? 4.4 : onBr ? -13.5 : 13.5);
-      p.y += inT ? 2.6 : onBr ? 5.0 : 6.2;
+      const p = fc.p.clone().addScaledVector(fc.left, inT ? 4.4 : onBr ? -17 : 13.5);
+      p.y += inT ? 2.6 : onBr ? 4.6 : 6.2;
       cam.position.copy(p);
       const look = at(s - 14).p.clone();
       look.y += 2.0;
