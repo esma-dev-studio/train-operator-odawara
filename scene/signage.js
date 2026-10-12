@@ -50,18 +50,29 @@ export function canvasTexture(w, h, draw, opt = {}) {
   return t;
 }
 
-/* Webフォント(Zen Kaku Gothic New)が後から届いたら、文字の入ったキャンバスを1回だけ描き直す */
+/* Webフォント(Zen Kaku Gothic New)が後から届いたら、文字の入ったキャンバスを1回だけ描き直す。
+ * 3つの太さが そろっていると わかった文字は おぼえて(_fontOk)、つぎからは しらべない
+ * (毎回の document.fonts.check をやめる。日本語のフォントは 文字の グループごとに 読みこむので、
+ *  ひとつの フラグではなく 文字ごとに おぼえる。全部 わかっている文字なら すぐ もどる) */
+const _fontOk = new Set();
+const fontsKnown = (text) => {
+  for (const ch of text) if (!_fontOk.has(ch)) return false;
+  return true;
+};
 let _fontQ = null;
 export function redrawWhenFonts(tex, text) {
   if (typeof document === 'undefined' || !document.fonts || !document.fonts.load) return;
+  if (fontsKnown(text || '')) return;
   if (!_fontQ) {
     const q = _fontQ = { texs: new Set(), text: '' };
     Promise.resolve().then(() => {
       _fontQ = null;
       const specs = ['900', '700', '500'].map((w) => `${w} 40px "Zen Kaku Gothic New"`);
       const txt = q.text || 'あ';
-      if (specs.every((s) => { try { return document.fonts.check(s, txt); } catch (e) { return false; } })) return;
+      const ok = () => { for (const ch of txt) _fontOk.add(ch); };
+      if (specs.every((s) => { try { return document.fonts.check(s, txt); } catch (e) { return false; } })) { ok(); return; }
       Promise.all(specs.map((s) => document.fonts.load(s, txt))).then(() => {
+        ok();
         q.texs.forEach((t) => { if (t.userData.redraw) t.userData.redraw(); });
       }).catch(() => {});
     });
@@ -307,6 +318,10 @@ function boardAtlas(rs) {
   };
   mat.customProgramCacheKey = () => 'st-lineside';
   const A = rs._atlas = { tex, mat, text: '', white: [1 - C / 2 / W, C / 2 / H] };
+  const CELLS = (W / C) * (H / C) - 1;   // 右下の白いマスの ぶんを のこす
+  /* 新しいマスが まだ入るか(reserve = あとで作る標識のために のこしておく 大きいマスの数) */
+  A.room = (isSmall, reserve) => (isSmall && small && small.k < 4) || next < CELLS - (reserve || 0);
+  A.used = () => next;
   A.cell = (key, fn, isSmall) => {
     let x, y, s;
     if (isSmall) {
@@ -384,6 +399,19 @@ const drawTomare = (c, s) => {
   c.fillStyle = '#ecece6';
   fitText(c, 'とまれ', s / 2, s / 2 + 2, s - 8, s * 0.42, 900);
 };
+/* 勾配標(こうばいひょう): 白い板に 黒い腕(のぼり=右上がり / くだり=右下がり / たいら=水平)と、
+ * 1000m で なんm のぼる(くだる)かの数字(運転台の「のぼりざか 5‰」と おなじ数)。0 は「たいら」 */
+const drawGrad = (g) => (c, s) => {
+  const k = s / 64;
+  c.fillStyle = '#f4f4f0'; c.fillRect(0, 0, s, s);
+  c.strokeStyle = '#16191c'; c.lineWidth = 3 * k; c.strokeRect(2 * k, 2 * k, s - 4 * k, s - 4 * k);
+  const dy = g > 0 ? -7 : g < 0 ? 7 : 0;
+  c.lineCap = 'round'; c.lineWidth = 5 * k;
+  c.beginPath(); c.moveTo(11 * k, (17 - dy) * k); c.lineTo(53 * k, (17 + dy) * k); c.stroke();
+  c.fillStyle = '#111111';
+  if (g === 0) fitText(c, 'たいら', s / 2, 45 * k, s - 10 * k, 18 * k, 900);
+  else fitText(c, String(Math.abs(g)), s / 2, 45 * k, s - 12 * k, 34 * k, 900);
+};
 /* ホームの端の柵の札「この さき はいれません」(白地に赤いふち) */
 const drawNoEntry = (c, s) => {
   const k = s / 128;
@@ -423,7 +451,9 @@ export function lineBoard(rs, key) {
   const [kind, val] = key.split(':');
   if (kind === 'lim') fn = boardDraw('#e8bf1f', '#111111', val, val.length > 2 ? 72 : 88);
   else if (kind === 'kai') fn = boardDraw('#f4f4f0', '#111111', '解', 78);
-  else if (kind === 'stop8') fn = boardDraw('#ffffff', '#111111', '8', 96, 900, '#111');
+  /* 停止位置目標: 黒い板に白い8・白いふち(画面の「8」の目印・判定カード・ブレーキめやすと おなじ見た目。
+   * 夜は 線路わきの自発光で 白い数字が すこし光る) */
+  else if (kind === 'stop8') fn = boardDraw('#0b0d0f', '#ffffff', '8', 100, 900, '#ffffff');
   else if (kind === 'appr') fn = drawAppr(val);
   else if (kind === 'noent') fn = drawNoEntry;
   else if (kind === 'itv') fn = drawItv;
@@ -431,9 +461,10 @@ export function lineBoard(rs, key) {
   else if (kind === 'tomare') fn = drawTomare;
   else if (kind === 'km') { fn = boardDraw('#f2f2ee', '#16283a', val, val.length > 1 ? 70 : 84, 900, '#16283a'); small = true; }
   else if (kind === 'nori') { fn = boardDraw('#20272d', '#ffffff', val, 88, 900, '#f2c230'); small = true; }
+  else if (kind === 'grad') { fn = drawGrad(+val); small = true; }
   else fn = boardDraw('#ffffff', '#111111', val || key, 60);
   const uv = A.cell(key, fn, small);
-  A.text += (val || '') + '解8' + (kind === 'appr' ? 'とまるでm' : kind === 'noent' ? 'このさきはいれません' : kind === 'tomare' ? 'とまれ' : '');
+  A.text += (val || '') + '解8' + (kind === 'appr' ? 'とまるでm' : kind === 'noent' ? 'このさきはいれません' : kind === 'tomare' ? 'とまれ' : kind === 'grad' ? 'たいら' : '');
   const ent = { tex: A.tex, mat: A.mat, uv };
   rs._texCache.set(key, ent);
   return ent;
@@ -518,6 +549,73 @@ export function buildBoards(rs, plat, inPlat, ahead) {
     /* 数字の札は白い杭の、列車が来る側の面に */
     if (km) face(s - 0.08, 2.0, 0, `km:${d / 1000}`, 0.3, 0.52, true);
   }
+
+  /* 勾配標: 坂の かわりめに 小さな白い板(キロ程の杭と おなじ列・線路から2.0m・細い柱)。
+   * ホーム・トンネル・橋・踏切・ほかの板(制限・予告・信号)・キロ程の杭の そばは 6m ずつ ずらし、だめなら立てない */
+  const busy = [];
+  rs.line.limits.forEach((z) => busy.push(z.from - 15, z.to + 10));
+  rs.line.stations.forEach((st) => [300, 200, 100, 50].forEach((dd) => busy.push(st.s + A8 - dd)));
+  if (rs.sim && rs.sim.signals) rs.sim.signals.forEach((g) => busy.push(g.s, g.s - 25));
+  const cross = rs.crossSpots || [];
+  const pegGap = (s) => { const d = up ? L - pad - s : s - pad; return Math.abs(d - Math.round(d / 50) * 50); };
+  const free = (s) => s > 30 && s < L - 30 && !skip(s) && pegGap(s) > 2 &&
+    busy.every((b) => Math.abs(b - s) > 4) && cross.every((x) => Math.abs(x - s) > 16);
+  const A = boardAtlas(rs);
+  let nGrad = 0;
+  if (rs._debug) rs._gradS = [];
+  gradePosts(rs).forEach((g) => {
+    let s = null;
+    for (const o of [0, 6, -6, 12, -12, 18, -18]) if (free(g.s + o)) { s = g.s + o; break; }
+    if (s == null) return;
+    const key = `grad:${g.g}`;
+    /* アトラスの マスが たりなければ 立てない(あとで作る踏切の板などの ぶんを 4マス のこす) */
+    if (!rs._texCache.has(key) && !A.room(true, 4)) return;
+    frameInto(rs, s, f);
+    flatT(f, n).negate();
+    c.copy(f.p).addScaledVector(f.left, 2.0);
+    c.y += 0.9 + 0.225;
+    makeSign(rs, key, 0.45, 0.45, { c, n, postH: 0 });
+    B.post(c.x - n.x * 0.05, f.p.y - 0.05, c.z - n.z * 0.05, 0.9 + 0.45 * 0.85 + 0.05, 0x9da3a8, 1.15);
+    nGrad++;
+    if (rs._gradS) rs._gradS.push([Math.round(s), g.g]);
+  });
+  if (rs._debug) console.log('[signage] 勾配標', nGrad, '本 / 線路わきのアトラス', A.used(), 'マス');
+}
+
+/* 勾配標の位置と数(‰): 5m ごとの勾配を 100m の箱で ならして整数に。いまの区間の数と 3 以上ちがう状態が
+ * 120m つづいたら そこを かわりめにし、この先 300m の平均を 新しい区間の数にする。
+ * 板が つづきすぎないよう、前の かわりめから 250m は つぎを立てない(数は その先で まとめて かわる) */
+function gradePosts(rs) {
+  const F = rs.frames, step = rs.step, N = F ? F.length : 0;
+  if (N < 20) return [];
+  const g = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const a = Math.max(0, i - 1), b = Math.min(N - 1, i + 1);
+    g[i] = ((F[b].p.y - F[a].p.y) / ((b - a) * step)) * 1000;
+  }
+  const cs = new Float64Array(N + 1);
+  for (let i = 0; i < N; i++) cs[i + 1] = cs[i] + g[i];
+  const W = Math.max(1, Math.round(50 / step));
+  const sm = new Int16Array(N);
+  for (let i = 0; i < N; i++) {
+    const lo = Math.max(0, i - W), hi = Math.min(N - 1, i + W);
+    sm[i] = Math.round((cs[hi + 1] - cs[lo]) / (hi - lo + 1));
+  }
+  const need = Math.round(120 / step), look = Math.round(300 / step), gap = 250;
+  const out = [];
+  let cur = sm[0], last = -1e9;
+  for (let i = 1; i < N - need; i++) {
+    if (Math.abs(sm[i] - cur) < 3 || i * step - last < gap) continue;
+    let ok = true;
+    for (let k = 0; k < need; k++) if (Math.abs(sm[i + k] - cur) < 3) { ok = false; break; }
+    if (!ok) continue;
+    let sum = 0, cnt = 0;
+    for (let k = 0; k < look && i + k < N; k++) { sum += sm[i + k]; cnt++; }
+    cur = Math.round(sum / cnt);
+    out.push({ s: i * step, g: cur });
+    last = i * step;
+  }
+  return out;
 }
 
 /* ---------- 信号機(4灯式)・番号札・ATS地上子 ---------- */
@@ -750,6 +848,8 @@ export function buildSignals(rs, inPlat, coverAt = () => Infinity, backOk = null
   const base = new Float32Array(n * 16);
   const f = newFrame(), q = new THREE.Quaternion(), p = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
   sigs.forEach((sig, i) => {
+    /* (debug) 信号機は ホームの上に立てない(sim/engine.js _placeSignals が よけている) */
+    if (rs._debug && inPlat(sig.s)) console.warn('signal on platform', sig.s);
     frameInto(rs, sig.s, f);
     q.setFromAxisAngle(UPV, Math.atan2(-f.t.x, -f.t.z));        // 表(+z)を近づく列車へ
     p.copy(f.p).addScaledVector(f.left, 2.6);
