@@ -6,7 +6,9 @@
  * index.html の #cab をコンストラクタで組みかえる(要素は移動するだけ。idとリスナーはそのまま)。
  * 毎フレームの書き込みは「値が変わったときだけ」(_set)。止まっている間はDOMを一切さわらない。
  * main.js との約束(なくても動く): render(h) / bindInput({canOp,setNotch}) / flashGrip() /
- *   setService({svcHtml,color,destHtml}) / setLight(lum) / setTarget(n|null: つぎにねらうノッチを点滅)
+ *   setService({svcHtml,color,destHtml}) / setLight(lum) / setTarget(n|null: つぎにねらうノッチを点滅) /
+ *   setSun(x, k)(天板の日だまり: scene.cockpit.sunX / sunK。計器盤の上の あたたかい光を 横に すべらせる)
+ * 外から見せかたを変える: body.cab-compact(外のカメラの ほそい計器盤。マスコンは 横一列。クラスが変わったら はかりなおす)
  *   h.uiLimAt(コーチと同じ まるめた「制限まで あと m」)・h.uiBrakeNow(いまブレーキ)があれば そろえる
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
@@ -154,6 +156,9 @@ export class Cab {
       lamps.querySelectorAll('.lamp').forEach((l) => grid.appendChild(l));
       lamps.appendChild(grid);
     }
+
+    /* 天板の日だまり(setSun で 横に すべらせる・こさを かえる。transform と opacity だけ) */
+    if (!root.querySelector('.cab-sun')) root.insertAdjacentHTML('afterbegin', '<i class="cab-sun" aria-hidden="true"></i>');
 
     /* 制限スピード: 見出しにふりがな */
     const cap = root.querySelector('.lim-cap');
@@ -398,6 +403,25 @@ export class Cab {
     if (this._tgtIdx >= 0 && nt[this._tgtIdx]) nt[this._tgtIdx].classList.remove('tgt');
     if (idx >= 0 && nt[idx]) nt[idx].classList.add('tgt');
     this._tgtIdx = idx;
+  }
+
+  /* 天板の日だまり(x: 横の位置 -1..1、k: こさ 0..1)。1秒に10回まで、0.01 より変わったときだけ書く(合成だけで済む) */
+  setSun(x, k) {
+    const el = this._sunEl || (this._sunEl = this.root.querySelector('.cab-sun'));
+    if (!el) return;
+    x = Number.isFinite(x) ? clamp(x, -1, 1) : 0;
+    k = Number.isFinite(k) ? clamp(k, 0, 1) : 0;
+    const now = performance.now();
+    const kOff = k === 0 && this._sunK !== 0;   // 消えるときは かならず書く
+    if (!kOff && this._sunT != null && now - this._sunT < 100) return;
+    const dk = this._sunK == null || Math.abs(k - this._sunK) > 0.01 || kOff;
+    const dx = this._sunX == null || Math.abs(x - this._sunX) > 0.01;
+    if (!dk && !dx) return;
+    this._sunT = now;
+    /* 夕方(16時はじまり)の日は だいだい(運転ごとに かわるだけ) */
+    this._cls(el, 'cab-sun-eve', this.baseHour === 16);
+    if (dk) { this._sunK = k; el.style.opacity = k.toFixed(2); }
+    if (dx) { this._sunX = x; el.style.transform = `translateX(${(x * 55).toFixed(1)}%)`; }
   }
 
   /* 運転モニタの見出し(種別・行き先)。呼ばれるまでは sim から作る */
