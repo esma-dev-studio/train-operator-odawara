@@ -708,7 +708,7 @@ body.ov-open #cab { opacity: 0.45; }
 .gr-pips i { display: inline-block; width: 4px; height: 8px; margin-left: 2px; border-radius: 1px; background: currentColor; opacity: 0.8; }
 .gr-up-c { color: #e0a050; }
 .gr-dn-c { color: #56c2e8; }
-.gr-hard { margin-left: 4px; color: #e0a050; }
+.gr-hard { margin-left: 4px; }
 .gr-ico { display: inline-block; width: 14px; height: 9px; margin-right: 4px; vertical-align: -1px; }
 .gr-0 { background: linear-gradient(180deg, transparent 4px, #9fb0ba 4px, #9fb0ba 6px, transparent 6px); }
 .gr-up { background: linear-gradient(to top left, transparent calc(50% - 1px), #e0a050 calc(50% - 1px), #e0a050 calc(50% + 1px), transparent calc(50% + 1px)); }
@@ -979,6 +979,8 @@ body #cab .lever-grip { left: -4px; right: -4px; }
 @media (orientation: portrait) and (min-height: 900px) and (max-width: 720px) {
   body #cab .tims-head { height: auto; flex-wrap: wrap; row-gap: 2px; padding: 3px 8px; }
   body #cab .tims-dest { order: 3; flex-basis: 100%; }
+  /* 見出しが 2行になったぶん、そのさきの駅は 1つだけ(下で切れない) */
+  body #cab .tims-list li:nth-child(3) { display: none; }
 }
 /* たて長のスマホ: 左に速度計と制限(上下)、まん中にモニタ、右にマスコン。
  * 表示灯は速度計のLEDと液晶の表示にまかせる */

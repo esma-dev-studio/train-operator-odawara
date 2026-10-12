@@ -1009,6 +1009,6 @@ export class Cab {
     this._gradeK = key;
     this.els.grade.innerHTML = kind === 0 ? '<i class="gr-ico gr-0"></i>たいら'
       : `<i class="gr-ico gr-${kind > 0 ? 'up' : 'dn'}"></i>${kind > 0 ? 'のぼりざか' : 'くだりざか'}`
-        + `<span class="gr-pips gr-${kind > 0 ? 'up' : 'dn'}-c" aria-hidden="true">${'<i></i>'.repeat(pips)}</span>${pips === 3 ? '<span class="gr-hard">きつい</span>' : ''}`;
+        + `<span class="gr-pips gr-${kind > 0 ? 'up' : 'dn'}-c" aria-hidden="true">${'<i></i>'.repeat(pips)}</span>${pips === 3 ? `<span class="gr-hard gr-${kind > 0 ? 'up' : 'dn'}-c">きつい</span>` : ''}`;
   }
 }
