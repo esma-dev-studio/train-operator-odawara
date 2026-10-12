@@ -191,7 +191,9 @@ export class WeatherFx {
           y = fl + this._r() * (TOP - fl);
           z = BOX.z * (0.55 + 0.45 * this._r());
         } else if (y < fl) { this._seed(P, i, false, true); x0 = P[i * 3]; y = P[i * 3 + 1]; z = P[i * 3 + 2]; }
-        if (z > BOX.z + 1) z -= BOX.z;
+        /* 奥へ出た粒(カメラが うしろへ動いた)は手前へ。いちばん手前(SNOW_NEAR)より近くには入れない
+         * (入れると 1コマだけ 大きな ぼやけた玉が出て、つぎのコマで消える) */
+        if (z > BOX.z + 1) z -= BOX.z - SNOW_NEAR;
         /* 横へ流れて箱から出た粒は反対側へ(横から見る視点で、粒が流れつづける)。
          * 近くの粒は置いたときと同じ せまい幅の中でまわす(箱の幅いっぱいに散ると、横から見る視点で手前の粒が4分の1に減る) */
         const hw = Math.min(hx, 2 + 0.7 * z);
