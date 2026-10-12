@@ -533,45 +533,57 @@ export function texLeaf() {
   });
   return texFrom(cv);
 }
-/* 森(上から見た樹冠の集まり): 半径7〜15画素の樹冠を約1000個(すき間が少し残るくらい)。どの樹冠も
- * 右下に暗い三日月のかげ・5種類の緑(明るさ±12%)を左上ほど明るい丸み(放射グラデーション)で塗り、中に小さな葉のかたまりの点。
- * 樹冠のすき間は暗い緑(#2c3b25)。丘に 11×1.6 回くり返して、樹冠1つが4〜8mになる
- * (細かすぎると芝生のゴルフ場に、粗すぎると迷彩柄に、ふちが はっきりしすぎると水玉に見える) */
+/* 森(上から見た樹冠の集まり): 半径6〜16画素の樹冠を約1700個(すき間は暗い割れ目が少し見えるくらい)。
+ * 樹冠1つは3〜5個の重なった丸(1つの丸だと水玉・あわの並びに見える)。右下へずらした暗いかげを先に描き、
+ * 樹冠全体に左上から1つの光のグラデーション(かたまりごとに丸く光らせない)。画像の上から順に描いて、
+ * 下の樹冠が上の樹冠のすそに重なる(林を斜めに見たときの重なり)。7種類の緑(明るさ±12%)。
+ * 平均の明るさは前の森の絵と同じ(丘全体の明るさを変えない)。丘に 11×1.6 回くり返して、樹冠1つが4〜8mになる */
 function texForest() {
   const cv = canvasOnce('forest', 512, 512, (c) => {
     const r = makeRng(313);
-    c.fillStyle = '#2c3b25'; c.fillRect(0, 0, 512, 512);
-    const cols = [[52, 72, 44], [61, 83, 49], [69, 96, 58], [79, 106, 61], [58, 79, 48]];
+    c.fillStyle = '#26331f'; c.fillRect(0, 0, 512, 512);
+    const cols = [[48, 66, 40], [55, 75, 44], [62, 84, 50], [69, 91, 53], [51, 69, 42], [46, 62, 42], [73, 89, 50]];
     const rgb = (b, k) => `rgb(${Math.min(255, Math.round(b[0] * k))},${Math.min(255, Math.round(b[1] * k))},${Math.min(255, Math.round(b[2] * k))})`;
+    /* 継ぎ目なしにくり返すため、はしにかかる樹冠は反対側にも描く */
     const wrap = (x, y, rr, fn) => {
-      [[0, 0], [512, 0], [-512, 0], [0, 512], [0, -512], [512, 512], [-512, -512], [512, -512], [-512, 512]].forEach(([dx, dy]) => {
-        const px = x + dx, py = y + dy;
-        if (px < -rr * 1.5 || px > 512 + rr * 1.5 || py < -rr * 1.5 || py > 512 + rr * 1.5) return;
-        fn(px, py);
-      });
+      for (let dx = -512; dx <= 512; dx += 512) {
+        for (let dy = -512; dy <= 512; dy += 512) {
+          const px = x + dx, py = y + dy;
+          if (px < -rr * 2 || px > 512 + rr * 2 || py < -rr * 2 || py > 512 + rr * 2) continue;
+          fn(px, py);
+        }
+      }
     };
-    for (let i = 0; i < 1000; i++) {
-      const x = r() * 512, y = r() * 512, rr = 7 + r() * 8;
+    const crowns = [];
+    for (let i = 0; i < 1700; i++) {
+      const rr = 6 + Math.pow(r(), 0.8) * 10;
       const base = cols[Math.floor(r() * cols.length) % cols.length];
       const k = 1 + (r() - 0.5) * 0.24;
-      const sp = [];
-      for (let j = 0; j < 4; j++) sp.push([(r() - 0.5) * rr * 1.2, (r() - 0.5) * rr * 1.2, rr * (0.2 + r() * 0.15)]);
-      /* いちばん明るい所: 樹冠の色を明るくして、光の色(170,195,120)を4分の1まぜる */
-      const hl = [0, 1, 2].map((j) => base[j] * k * 1.25 * 0.75 + [170, 195, 120][j] * 0.25);
-      wrap(x, y, rr, (px, py) => {
-        /* 右下のかげ(樹冠の丸み。先に描いて、樹冠の外にだけ三日月形に残す) */
-        c.fillStyle = 'rgba(10,18,8,.45)'; c.beginPath(); c.arc(px + rr * 0.35, py + rr * 0.35, rr, 0, 7); c.fill();
-        /* 樹冠: 左上(光の当たる側)ほど明るい丸み */
-        const g = c.createRadialGradient(px - rr * 0.35, py - rr * 0.35, rr * 0.1, px, py, rr);
-        g.addColorStop(0, rgb(hl, 1));
-        g.addColorStop(0.35, rgb(base, k * 1.08));
-        g.addColorStop(1, rgb(base, k * 0.8));
-        c.fillStyle = g; c.beginPath(); c.arc(px, py, rr, 0, 7); c.fill();
-        /* 葉のかたまりの小さな影(ふちの丸を くずす) */
-        c.fillStyle = 'rgba(16,26,12,.22)';
-        sp.forEach(([ox, oy, sr]) => { c.beginPath(); c.arc(px + ox + sr * 0.5, py + oy + sr * 0.5, sr, 0, 7); c.fill(); });
-      });
+      const n = 3 + Math.floor(r() * 3), blobs = [];
+      for (let j = 0; j < n; j++) {
+        const a = r() * Math.PI * 2, d = j === 0 ? 0 : rr * (0.3 + r() * 0.25);
+        blobs.push([Math.cos(a) * d, Math.sin(a) * d * 0.85, rr * (j === 0 ? 0.75 : 0.5 + r() * 0.2)]);
+      }
+      crowns.push({ x: r() * 512, y: r() * 512, rr, base, k, blobs });
     }
+    crowns.sort((p, q) => p.y - q.y);
+    crowns.forEach(({ x, y, rr, base, k, blobs }) => {
+      wrap(x, y, rr, (px, py) => {
+        /* かげ(右下へずらした樹冠の形。まわりの樹冠の上に落ちる) */
+        c.fillStyle = 'rgba(10,16,8,.5)';
+        blobs.forEach(([ox, oy, br]) => { c.beginPath(); c.arc(px + ox + rr * 0.22, py + oy + rr * 0.3, br, 0, 7); c.fill(); });
+        /* 樹冠: 左上から光(樹冠全体で1つのグラデーション) */
+        const g = c.createRadialGradient(px - rr * 0.45, py - rr * 0.5, rr * 0.15, px - rr * 0.1, py - rr * 0.1, rr * 1.25);
+        g.addColorStop(0, rgb(base, k * 1.25));
+        g.addColorStop(0.45, rgb(base, k * 1.04));
+        g.addColorStop(1, rgb(base, k * 0.74));
+        c.fillStyle = g;
+        blobs.forEach(([ox, oy, br]) => { c.beginPath(); c.arc(px + ox, py + oy, br, 0, 7); c.fill(); });
+        /* 葉のかたまりの小さな影(右下) */
+        c.fillStyle = 'rgba(14,22,10,.2)';
+        blobs.forEach(([ox, oy, br], j) => { if (j) { c.beginPath(); c.arc(px + ox + br * 0.35, py + oy + br * 0.4, br * 0.55, 0, 7); c.fill(); } });
+      });
+    });
   });
   return texFrom(cv);
 }
@@ -1282,7 +1294,8 @@ const pickCar = (rng, s) => { const k = Math.floor(s / 700); return CAR_TYPES[(k
 
 function buildBuildings(rs, T) {
   const F = rs.frames, step = rs.step, L = rs.line.meta.length;
-  const rng = makeRng(12345);
+  /* let: 世田谷のうすい遠景ベルトを置くあいだだけ別の乱数の列に差しかえる(place の中の色・屋上の物の乱数も) */
+  let rng = makeRng(12345);
   const lists = { mansion: [], corridor: [], office: [], tower: [], zakkyo: [], shop: [] };
   const boxes = T.boxesPre, tanks = [], aos = [];
   T.boxes = boxes; T.aos = aos; T.boxesPre = null;
@@ -1503,9 +1516,12 @@ function buildBuildings(rs, T) {
   }
   /* 遠景ベルト(市街地のみ、150〜420m帯に大きめの箱。向きは400mごとにそろえる)。
    * 世田谷の低層住宅地は、大きな駅の前だけ低めに近く。ほかは うすいベルト(12m以下・3分の1・260〜420m。
-   * 家の屋根の海に中層の箱が ところどころ見えるくらい。選ぶ乱数は別の列)。
+   * 家の屋根の海に中層の箱が ところどころ見えるくらい。選ぶ乱数は別の列で、place の中の乱数も その列にする:
+   * もとの列を1つでも多く使うと、あとの遠景の箱がずれ、奥の列の家(140〜170m)とぶつかる所が変わって
+   * 家の乱数が全線でずれる(線路ぎわの家並みが いれかわる))。
    * 420mより外へ広げると、外壁の かたまり(800m)の外接球が半径600mをこえて「遠くても描く」あつかいになり
-   * (scene.js _registerCells)、描画がふえるので広げない。カーブの内側は地面が届く所まで(farLatMax) */
+   * (scene.js _registerCells)、描画がふえるので広げない。うすいベルトはカーブの内側では地面が届く所まで(farLatMax)。
+   * いままでのベルトの位置は変えない(縮めると線路ぎわの家の列にかかり、家の並びが全線でずれるため) */
   const rngB = makeRng(12345 + 77);
   for (let s = 60; s < L - 60; s += 55) {
     const kind = T.kindAt(s);
@@ -1516,18 +1532,21 @@ function buildBuildings(rs, T) {
     const yawB = fr2.yaw;
     for (const side of [1, -1]) {
       const nB = kind === 0 ? 2 : 1;
-      const lm = farLatMax(rs, s, side);
+      const lm = thin ? farLatMax(rs, s, side) : 1e9;
       for (let bi = 0; bi < nB; bi++) {
         if (thin) {
           if (rngB() > 0.33 || rngB() > qk + 0.2) continue;
           const lat = Math.min(lm, 260 + rngB() * 160);
           if (lat < 250) continue;
           const h = 7 + rngB() * 5;
+          const keepRng = rng;
+          rng = rngB;
           place(s + rngB() * 30, side, lat, 18 + rngB() * 20, 14 + rngB() * 14, yawB + (rngB() - 0.5) * 0.06, pickType(1, h, rngB), h, false, false, true);
+          rng = keepRng;
           continue;
         }
         if (rng() < 0.3 || rng() > qk + 0.2) continue;
-        const lat = Math.min(lm, low ? 150 + rng() * 110 : 150 + rng() * 270);
+        const lat = low ? 150 + rng() * 110 : 150 + rng() * 270;
         const h = low ? Math.min(18, 10 + rng() * 20) : kind === 0 ? 25 + rng() * 60 : 10 + rng() * 20;
         const type = kind === 0 ? (rng() < 0.6 ? 'office' : 'zakkyo') : pickType(1, h, rng);
         place(s + rng() * 30, side, lat, 18 + rng() * 26, 16 + rng() * 22, yawB + (rng() - 0.5) * 0.06, type, h, false, false, true);
@@ -2211,13 +2230,15 @@ export function makeTreeGeosP1() {
   const broad = (spec, detail) => spec.map(([r, x, y, z, sy], i) => ({ g: shade(blob(r, x, y, z, sy || 1.15, i < 3 ? detail : 0), 2.2, 5.5) }));
   const A = [[1.55, 0, 3.7, 0], [1.1, 0.95, 3.1, 0.35], [1.0, -0.85, 3.25, -0.3], [0.9, 0.1, 4.6, -0.5]];
   const B = [[1.25, 0, 3.3, 0, 1.3], [1.15, 0.2, 4.4, 0.2, 1.2], [0.85, -0.7, 3.0, 0.5], [0.8, 0.75, 3.6, -0.55]];
-  /* 杉(すぎ): 細長い円すい1つの輪ごとに半径をゆらし、1つおきの輪を25%外へ出して 枝の段を作る(紙のクリスマスツリーにしない)。
-   * 先は少し横へずらし、上のほうに小さな葉のかたまりを3つ。hash: 輪と頂点の番号から決まる 0..1 */
+  /* 杉(すぎ): 細長い円すい1つ。輪ごとに半径を少しゆらし、1つおきの輪を15%外へ出して 枝の段を作る(紙のクリスマスツリーにしない)。
+   * 輪の半径は (先からの割合)^0.7 にふくらませて、先を丸みのある細い円すいにする(まっすぐな円すいだと、夕方の空に
+   * 細い塔のような とがった影になる)。先の2つの輪は ゆらさない(先が針のように折れて見えないように)。
+   * 先は少しだけ横へずらす。葉のかたまりを外に足すと こぶに見えるので足さない。hash: 輪と頂点の番号から決まる 0..1 */
   const hash2 = (i, k) => { const h = Math.sin(i * 127.1 + k * 311.7 + 17.3) * 43758.5453; return h - Math.floor(h); };
   const sugiCone = (r, h, seg, rows, y, open) => {
     const g = new THREE.ConeGeometry(r, h, seg, rows, open);
     const p = g.attributes.position;
-    const ax = (rnd() - 0.5) * 0.3, az = (rnd() - 0.5) * 0.3;
+    const ax = (rnd() - 0.5) * 0.16, az = (rnd() - 0.5) * 0.16;
     /* 頂点は 上(先)の輪から順に (seg+1) 個ずつ(最後は継ぎ目の重複)。ふたの頂点は輪の後ろ */
     const side = (rows + 1) * (seg + 1);
     const top = h / 2;
@@ -2226,21 +2247,16 @@ export function makeTreeGeosP1() {
       if (Math.abs(yy - top) < 1e-4) { p.setXYZ(i, x + ax, yy, z + az); continue; }
       const iy = i < side ? Math.floor(i / (seg + 1)) : rows;
       const ix = i < side ? (i % (seg + 1)) % seg : Math.round(((Math.atan2(z, x) / (2 * Math.PI)) * seg + seg) % seg) % seg;
-      const k = (0.8 + 0.45 * hash2(iy, ix)) * (iy % 2 === 1 ? 1.25 : 1);
+      const t = iy / rows;
+      const prof = Math.pow(t, -0.3);
+      const k = iy <= 2 && rows > 2 ? prof : prof * (0.88 + 0.24 * hash2(iy, ix)) * (iy % 2 === 1 ? 1.15 : 1);
       p.setXYZ(i, x * k, yy, z * k);
     }
     g.translate(0, y, 0);
     g.computeVertexNormals();
     return g;
   };
-  const sugi = () => {
-    const parts = [{ g: shade(sugiCone(1.0, 6.4, 8, 6, 3.6, true), 0.4, 6.8) }];
-    [[4.3, 0.55, 0.6], [5.1, 0.4, 2.7], [5.85, 0.3, 4.6]].forEach(([y, d, a]) => {
-      const sp = lumpSpec(0.35 + rnd() * 0.15, Math.cos(a) * d, y, Math.sin(a) * d);
-      parts.push({ g: shade(lump(sp, 0, 0, y - 0.6, 0), 0.4, 6.8) });
-    });
-    return parts;
-  };
+  const sugi = () => [{ g: shade(sugiCone(1.3, 6.6, 8, 7, 3.55, true), 0.3, 6.9) }];
   /* 近景用: 広がった樹冠(A)と、背の高い樹冠(B) */
   const sA = crownSpec(0, 3.75, 0, 1.45, 1.15, 1.4, 8), sB = crownSpec(0, 3.95, 0, 1.15, 1.55, 1.15, 9);
   const crowns = (hiQ) => [
@@ -2252,7 +2268,7 @@ export function makeTreeGeosP1() {
   /* 高画質だけの近景(上の4つのかたまりが細かい)。杉は同じ形を使う */
   const hiQ = crowns(true).concat([conifer]);
   /* 遠景(165mより先・丘の稜線)の広葉樹は3つのかたまり(60三角形)。いちばん数が多いので軽く */
-  const lo = [mergeParts(broad([A[0], A[1], A[3]], 0)), mergeParts(broad([B[0], B[1], B[3]], 0)), mergeParts([{ g: shade(sugiCone(1.1, 6.2, 6, 2, 3.5, true), 0.4, 6.6) }])];
+  const lo = [mergeParts(broad([A[0], A[1], A[3]], 0)), mergeParts(broad([B[0], B[1], B[3]], 0)), mergeParts([{ g: shade(sugiCone(1.25, 6.4, 6, 2, 3.45, true), 0.25, 6.65) }])];
   return { hi, hiQ, lo };
 }
 
