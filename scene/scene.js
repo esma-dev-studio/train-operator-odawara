@@ -3641,7 +3641,11 @@ export class RailScene {
     const sim = this.sim;
     const s = sim.pos;
     const a = this._aEnv || (this._aEnv = { inTunnel: false, curveRadius: Infinity, crossings: [], passing: [], rain: false, snow: false, external: false });
-    a.inTunnel = this._inTunnel(s - 40) || this._inTerminal(s, -10);
+    /* トンネルの中か(_inTunnel と同じ判定を for で。関数を作らない) */
+    const tn = this.line.sections.tunnel, s40 = s - 40;
+    let inT = false;
+    for (let i = 0; i < tn.length; i++) if (s40 > tn[i].from && s40 < tn[i].to) { inT = true; break; }
+    a.inTunnel = inT || this._inTerminal(s, -10);
     a.curveRadius = sim.radiusAt ? sim.radiusAt(s - 40) : Infinity;
     const cr = a.crossings, cs = this.crossSpots;
     cr.length = 0;
