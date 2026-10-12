@@ -232,15 +232,67 @@ function drawZakkyo() {
   return P;
 }
 
-/* ---------- 1階の店先: 14.4×4.2m に3軒(看板は文字なしの無地パネル。文字の看板は shopsign.js で上に重ねる) ----------
+/* ---------- 1階の店先: 28.8×4.2m に6軒(看板は文字なしの無地パネル。文字の看板は shopsign.js で上に重ねる) ----------
  * 看板パネル(R=118)と ひさしの下の帯(R=105)は G=250 の「いつも点く灯りの帯」: 夜は お店の明かりが道にこぼれる。
- * 無地のパネルは文字の看板(shopsign.js)より暗め(にじみのしきい値の少し下) */
+ * 無地のパネルは文字の看板(shopsign.js)より暗め(にじみのしきい値の少し下)。
+ * 6軒の並びは決まった形: 4番目(0から数えて)だけ シャッターが下りていて、1番目は半分あいたシャッター、
+ * 2番目は白い明るい店(コンビニのような。ロゴ・会社の色は付けない)、ほかは ガラスの店先(天井の灯り・棚の品物・ドアの枠)。
+ * 建物ごとに1軒ずつずらすので(steps 6)、シャッターは どの並びでも6軒に1軒だけ */
 const AWN = ['#8c5b4e', '#4f6b7d', '#6b7a55', '#a08a5c', '#6e6370'];
+/* 棚の品物の色(おちついた色。看板の色と同じくらいの彩度) */
+const GOODS = ['#c9a46a', '#b8584a', '#5f7f9a', '#d6c9a2', '#7a9a62', '#c58a5a', '#9c7fa0', '#e2d8c4', '#6f8a8c'];
 function drawShop() {
-  const P = painter(256, 64), r = rngOf(404);
-  P.wall(0, 0, 256, 64, '#e9e7e2');
-  for (let b = 0; b < 3; b++) {
-    const x0 = Math.round(b * 85.33), w = 85;
+  const P = painter(512, 64), r = rngOf(404);
+  const c = P.c;
+  P.wall(0, 0, 512, 64, '#e9e7e2');
+  /* ガラスの店先(gy0〜60)。中は天井の灯りで明るい店の中(昼でもうっすら見える) */
+  const front = (x0, w, gy0, white) => {
+    const gx = x0 + 4, gw = w - 8, gh = 60 - gy0;
+    /* 店の中(奥の壁と床): 白い店はとくに明るい */
+    P.glass(gx, gy0, gw, gh, white ? '#e6ecec' : '#b7b0a2', white ? '#aeb4b4' : '#5c5850', 255, 40, 60);
+    /* 天井の灯り(上の4画素。夜は いちばん明るい) */
+    P.tint(gx, gy0, gw, 4, white ? 'rgba(252,252,248,.95)' : 'rgba(248,244,228,.9)');
+    P.tint(gx, gy0 + 4, gw, 1, 'rgba(0,0,0,.12)');
+    /* 棚と品物(3〜4つのかたまり。夜は少し暗い所になって、灯りの中に形が出る) */
+    const nb = 3 + Math.floor(r() * 2);
+    const sw = (gw - 6) / nb;
+    for (let k = 0; k < nb; k++) {
+      const sx = gx + 3 + k * sw;
+      const top = gy0 + 9 + Math.floor(r() * 4), bot = 56;
+      /* 棚の段(2〜3段)ごとに品物の色の帯 */
+      for (let y = top; y < bot - 3; y += 6 + Math.floor(r() * 3)) {
+        const col = GOODS[Math.floor(r() * GOODS.length)];
+        c.globalAlpha = white ? 0.55 : 0.7;
+        P.tint(sx + 1, y, sw - 3, 4, col);
+        c.globalAlpha = 1;
+        P.tint(sx + 1, y + 4, sw - 3, 1, 'rgba(40,36,30,.45)');      // 棚板のかげ
+      }
+      P.ormRect(sx + 1, top, sw - 3, bot - 3 - top, 200, 40, 60);
+    }
+    /* 入口のドア(枠は2画素の暗い縦線と上の横線)。ドアのガラスは奥まで見える */
+    const dx = gx + Math.floor(gw * (0.35 + r() * 0.3)) - 9;
+    P.tint(dx, gy0 + 5, 18, gh - 5, white ? 'rgba(230,234,232,.55)' : 'rgba(150,144,132,.5)');
+    P.wall(dx - 2, gy0 + 5, 2, gh - 5, '#3a3d40', 120, 140);
+    P.wall(dx + 18, gy0 + 5, 2, gh - 5, '#3a3d40', 120, 140);
+    P.wall(dx - 2, gy0 + 5, 22, 2, '#3a3d40', 120, 140);
+    P.wall(dx + 8, gy0 + 7, 2, gh - 7, '#55595c', 120, 140);           // 引き戸の召し合わせ
+    /* ショーウインドウの枠(左右)と、空の映り込み(うすい斜めの光) */
+    P.wall(gx, gy0, 2, gh, '#4a4d50', 120, 140);
+    P.wall(gx + gw - 2, gy0, 2, gh, '#4a4d50', 120, 140);
+    c.save();
+    c.beginPath(); c.rect(gx, gy0, gw, gh); c.clip();
+    c.fillStyle = 'rgba(255,255,255,.10)';
+    c.beginPath(); c.moveTo(gx + 6, 60); c.lineTo(gx + 20, gy0); c.lineTo(gx + 30, gy0); c.lineTo(gx + 16, 60); c.fill();
+    c.restore();
+  };
+  /* シャッター(y0〜y1)。下の端は座金のかげ */
+  const shutter = (x0, w, y0, y1) => {
+    P.wall(x0 + 4, y0, w - 8, y1 - y0, '#c4c5c2', 150, 90);
+    for (let y = y0 + 2; y < y1; y += 3) P.tint(x0 + 4, y, w - 8, 1, 'rgba(0,0,0,.12)');
+    P.tint(x0 + 4, y1 - 2, w - 8, 2, 'rgba(0,0,0,.22)');
+  };
+  for (let b = 0; b < 6; b++) {
+    const x0 = Math.round(b * 85.33), w = Math.round((b + 1) * 85.33) - x0;
     /* 看板パネル(無地・夜はほんのり灯る) */
     P.wall(x0 + 3, 1, w - 6, 11, ['#f4f2ec', '#e9eef2', '#f1ece2'][b % 3]);
     P.ormRect(x0 + 3, 1, w - 6, 11, 118, 250, 0);
@@ -249,20 +301,15 @@ function drawShop() {
     P.wall(x0 + 2, 12, w - 4, 7, AWN[Math.floor(r() * AWN.length)], 200, 0);
     P.tint(x0 + 2, 18, w - 4, 1, 'rgba(0,0,0,.35)');
     P.ormRect(x0 + 4, 19, w - 8, 2, 105, 250, 0);         // ひさしの下の灯り(夜だけ。看板より暗め)
-    if (r() < 0.3) {
-      /* シャッター */
-      P.wall(x0 + 4, 20, w - 8, 40, '#c4c5c2', 150, 90);
-      for (let y = 22; y < 60; y += 3) P.tint(x0 + 4, y, w - 8, 1, 'rgba(0,0,0,.12)');
-    } else {
-      /* ガラスの店先(中の棚がうっすら見える) */
-      P.glass(x0 + 4, 20, w - 8, 40, '#7d8c96', '#2a3138', 255, 40, 110);
-      for (let k = 0; k < 4; k++) P.tint(x0 + 8 + k * 19, 34 + (k % 2) * 6, 14, 18, `rgba(${180 + Math.floor(r() * 60)},${170 + Math.floor(r() * 50)},${150 + Math.floor(r() * 40)},.18)`);
-      P.tint(x0 + 4 + (w - 8) / 2, 20, 2, 40, 'rgba(60,66,70,.9)');
-      P.tint(x0 + 10, 22, 10, 30, 'rgba(255,255,255,.08)');
-    }
+    if (b === 4) shutter(x0, w, 20, 60);
+    else if (b === 1) {
+      /* 半分あいたシャッター(上の4割)。下は開いた店先 */
+      front(x0, w, 20, false);
+      shutter(x0, w, 20, 36);
+    } else front(x0, w, 20, b === 2);
     P.tint(x0, 0, 3, 64, 'rgba(0,0,0,.12)');
   }
-  P.wall(0, 60, 256, 4, '#6d6c69', 220, 0);
+  P.wall(0, 60, 512, 4, '#6d6c69', 220, 0);
   return P;
 }
 
@@ -361,7 +408,7 @@ export const FACADE = {
   office:   { draw: drawOffice,   tile: [14.4, 15.2], grid: [4, 4], steps: [8, 4], roof: 0x56585a, bay: 3.6, fh: 3.8, side: [0, 0] },
   tower:    { draw: drawTower,    tile: [12.8, 16], grid: [4, 4], steps: [4, 4], roof: 0x4e5256, bay: 3.2, fh: 4.0, side: [0, 0] },
   zakkyo:   { draw: drawZakkyo,   tile: [9.6, 13.2], grid: [3, 4], steps: [3, 4], roof: 0x585550, bay: 3.2, fh: 3.3, side: [1, 4 / 256] },
-  shop:     { draw: drawShop,     tile: [14.4, 4.2], grid: [3, 1], steps: [3, 1], roof: 0x8f8d88, bay: 4.8, fh: 4.2, side: [0, 0] },
+  shop:     { draw: drawShop,     tile: [28.8, 4.2], grid: [6, 1], steps: [6, 1], roof: 0x8f8d88, bay: 4.8, fh: 4.2, side: [0, 0] },
   house:    { draw: drawHouse,    tile: [32, 9], grid: [8, 3], steps: [1, 1], roof: 0x55534f, bay: 4.0, fh: 2.9, side: [0, 0], fit: true },
 };
 
@@ -586,7 +633,7 @@ export function facadeMaterial(name, aniso = 4) {
     map, emissiveMap: orm,
     roughness: 1, metalness: 1, emissive: 0x000000, envMapIntensity: 1,
   });
-  patchFacade(mat, { tile: d.tile, grid: d.grid, steps: d.steps, side: d.side, roofCol: d.roof, key: 'bld', boost: name === 'shop' ? 1.9 : name === 'house' ? 1.1 : 1, fit: !!d.fit });
+  patchFacade(mat, { tile: d.tile, grid: d.grid, steps: d.steps, side: d.side, roofCol: d.roof, key: 'bld', boost: name === 'shop' ? 2.5 : name === 'house' ? 1.1 : 1, fit: !!d.fit });
   mat.userData.fcTex = [map, orm];
   return mat;
 }

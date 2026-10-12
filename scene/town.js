@@ -9,6 +9,8 @@
  * ・毎フレームの処理は updateTown(rs, dt)(_updateCrossings から呼ばれる)。割り当てなし。
  * ・世田谷の区間(代々木上原〜和泉多摩川)は低層の住宅地: 中高層は大きな駅(下北沢・経堂・成城学園前)の前だけ。
  * ・街のにぎわい: 店の看板(shopsign.js)・駐車場と車庫の車(cars.js)・街灯の光だまり(lightpool.js)・道を走る車(roadtraffic.js)。
+ *   通りの小物: 自動販売機(駅の近くの家の前と駅前広場。夜は前の面が光る)・T字路のカーブミラーと「止まれ」の標識・
+ *   側道の最高速度30の標識・駅の近くの市街地のガードパイプ・駅前の駐輪場の自転車。どれも既存の箱・看板・車のまとまりに入れる。
  *   どれも既存のシェーダ('st-lineside' / 'fc-tree' / 'pool')を使い、シェーダの数は増やさない。
  * ・戸建ては2列ずつ背中合わせ。列のあいだに幅4.5mの路地(白い外側線つき)があり、奥の列の家は路地のほうを向く。
  *   交差道路は いちばん外の路地まで。路地とぶつかる所に「とまれ」と停止線。家の敷地は土間・砂利・芝の区画。
@@ -18,7 +20,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { FACADE, facadeMaterial, uFcLit, uFcAmb, HOUSE_DOOR } from './facade.js';
 import { makePoolMaterial } from './lightpool.js';
-import { addCars as addCarsRaw, carPaint, patchTreeCar, uCarLamp, CAR_TYPES, CAR_LEN, CAR_WID, CAR_PAINTS } from './cars.js';
+import { addCars as addCarsRaw, carPaint, patchTreeCar, uCarLamp, CAR_TYPES, CAR_LEN, CAR_WID, CAR_PAINTS, geoBike, carMaterial, geoCar } from './cars.js';
 import { buildShopSigns, signMaterial, SIGN_WORDS } from './shopsign.js';
 import { RoadTraffic } from './roadtraffic.js';
 
@@ -531,31 +533,44 @@ export function texLeaf() {
   });
   return texFrom(cv);
 }
-/* 森(上から見た樹冠の集まり): 2〜5画素の小さな樹冠を敷きつめ、樹冠のすき間は暗く、左上に光の当たる縁。
- * 色の差は小さめ(大きな色のまだらは迷彩柄に見える) */
+/* 森(上から見た樹冠の集まり): 半径7〜15画素の樹冠を約1000個(すき間が少し残るくらい)。どの樹冠も
+ * 右下に暗い三日月のかげ・5種類の緑(明るさ±12%)を左上ほど明るい丸み(放射グラデーション)で塗り、中に小さな葉のかたまりの点。
+ * 樹冠のすき間は暗い緑(#2c3b25)。丘に 11×1.6 回くり返して、樹冠1つが4〜8mになる
+ * (細かすぎると芝生のゴルフ場に、粗すぎると迷彩柄に、ふちが はっきりしすぎると水玉に見える) */
 function texForest() {
   const cv = canvasOnce('forest', 512, 512, (c) => {
     const r = makeRng(313);
-    /* 地(樹冠のすき間)は樹冠に近い中間の緑。小さな樹冠は面の3割ほどしかおおわないので、
-     * 地が暗いと遠くの丘が まっ黒・灰色に沈む(すき間の暗さは、樹冠の右下のかげと暗い点で出す) */
-    c.fillStyle = '#37492e'; c.fillRect(0, 0, 512, 512);
-    const cols = ['#34482c', '#3d5331', '#45603a', '#4f6a3d', '#3a4f30'];
-    const wrap = (x, y, fn) => { [[0, 0], [512, 0], [-512, 0], [0, 512], [0, -512]].forEach(([dx, dy]) => fn(x + dx, y + dy)); };
-    for (let i = 0; i < 1800; i++) {
-      const x = r() * 512, y = r() * 512, rr = 2 + r() * 3;
-      const col = pick(cols, r);
-      wrap(x, y, (px, py) => {
-        if (px < -8 || px > 520 || py < -8 || py > 520) return;
-        /* 右下のかげ(樹冠の丸み。先に描いて、樹冠の外にだけ三日月形に残す) */
-        c.fillStyle = 'rgba(14,22,10,.3)'; c.beginPath(); c.arc(px + rr * 0.4, py + rr * 0.4, rr, 0, 7); c.fill();
-        c.fillStyle = col; c.beginPath(); c.arc(px, py, rr, 0, 7); c.fill();
-        /* 左上の光の当たる縁 */
-        c.fillStyle = 'rgba(150,180,110,.22)'; c.beginPath(); c.arc(px - rr * 0.35, py - rr * 0.35, rr * 0.45, 0, 7); c.fill();
+    c.fillStyle = '#2c3b25'; c.fillRect(0, 0, 512, 512);
+    const cols = [[52, 72, 44], [61, 83, 49], [69, 96, 58], [79, 106, 61], [58, 79, 48]];
+    const rgb = (b, k) => `rgb(${Math.min(255, Math.round(b[0] * k))},${Math.min(255, Math.round(b[1] * k))},${Math.min(255, Math.round(b[2] * k))})`;
+    const wrap = (x, y, rr, fn) => {
+      [[0, 0], [512, 0], [-512, 0], [0, 512], [0, -512], [512, 512], [-512, -512], [512, -512], [-512, 512]].forEach(([dx, dy]) => {
+        const px = x + dx, py = y + dy;
+        if (px < -rr * 1.5 || px > 512 + rr * 1.5 || py < -rr * 1.5 || py > 512 + rr * 1.5) return;
+        fn(px, py);
       });
-    }
-    for (let i = 0; i < 300; i++) {
-      const x = r() * 512, y = r() * 512, rr = 1 + r() * 2;
-      wrap(x, y, (px, py) => { c.fillStyle = 'rgba(10,16,8,.35)'; c.beginPath(); c.arc(px, py, rr, 0, 7); c.fill(); });
+    };
+    for (let i = 0; i < 1000; i++) {
+      const x = r() * 512, y = r() * 512, rr = 7 + r() * 8;
+      const base = cols[Math.floor(r() * cols.length) % cols.length];
+      const k = 1 + (r() - 0.5) * 0.24;
+      const sp = [];
+      for (let j = 0; j < 4; j++) sp.push([(r() - 0.5) * rr * 1.2, (r() - 0.5) * rr * 1.2, rr * (0.2 + r() * 0.15)]);
+      /* いちばん明るい所: 樹冠の色を明るくして、光の色(170,195,120)を4分の1まぜる */
+      const hl = [0, 1, 2].map((j) => base[j] * k * 1.25 * 0.75 + [170, 195, 120][j] * 0.25);
+      wrap(x, y, rr, (px, py) => {
+        /* 右下のかげ(樹冠の丸み。先に描いて、樹冠の外にだけ三日月形に残す) */
+        c.fillStyle = 'rgba(10,18,8,.45)'; c.beginPath(); c.arc(px + rr * 0.35, py + rr * 0.35, rr, 0, 7); c.fill();
+        /* 樹冠: 左上(光の当たる側)ほど明るい丸み */
+        const g = c.createRadialGradient(px - rr * 0.35, py - rr * 0.35, rr * 0.1, px, py, rr);
+        g.addColorStop(0, rgb(hl, 1));
+        g.addColorStop(0.35, rgb(base, k * 1.08));
+        g.addColorStop(1, rgb(base, k * 0.8));
+        c.fillStyle = g; c.beginPath(); c.arc(px, py, rr, 0, 7); c.fill();
+        /* 葉のかたまりの小さな影(ふちの丸を くずす) */
+        c.fillStyle = 'rgba(16,26,12,.22)';
+        sp.forEach(([ox, oy, sr]) => { c.beginPath(); c.arc(px + ox + sr * 0.5, py + oy + sr * 0.5, sr, 0, 7); c.fill(); });
+      });
     }
   });
   return texFrom(cv);
@@ -564,7 +579,7 @@ function texForest() {
 /* =========================================================
  * 街の組み立て(_buildTownSteps / _buildTown から呼ばれる)
  * 手順の列: 下ごしらえ(占有・区間の判定) → 側道・交差道路・電柱 → 中高層 → 戸建てと路地 →
- * 道路の面・車・看板 → 遠景 → 道を走る車。順に全部呼べば buildTown と同じ
+ * 道路の面・車・看板 → 遠景 → 遠くの家並み → 道を走る車。順に全部呼べば buildTown と同じ
  * ========================================================= */
 export function buildTownSteps(rs) {
   return [
@@ -574,6 +589,7 @@ export function buildTownSteps(rs) {
     () => buildHouses(rs, rs._town),
     () => townFlush(rs, rs._town),
     () => buildSkyline(rs, rs._town),
+    () => buildFarBlocks(rs, rs._town),
     () => { rs._town.traffic = new RoadTraffic(rs); },
   ];
 }
@@ -693,8 +709,11 @@ function townFlush(rs, T) {
   flushRoads(rs, T);
   T.obb = null;   // 配置が終わったら外形の表は不要
   /* 車庫・駐車場の車と店の看板(どちらも かたまりごとに1回の描画)。遠くでは小さすぎるので近いかたまりだけ */
-  addCarsRaw(rs, T.cars, T.groups.town).forEach((m) => nearOnly(T, m, 270));
+  addCarsRaw(rs, T.cars, T.groups.town).forEach((m) => { nearOnly(T, m, 270); carLod(T, m, 0); });
   buildShopSigns(rs, T.groups.town, T.signs).forEach((m) => nearOnly(T, m, 650));
+  /* 駅前の駐輪場の自転車(駅ごとに1つのまとまり。車と同じ材質。250mより遠いと小さすぎるので描かない) */
+  if (T.bikes && T.bikes.length) emitInstanced(T.groups.town, geoBike(), carMaterial(rs), T.bikes, (it) => it.k, { colors: true }).forEach((m) => nearOnly(T, m, 250));
+  T.bikes = null;
   T.carCount = T.cars.length; T.signCount = T.signs.length;
   T.cars = T.signs = null;
 }
@@ -704,8 +723,23 @@ function townFlush(rs, T) {
 export function addCars(rs, spots) {
   const ms = addCarsRaw(rs, spots);
   ms.forEach((m) => { if (m.boundingSphere) m.boundingSphere.radius += 60; });
-  if (rs._town) ms.forEach((m) => nearOnly(rs._town, m, 450));
+  if (rs._town) ms.forEach((m) => { nearOnly(rs._town, m, 450); carLod(rs._town, m, 60); });
   return ms;
+}
+
+/* 車のかたまりも木と同じ距離の段階(updateTown の木のLOD: 150mより近いと細かい形・165mより遠いと軽い形)で
+ * 形を差しかえる(遠くの車は数画素なので、タイヤハウス・バンパー・ミラーを省いた形で三角形をへらす)。
+ * pad: 動く車(踏切待ち)の外接矩形を道に沿って広げる幅(m) */
+function carLod(T, m, pad) {
+  const type = m.userData.carType;
+  if (!type || !T || !T.treeCells) return;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < m.count; i++) {
+    m.getMatrixAt(i, _m4);
+    const x = _m4.elements[12], z = _m4.elements[14];
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  T.treeCells.push({ mesh: m, hi: geoCar(type), lo: geoCar(type, true), x0: x0 - pad, x1: x1 + pad, z0: z0 - pad, z1: z1 + pad, far: false, shadow: m.castShadow });
 }
 
 /* 近いときだけ見せるかたまりに登録(外接矩形は形の箱+インスタンスの位置から)。
@@ -822,6 +856,8 @@ function flushRoads(rs, T) {
 function buildStreets(rs, T) {
   const F = rs.frames, step = rs.step, L = rs.line.meta.length;
   const rng = makeRng(2468);
+  /* 通りの小物は別の乱数の列で(いままでの道路・電柱の並びを変えない) */
+  const rngF = makeRng(2468 + 303);
   const M = T.M;
   const crossS = rs.crossSpots || [];
   const sts = rs.line.stations;
@@ -1002,6 +1038,17 @@ function buildStreets(rs, T) {
       /* 文字の板は外側線にかからない幅で(線が途切れて見えないように) */
       const o1 = o0 + 1.2, dg = side * (W - 0.6);
       quad(b, P(o1, ym, dg), P(o1, ym, dr), P(o1 + 5.2, ym, dg), P(o1 + 5.2, ym, dr), RU.tomare[0], RU.tomare[1], RU.tomare[3], RU.tomare[2]);
+      /* 停止線の左の角に「止まれ」の標識(線路のほうへ走る車に表を向ける)。
+       * 側道の向こう側(柵と側道のあいだ)にカーブミラー(オレンジの柱・鏡は交差道路のほうを向く) */
+      const yb = fr.y - 0.45, fx = side * fr.lx, fz = side * fr.lz;
+      const [tx0, , tz0] = P(o0 + 0.3, 0, side * (W + 0.35));
+      T.boxesPre.push(paint({ x: tx0, y: yb, z: tz0, yaw: fr.yaw, sx: 0.06, sy: 2.55, sz: 0.06, s: ss, sh: false }, 0x9a9ea2, 0.03, rngF));
+      T.signs.push({ kind: 'tomare', s: ss, x: tx0 + fx * 0.05, y: yb + 2.15, z: tz0 + fz * 0.05, fx, fz, w: 0.8, h: 0.7 });
+      const mo = road.inner - 0.4;
+      const mx = fr.x + fr.lx * side * mo, mz = fr.z + fr.lz * side * mo;
+      T.boxesPre.push(paint({ x: mx, y: yb, z: mz, yaw: fr.yaw, sx: 0.08, sy: 2.6, sz: 0.08, s: ss, sh: false }, 0xd8742a, 0.04, rngF));
+      T.boxesPre.push(paint({ x: mx + fx * 0.05, y: yb + 2.1, z: mz + fz * 0.05, yaw: fr.yaw, sx: 0.04, sy: 0.7, sz: 0.7, s: ss, sh: false }, 0xd8742a, 0.04, rngF));
+      T.boxesPre.push(paint({ x: mx + fx * 0.09, y: yb + 2.15, z: mz + fz * 0.09, yaw: fr.yaw, sx: 0.06, sy: 0.6, sz: 0.6, s: ss, sh: false }, 0x2a3136, 0.03, rngF));
     }
     rs._crossStreets.push({ s: ss, side, a, b: bEnd, cross: st.cross });
     stampBand(rs, ss - 3.3, ss + 3.3, side * a, side * bEnd, HARD);
@@ -1019,8 +1066,41 @@ function buildStreets(rs, T) {
     }
   });
 
-  /* (c) 大きな駅の駅前広場(バスのロータリー)。駅舎の側(右)の 26〜52m */
+  /* (c) 側道の小物: 最高速度30の標識(外側の縁・300mおき。その側の車線を走る車に表を向ける)と、
+   * 駅の近くの市街地のガードパイプ(外側の縁。20mの手すり+4mおきの支柱。交差道路・踏切の所は切る) */
+  rs._roadRuns.forEach((run) => {
+    const side = run.side;
+    const xs = rs._crossStreets.filter((c) => c.side === side);
+    const nearX = (q, m) => xs.some((c) => Math.abs(c.s - q) < m) || crossS.some((c) => Math.abs(c - q) < m + 14);
+    for (let ps = run.s0 + 23; ps < run.s1 - 10; ps += 300) {
+      if (nearX(ps, 6)) continue;
+      sampleFrame(F, step, ps, fr);
+      const o = run.outer + 0.35, yb = fr.y + rampY(ps) - 0.05;
+      const x = fr.x + fr.lx * side * o, z = fr.z + fr.lz * side * o;
+      T.boxesPre.push(paint({ x, y: yb, z, yaw: fr.yaw, sx: 0.06, sy: 2.45, sz: 0.06, s: ps, sh: false }, 0x9a9ea2, 0.03, rngF));
+      const fd = side > 0 ? -1 : 1;
+      T.signs.push({ kind: 'sp30', s: ps, x: x + fr.tx * fd * 0.05, y: yb + 2.1, z: z + fr.tz * fd * 0.05, fx: fr.tx * fd, fz: fr.tz * fd, w: 0.6 });
+    }
+    const fa = FR();
+    for (let gs = run.s0 + 4; gs + 20 <= run.s1 - 2; gs += 20) {
+      const mid = gs + 10;
+      if (T.kindAt(mid) > 1 || T.nearSt(mid) <= 0.15 || nearX(mid, 10 + W + 1)) continue;
+      sampleFrame(F, step, gs, fr); sampleFrame(F, step, gs + 20, fa);
+      const o = run.outer + 0.12;
+      const ax = fr.x + fr.lx * side * o, az = fr.z + fr.lz * side * o, bx = fa.x + fa.lx * side * o, bz = fa.z + fa.lz * side * o;
+      const yb = (fr.y + fa.y) / 2 + rampY(mid) - 0.05;
+      const yaw = Math.atan2(bx - ax, bz - az), len = Math.hypot(bx - ax, bz - az);
+      T.boxesPre.push({ x: (ax + bx) / 2, y: yb + 0.78, z: (az + bz) / 2, yaw, sx: 0.05, sy: 0.05, sz: len, s: mid, sh: false, r: 0.82, g: 0.82, b: 0.8 });
+      for (let k = 0; k <= 5; k++) {
+        const t = k / 5;
+        T.boxesPre.push({ x: ax + (bx - ax) * t, y: yb, z: az + (bz - az) * t, yaw, sx: 0.05, sy: 0.8, sz: 0.05, s: mid, sh: false, r: 0.82, g: 0.82, b: 0.8 });
+      }
+    }
+  });
+
+  /* (d) 大きな駅の駅前広場(バスのロータリー)。駅舎の側(右)の 26〜52m。駅前の駐輪場(どの駅も) */
   buildPlazas(rs, T);
+  buildBikes(rs, T);
 
   /* --- メッシュ化(道路の面は flushRoads で。路地を足してから) --- */
   const g = T.groups.streets;
@@ -1071,6 +1151,7 @@ function buildPlazas(rs, T) {
   const F = rs.frames, step = rs.step;
   const fr = FR();
   const rng = makeRng(3141);
+  const rngP = makeRng(3141 + 7);   // 広場の自動販売機(別の乱数の列)
   T.plazas = [];
   T.hubs.forEach((st) => {
     if (rs._inTunnel(st.s) || rs._inTunnel(st.s - 55)) return;
@@ -1124,7 +1205,56 @@ function buildPlazas(rs, T) {
       carPaint(sp, 0xf0f0ec, rng);
       T.cars.push(sp);
     }
+    /* 広場のふち(駅の側)に自動販売機を2台ずつ2か所(前の面は広場のほう。夜は光る) */
+    [sc - 38, sc + 10].forEach((vs) => {
+      sampleFrame(F, step, vs, fq);
+      const nx = -fq.lx, nz = -fq.lz;
+      for (let k = -1; k <= 1; k += 2) {
+        const x = fq.x + fq.lx * -25.6 + fq.tx * k * 0.51, z = fq.z + fq.lz * -25.6 + fq.tz * k * 0.51;
+        const v = rngP() < 0.6 ? 0 : 1;
+        T.boxesPre.push(paint({ x, y: fq.y - 0.45, z, yaw: fq.yaw, sx: 0.75, sy: 1.83, sz: 1.0, s: sc, sh: false }, v ? 0xc9d2da : 0xeceeea, 0.03, rngP));
+        T.signs.push({ kind: 'jihanki', s: sc, x: x + nx * 0.385, y: fq.y - 0.45 + 0.95, z: z + nz * 0.385, fx: nx, fz: nz, w: 0.92, h: 1.6, d: 0, cell: v });
+      }
+    });
     T.plazas.push({ s: sc, x: cx, z: cz, r: R });
+  });
+}
+
+/* 駅前の駐輪場: どの駅も駅舎の側(右)の 線路から20〜22m・st.s-77〜-66(駅舎より手前。駅と駅前の HARD の中)に、
+ * 自転車を2列(1列19台から15%ぬく。列ごとに前の向きを変える)と、前輪を入れる低い横棒。手前のはしに自動販売機2台。
+ * 地下の駅・新宿・ターミナルの中は置かない */
+const BIKE_PAINTS = [0xb8bcc0, 0xb8bcc0, 0xe8e8e4, 0x2a2c30, 0x9a2a2a, 0x2c4a7a, 0x4f6b4f, 0xc8c0a8];
+function buildBikes(rs, T) {
+  const F = rs.frames, step = rs.step;
+  const rng = makeRng(4242), rngV = makeRng(4242 + 9);
+  const fr = FR();
+  T.bikes = [];
+  rs.line.stations.forEach((st, si) => {
+    if (st.name === '新宿' || rs._inTunnel(st.s) || rs._inTunnel(st.s - 72) || rs._inTerminal(st.s - 72, 20)) return;
+    for (let row = 0; row < 2; row++) {
+      const lat = row ? -22.3 : -19.9, dir = row ? -1 : 1;
+      for (let k = 0; k < 19; k++) {
+        if (rng() < 0.15) continue;
+        const s = st.s - 77 + k * 0.62 + (rng() - 0.5) * 0.08;
+        sampleFrame(F, step, s, fr);
+        const yaw = Math.atan2(dir * fr.lx, dir * fr.lz) + (rng() - 0.5) * 0.12;
+        T.bikes.push(paint({ x: fr.x + fr.lx * lat, y: fr.y - 0.48, z: fr.z + fr.lz * lat, yaw, sx: 1, sy: 1, sz: 1, s: st.s, k: si, sh: false }, pick(BIKE_PAINTS, rng), 0.05, rng));
+      }
+      /* 前輪を入れる低い横棒(銀) */
+      sampleFrame(F, step, st.s - 71.4, fr);
+      const rl = lat + dir * 0.62;
+      T.boxesPre.push({ x: fr.x + fr.lx * rl, y: fr.y - 0.5 + 0.28, z: fr.z + fr.lz * rl, yaw: fr.yaw, sx: 0.05, sy: 0.05, sz: 12.2, s: st.s, sh: false, r: 0.6, g: 0.61, b: 0.62 });
+    }
+    /* 駐輪場の手前のはしに自動販売機2台(前の面は駅に入ってくる列車のほう。夜は光る) */
+    sampleFrame(F, step, st.s - 79.6, fr);
+    const nx = -fr.tx, nz = -fr.tz;
+    for (let k = 0; k < 2; k++) {
+      const lat = -20.4 - k * 1.02;
+      const x = fr.x + fr.lx * lat, z = fr.z + fr.lz * lat;
+      const v = rngV() < 0.6 ? 0 : 1;
+      T.boxesPre.push(paint({ x, y: fr.y - 0.5, z, yaw: fr.yaw, sx: 1.0, sy: 1.83, sz: 0.75, s: st.s, sh: false }, v ? 0xc9d2da : 0xeceeea, 0.03, rngV));
+      T.signs.push({ kind: 'jihanki', s: st.s, x: x + nx * 0.387, y: fr.y - 0.5 + 0.95, z: z + nz * 0.387, fx: nx, fz: nz, w: 0.92, h: 1.6, d: 0, cell: v });
+    }
   });
 }
 
@@ -1372,19 +1502,32 @@ function buildBuildings(rs, T) {
     }
   }
   /* 遠景ベルト(市街地のみ、150〜420m帯に大きめの箱。向きは400mごとにそろえる)。
-   * 世田谷の低層住宅地では置かない(家の屋根の海に中層の箱だけが浮いて見えるので)。大きな駅の前だけ低めに近く */
+   * 世田谷の低層住宅地は、大きな駅の前だけ低めに近く。ほかは うすいベルト(12m以下・3分の1・260〜420m。
+   * 家の屋根の海に中層の箱が ところどころ見えるくらい。選ぶ乱数は別の列)。
+   * 420mより外へ広げると、外壁の かたまり(800m)の外接球が半径600mをこえて「遠くても描く」あつかいになり
+   * (scene.js _registerCells)、描画がふえるので広げない。カーブの内側は地面が届く所まで(farLatMax) */
+  const rngB = makeRng(12345 + 77);
   for (let s = 60; s < L - 60; s += 55) {
     const kind = T.kindAt(s);
     if (kind > 1 || T.inRiver(s, 150)) continue;
     const low = T.lowRise(s);
-    if (low && T.nearBig(s) < 0.4) continue;
+    const thin = low && T.nearBig(s) < 0.4;
     sampleFrame(F, step, Math.round(s / 400) * 400, fr2);
     const yawB = fr2.yaw;
     for (const side of [1, -1]) {
       const nB = kind === 0 ? 2 : 1;
+      const lm = farLatMax(rs, s, side);
       for (let bi = 0; bi < nB; bi++) {
+        if (thin) {
+          if (rngB() > 0.33 || rngB() > qk + 0.2) continue;
+          const lat = Math.min(lm, 260 + rngB() * 160);
+          if (lat < 250) continue;
+          const h = 7 + rngB() * 5;
+          place(s + rngB() * 30, side, lat, 18 + rngB() * 20, 14 + rngB() * 14, yawB + (rngB() - 0.5) * 0.06, pickType(1, h, rngB), h, false, false, true);
+          continue;
+        }
         if (rng() < 0.3 || rng() > qk + 0.2) continue;
-        const lat = low ? 150 + rng() * 110 : 150 + rng() * 270;
+        const lat = Math.min(lm, low ? 150 + rng() * 110 : 150 + rng() * 270);
         const h = low ? Math.min(18, 10 + rng() * 20) : kind === 0 ? 25 + rng() * 60 : 10 + rng() * 20;
         const type = kind === 0 ? (rng() < 0.6 ? 'office' : 'zakkyo') : pickType(1, h, rng);
         place(s + rng() * 30, side, lat, 18 + rng() * 26, 16 + rng() * 22, yawB + (rng() - 0.5) * 0.06, type, h, false, false, true);
@@ -1410,6 +1553,10 @@ const WALLS = [0xece8df, 0xddd6c8, 0xcfc6b4, 0xbdb6aa, 0x8e8a83, 0xe4dccd, 0xc8b
 /* 屋根: 濃い灰・茶(2倍の重み)+紺・こげ茶・緑・赤茶(あわせて約3分の1)。上から見て色がまざる */
 const ROOFS = [0x3a3d41, 0x46423e, 0x2e3236, 0x574a3f, 0x474e56, 0x62564a, 0x3a3d41, 0x46423e, 0x2e3236, 0x574a3f, 0x474e56, 0x62564a,
   0x2f4a66, 0x6e4634, 0x55634f, 0x8b5a42, 0x2f4a66, 0x6e4634];
+/* 色の明るさ(リニア。0x3d4046 のような濃いサイディングは .05 ほど) */
+const lumLin = (hex) => { _c.setHex(hex); return 0.2126 * _c.r + 0.7152 * _c.g + 0.0722 * _c.b; };
+/* 家の表の向き(+1=線路から遠ざかる向き)。偶数の列は線路(側道)のほう、奇数の列は外の路地のほうを向く */
+const fDirOf = (odd) => (odd ? 1 : -1);
 /* 敷地の地面: 土間コンクリート45%・砂利30%・芝25%(道路の絵の右半分の色見本) */
 const lotUV = (rng) => { const r = rng(); return r < 0.45 ? ROAD_UV.concrete : r < 0.75 ? ROAD_UV.gravel : ROAD_UV.lawn; };
 /* 家の表の絵(A/B/C)の選び方。外壁シェーダ(facade.js MAIN_V の fcMod)と同じ計算を float32 で */
@@ -1422,6 +1569,8 @@ function houseModule(x, z) {
 function buildHouses(rs, T) {
   const F = rs.frames, step = rs.step, L = rs.line.meta.length;
   const rng = makeRng(9753);
+  /* あとから足した物(陸屋根の仕上げ・自販機)は別の乱数の列で(いままでの家の並びを変えない) */
+  const rngF = makeRng(9753 + 101), rngV = makeRng(9753 + 202);
   const occ = rs._occ;
   const gable = [], flat = [], roofs = [];
   const porch = [], farHouses = [];
@@ -1430,6 +1579,7 @@ function buildHouses(rs, T) {
   const qk = T.q;
   const stamps = [];
   const NROW = T.farRows ? 13 : 9;
+  const sts = rs.line.stations;
 
   /* --- 路地(幅4.5m): 2列ごとの家のあいだ。交差道路とは T字にぶつかる(道路の縁で止める)。
    * ビル・駐車場・雑木林・駅などの上は通さない。家の列は路地にかからない位置に並ぶので、
@@ -1569,8 +1719,26 @@ function buildHouses(rs, T) {
         const yawH = odd ? yaw + Math.PI : yaw;
         const hy = turn ? yawH + Math.PI / 2 : yawH, hsx = turn ? w : d, hsz = turn ? d : w;
         const it = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: isGable ? (eave + 0.6) / EAVE : eave + 0.6 + 0.5, s: sMid, sh };
-        paint(it, pick(WALLS, rng), 0.04, rng);
+        let wall = pick(WALLS, rng);
+        /* 陸屋根の家は濃いサイディングにしない(日なたの通りに まっ黒な箱が浮いて見える)。選びなおしは別の乱数で */
+        for (let k = 0; k < 8 && !isGable && lumLin(wall) < 0.2; k++) wall = pick(WALLS, rngF);
+        paint(it, wall, 0.04, rng);
         (farRow ? farHouses : isGable ? gable : flat).push(it);
+        if (!isGable && !farRow && row <= 3) {
+          /* 陸屋根の家の仕上げ(手前の4列。小物の箱なので描画は増えない): 屋上のふち(笠木のスラブ)と、
+           * 3階建ては2階の表にバルコニー(床と手すり壁)。たてどいは外壁の絵にある(三角形をふやさない)。
+           * 足した箱は影を落とさない(影を落とす箱のなかった かたまりが影の描画に加わらないように) */
+          const top = base0 + it.sy;
+          boxes.push(paint({ x: cx, y: top - 0.1, z: cz, yaw: hy, sx: hsx + 0.3, sy: 0.25, sz: hsz + 0.3, s: sMid, sh: false }, 0x6e6f70, 0.05, rngF));
+          const nx = fDirOf(odd) * side * fr.lx, nz = fDirOf(odd) * side * fr.lz;   // 表の面の外向き(世界)
+          if (three) {
+            const yb = base0 + 0.6 + 2.9, bw = hsz - 1.0;
+            const sl = paint({ x: cx + nx * (hsx / 2 + 0.5), y: yb, z: cz + nz * (hsx / 2 + 0.5), yaw: hy, sx: 1.0, sy: 0.15, sz: bw, s: sMid, sh: false }, 0x9a9893, 0.04, rngF);
+            boxes.push(sl);
+            boxes.push({ x: cx + nx * (hsx / 2 + 0.97), y: yb + 0.15, z: cz + nz * (hsx / 2 + 0.97), yaw: hy, sx: 0.06, sy: 1.0, sz: bw, s: sMid, sh: false,
+              r: Math.min(1, it.r * 1.06), g: Math.min(1, it.g * 1.06), b: Math.min(1, it.b * 1.06) });
+          }
+        }
         if (isGable && !farRow) {
           const rf = { x: cx, y: base0, z: cz, yaw: hy, sx: hsx, sz: hsz, sy: it.sy, s: sMid, sh };
           paint(rf, pick(ROOFS, rng), 0.08, rng);
@@ -1589,6 +1757,23 @@ function buildHouses(rs, T) {
           const uv = lotUV(rng);
           T.quad(T.rb(sMid), Q(l0, -hw), Q(l0, hw), Q(l1, -hw), Q(l1, hw), uv[0], uv[1], uv[2], uv[3]);
         }
+        /* 自動販売機(駅から180m以内の手前4列の家の4分の1・ほかの所は線路に近い2列の家の6%): 敷地の表の縁に2台ならべて、
+         * 前の面を道へ向ける(夜は光る)。車庫の車の反対の側。この家は塀を作らず、同じ側の庭木も植えない。別の乱数の列で */
+        let vend = 0;
+        const vP = row > 3 ? 0 : sts.some((x) => Math.abs(x.s - sMid) < 180) ? 0.25 : row <= 1 ? 0.06 : 0;
+        if (vP > 0 && rngV() < vP) {
+          vend = carType ? -Math.sign(carZ) : rngV() < 0.5 ? -1 : 1;
+          const vz = vend * ((fw - 0.3) / 2 - 1.2), vl = edgeLat - fDir * 0.43;
+          const bx0 = fr.x + fr.lx * side * vl + fr.tx * vz, bz0 = fr.z + fr.lz * side * vl + fr.tz * vz;
+          const nx = fDir * side * fr.lx, nz = fDir * side * fr.lz;
+          for (let k = -1; k <= 1; k += 2) {
+            const x = bx0 + fr.tx * k * 0.51, z = bz0 + fr.tz * k * 0.51;
+            const v = rngV() < 0.7 ? 0 : 1;
+            boxes.push(paint({ x, y: fr.y - 0.5, z, yaw, sx: 0.75, sy: 1.83, sz: 1.0, s: sMid, sh: false }, v ? 0xc9d2da : 0xeceeea, 0.03, rngV));
+            T.signs.push({ kind: 'jihanki', s: sMid, x: x + nx * 0.385, y: fr.y - 0.5 + 0.95, z: z + nz * 0.385, fx: nx, fz: nz, w: 0.92, h: 1.6, d: 0, cell: v });
+          }
+          aos.push({ x: bx0, y: fr.y - 0.46, z: bz0, yaw, sx: 1.4, sy: 1, sz: 2.7, s: sMid });
+        }
         /* ブロック塀(手前の6割)。車庫のある家は車の出入り口をあける */
         const flat1 = edgeLat - fDir * 0.15;
         if (lat < 75 && rng() < 0.6) {
@@ -1596,7 +1781,7 @@ function buildHouses(rs, T) {
           const bx = fr.x + fr.lx * side * flat1 + fr.tx * bo, bz = fr.z + fr.lz * side * flat1 + fr.tz * bo;
           const bw = { x: bx, y: fr.y - 0.55, z: bz, yaw, sx: 0.12, sy: 1.25, sz: carType ? fw / 2 - 0.6 : fw - 0.5, s: sMid, sh: false };
           paint(bw, pick([0xb9b5ab, 0xa9a69e, 0xc4bfb4], rng), 0.05, rng);
-          boxes.push(bw);
+          if (!vend) boxes.push(bw);
         }
         /* テレビアンテナ(近くの家の35%) */
         if (lat < 70 && rng() < 0.35) {
@@ -1612,10 +1797,11 @@ function buildHouses(rs, T) {
         if (rng() < (lat > 60 ? 0.06 : T.lowRise(s) ? 0.2 : 0.25)) {
           const off = flat1 - fDir * 0.9;
           const tz = (carType ? -Math.sign(carZ) : rng() < 0.5 ? -1 : 1) * (w / 2 - 0.4);
-          rs._treeQueue.push({
+          const tree = {
             x: fr.x + fr.lx * side * off + fr.tx * tz, y: fr.y - 0.5, z: fr.z + fr.lz * side * off + fr.tz * tz,
-            s: sMid, sc: 0.45 + rng() * 0.15, tint: 0.8 + rng() * 0.3, conifer: rng() < 0.2,
-          });
+            s: sMid, sc: 0.45 + rng() * 0.15, tint: 0.8 + rng() * 0.3, conifer: rng() < 0.1,
+          };
+          if (!vend || Math.sign(tz) !== vend) rs._treeQueue.push(tree);
         }
         /* 玄関の明かりが前の地面にこぼれる(線路に近い家の4割・夜だけ)。玄関の位置は外壁の絵(A/B/C)と同じ選び方で */
         if (!turn && lat < 60 && rng() < 0.4) {
@@ -1640,9 +1826,9 @@ function buildHouses(rs, T) {
   if (gable.length) emitInstanced(g, geoGable(), M.house, gable, 500, { shadow: true, cull: true });
   if (flat.length) emitInstanced(g, geoUnitBoxOpen(), M.house, flat, 500, { shadow: true, cull: true });
   if (roofs.length) emitInstanced(g, geoGableRoof(), M.roof, roofs, 500, { shadow: true, cull: true });
-  /* 奥の列(9列目から): 別のかたまり(1000m)・900mより遠ければ描かない。影は落とさない */
+  /* 奥の列(9列目から): 遠くの家並み(buildFarBlocks)と同じかたまり(1000m)にまとめて、そちらで出す。影は落とさない */
   const tag = (k) => (m) => { m.userData.p1 = k; return m; };
-  if (farHouses.length) emitInstanced(g, geoGable(), M.house, farHouses, 1000, { shadow: false }).map(tag('far')).forEach((m) => nearOnly(T, m, 900));
+  T.farHouses = farHouses;
   /* 玄関の光だまり(夜だけ材質を見せる。300mまで) */
   if (porch.length) emitInstanced(g, geoFlat(), M.porchPool, porch, 700, { colors: false, receive: false }).map(tag('porch')).forEach((m) => { m.renderOrder = 2; nearOnly(T, m, 300); });
   /* 屋上の小物・塀・アンテナ(建物ぶんもまとめて)と接地影 */
@@ -1654,6 +1840,81 @@ function buildHouses(rs, T) {
   }
   T.houseCount = gable.length + flat.length + farHouses.length;
   T.boxes = T.aos = null;   // 小物と接地影の表は作るときだけ使う(メモリを返す)
+}
+
+/* カーブの内側では地面(trackbed の groundColumnsAt)が曲率半径の0.75倍までしか届かない。
+ * 前後40mの向きの変わり方から、その側で家並み・遠景の箱を置いてよい いちばん遠い横の距離(m)を返す */
+const _fa = FR(), _fb = FR(), _fc = FR();
+function farLatMax(rs, s, side) {
+  sampleFrame(rs.frames, rs.step, s - 40, _fa);
+  sampleFrame(rs.frames, rs.step, s + 40, _fb);
+  sampleFrame(rs.frames, rs.step, s, _fc);
+  const dx = _fb.tx - _fa.tx, dz = _fb.tz - _fa.tz;
+  const k = Math.hypot(dx, dz) / 80;
+  /* 曲がる中心の側(向きの変化と左の向きの内積の符号)だけ制限する */
+  if (k < 1e-5 || (dx * _fc.lx + dz * _fc.lz) * side <= 0) return 1e9;
+  return 0.75 / k - 25;
+}
+
+/* ---------- 遠くの家並み(線路から175〜560m) ----------
+ * 家並みの屋根の地面の所(trackbed の rs._roofsAt: 世田谷の低層住宅地・郊外・丘陵の駅の前後500m)に、
+ * 2〜3軒つながった切妻の列(遠くの家と同じ形と外壁の材質。シェーダは増えない)を 26m×12m のます目にまばらに置く。
+ * 高画質は5割(どこでも)。中画質は丘陵の駅の前後500m(ゴールの そらからの視点など)だけ FAR_MID
+ * (世田谷・郊外は家並みが続いて数が多く、iPad の三角形の予算をこえるので置かない)。低画質は置かない。
+ * ほかの物の上・川・トンネル・ランドマーク・丘のすそ(半径+20m)はよける。
+ * 9列目から先の家(buildHouses の T.farHouses)と同じ1000mのかたまりにまとめて出す(描画はほとんど増えない)。影は落とさない */
+const FAR_MID = 0.12;
+function buildFarBlocks(rs, T) {
+  const far = T.farHouses || [];
+  T.farHouses = null;
+  const hiQ = T.q >= 1;
+  const keep = hiQ ? 0.5 : T.q >= 0.75 ? FAR_MID : 0;
+  if (keep > 0) {
+    const F = rs.frames, step = rs.step, L = rs.line.meta.length;
+    const rng = makeRng(6171);
+    const roofsAt = typeof rs._roofsAt === 'function' ? rs._roofsAt : (s, k) => k === 2 || (k === 1 && T.lowRise(s));
+    const plan = hillPlan(rs, T, hillGeos(rs));
+    const hills = [];
+    plan.lists.forEach((a) => { for (let i = 0; i < a.length; i++) hills.push(a[i]); });
+    const inHill = (x, z) => {
+      for (let i = 0; i < hills.length; i++) {
+        const h = hills[i];
+        const dx = x - h.x, dz = z - h.z;
+        if (Math.abs(dx) > h.sz * 1.2 + 40 || Math.abs(dz) > h.sz * 1.2 + 40) continue;
+        /* 丘のローカル(x: 横 sx・z: 長い向き sz)。回転は yaw(ローカル+z = (sin, cos)) */
+        const c = Math.cos(h.yaw), sn = Math.sin(h.yaw);
+        const lx = dx * c - dz * sn, lz = dx * sn + dz * c;
+        const ax = h.sx * 1.15 + 20, az = h.sz * 1.15 + 20;
+        if ((lx * lx) / (ax * ax) + (lz * lz) / (az * az) < 1) return true;
+      }
+      return false;
+    };
+    const fr = FR();
+    for (let s = 20; s < L - 20; s += 26) {
+      const kind = T.kindAt(s);
+      if (!roofsAt(s, kind) || (!hiQ && kind !== 3) || T.skipS(s) || T.inRiver(s, 150) || rs._inTunnel(s + 80) || rs._inTunnel(s - 80)) continue;
+      for (const side of [1, -1]) {
+        if (T.landmarkSkip(side, s)) continue;
+        const lm = Math.min(560, farLatMax(rs, s, side));
+        for (let lat = 175; lat < lm; lat += 12) {
+          if (rng() > keep) continue;
+          const ss = s + (rng() - 0.5) * 8, ll = lat + (rng() - 0.5) * 4;
+          sampleFrame(F, step, ss, fr);
+          const x = fr.x + fr.lx * side * ll, z = fr.z + fr.lz * side * ll;
+          const len = 16 + rng() * 8;
+          if (!occFree(rs, x, z) || !occFree(rs, x + fr.tx * len * 0.45, z + fr.tz * len * 0.45) ||
+            !occFree(rs, x - fr.tx * len * 0.45, z - fr.tz * len * 0.45) || inHill(x, z)) continue;
+          const it = { x, y: fr.y - 0.5 - 0.9, z, yaw: fr.yaw + (rng() - 0.5) * 0.1, sx: 8, sz: len, sy: (5.8 + 0.3 + rng() * 0.6) / EAVE, s: ss, sh: false };
+          paint(it, pick(WALLS, rng), 0.05, rng);
+          far.push(it);
+        }
+      }
+    }
+  }
+  if (far.length) {
+    emitInstanced(T.groups.houses, geoGable(), T.M.house, far, 1000, { shadow: false })
+      .forEach((m) => { m.userData.p1 = 'far'; nearOnly(T, m, hiQ ? 1100 : 900); });
+  }
 }
 
 /* ---------- 遠景: 街並みと丘の稜線のリング + 新宿の高層ビル群(看板) ---------- */
@@ -1881,48 +2142,63 @@ export function makeTreeGeosP1() {
     return g;
   };
   /* 近景用の小さな葉のかたまり: 単位球の上のゆるい3次元の波で 0.7〜1.3倍にふくらませてから大きさをかける。
-   * 法線は樹冠全体の中心からの向きを少しまぜる(かたまりの集まりが1つの丸い樹冠として陰影がつく) */
-  const lump = (r, x, y, z, detail, cx, cy, cz) => {
-    /* 細かいかたまりは八面体の分割1(32三角形)、粗いかたまりは二十面体(20三角形)。三角形の数は前の木と同じくらい */
-    const g = detail ? new THREE.OctahedronGeometry(1, 1) : new THREE.IcosahedronGeometry(1, 0);
+   * 法線は樹冠全体の中心からの向きを強くまぜる(かたまりの集まりが1つの丸い樹冠として やわらかい陰影になる)。
+   * UV は樹冠の中心からの球の座標(u=方位×3, v=高さ/1.6): 葉の模様がかたまりの面の向きで切れずに樹冠全体へ流れる。
+   * かたまりは八面体の分割1(32三角形)。高画質だけ上の4つを分割2(72三角形)にする */
+  const lump = (sp, detail, cx, cy, cz) => {
+    const { r, x, y, z, a, b, c } = sp;
+    const g = new THREE.OctahedronGeometry(1, detail);
     const p = g.attributes.position;
-    const a = rnd() * 6.28, b = rnd() * 6.28, c = rnd() * 6.28;
-    const nr = new Float32Array(p.count * 3);
+    const nr = new Float32Array(p.count * 3), uv = new Float32Array(p.count * 2);
     let ox = x - cx, oy = y - cy, oz = z - cz;
     const ol = Math.hypot(ox, oy, oz) || 1;
     ox /= ol; oy /= ol; oz /= ol;
     for (let i = 0; i < p.count; i++) {
       const nx = p.getX(i), ny = p.getY(i), nz = p.getZ(i);
       const k = clamp(1 + 0.3 * (0.6 * Math.sin(2.3 * nx + a) * Math.sin(2.1 * ny + b) + 0.5 * Math.sin(3.1 * nz + c)), 0.7, 1.3);
-      p.setXYZ(i, x + nx * k * r, y + ny * k * r, z + nz * k * r);
-      let mx = nx + ox * 0.6, my = ny + oy * 0.6, mz = nz + oz * 0.6;
+      const px = x + nx * k * r, py = y + ny * k * r, pz = z + nz * k * r;
+      p.setXYZ(i, px, py, pz);
+      let mx = nx + ox * 1.2, my = ny + oy * 1.2, mz = nz + oz * 1.2;
       const ml = Math.hypot(mx, my, mz) || 1;
       nr[i * 3] = mx / ml; nr[i * 3 + 1] = my / ml; nr[i * 3 + 2] = mz / ml;
+      uv[i * 2] = (Math.atan2(pz - cz, px - cx) / (2 * Math.PI)) * 3;
+      uv[i * 2 + 1] = (py - cy) / 1.6;
+    }
+    /* 方位の切れ目(u が ±1.5 で とぶ所)をまたぐ三角形は、負の側に 3(模様3枚ぶん=同じ模様)を足してつなぐ */
+    for (let t = 0; t + 2 < p.count; t += 3) {
+      const u0 = uv[t * 2], u1 = uv[t * 2 + 2], u2 = uv[t * 2 + 4];
+      if (Math.max(u0, u1, u2) - Math.min(u0, u1, u2) > 1.5) {
+        for (let j = 0; j < 3; j++) if (uv[(t + j) * 2] < 0) uv[(t + j) * 2] += 3;
+      }
     }
     g.setAttribute('normal', new THREE.BufferAttribute(nr, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     return g;
   };
-  /* 樹冠: 芯のかたまり1つ + だ円の殻の上に7〜9個(上の外側の4つだけ細かく)。ex,ey,ez: 殻の半径。
-   * 1本 およそ230〜250三角形(幹をふくめて前の木の284より少ない) */
-  const crown = (cx, cy, cz, ex, ey, ez, n) => {
-    const parts = [lump(Math.min(ex, ey, ez) * 0.85, cx, cy, cz, 0, cx, cy - 1, cz)];
+  /* 樹冠の設計図: 芯のかたまり1つ + だ円の殻の上に7〜9個(上の外側の4つは大きめ)。ex,ey,ez: 殻の半径。
+   * 形(位置・大きさ・ゆらぎ)は1回だけ決めて、中画質用と高画質用の2つの細かさで同じ形を作る */
+  const lumpSpec = (r, x, y, z) => ({ r, x, y, z, a: rnd() * 6.28, b: rnd() * 6.28, c: rnd() * 6.28 });
+  const crownSpec = (cx, cy, cz, ex, ey, ez, n) => {
+    const parts = [lumpSpec(Math.min(ex, ey, ez) * 0.85, cx, cy, cz)];
     for (let i = 0; i < n; i++) {
       const up = i < 4;
       const az = (i / (up ? 4 : n - 4)) * Math.PI * 2 + (up ? Math.PI / 4 : 0) + (rnd() - 0.5) * 0.5;
       const el = up ? 0.55 + (rnd() - 0.5) * 0.3 : -0.15 + (rnd() - 0.5) * 0.4;
       const j = 0.85 + rnd() * 0.3;
       const x = cx + Math.cos(az) * Math.cos(el) * ex * j, y = cy + Math.sin(el) * ey * j, z = cz + Math.sin(az) * Math.cos(el) * ez * j;
-      parts.push(lump(up ? 0.75 + rnd() * 0.25 : 0.5 + rnd() * 0.3, x, y, z, up ? 1 : 0, cx, cy, cz));
+      parts.push(lumpSpec(up ? 0.75 + rnd() * 0.25 : 0.5 + rnd() * 0.3, x, y, z));
     }
-    return parts;
+    return { cx, cy, cz, parts };
   };
-  /* 頂点色: 下ほど暗い(幹は「2+色」= 固定色のフラグ) */
+  /* hiQ: 高画質(上の4つだけ分割2)。芯(0番)はまわりのかたまりに かくれるので いちばん粗く(8三角形) */
+  const crown = (spec, hiQ) => spec.parts.map((sp, i) => lump(sp, i === 0 ? 0 : hiQ && i >= 1 && i <= 4 ? 2 : 1, spec.cx, spec.cy, spec.cz));
+  /* 頂点色: 下ほど暗い(樹冠の下側は かげで沈む。幹は「2+色」= 固定色のフラグ) */
   const shade = (g, y0, y1) => {
     const p = g.attributes.position;
     const c = new Float32Array(p.count * 3);
     for (let i = 0; i < p.count; i++) {
       const t = clamp((p.getY(i) - y0) / (y1 - y0), 0, 1);
-      const v = Math.pow(0.55 + 0.5 * t, 2.2);
+      const v = Math.pow(0.45 + 0.6 * t, 2.2);
       c[i * 3] = v; c[i * 3 + 1] = v; c[i * 3 + 2] = v;
     }
     g.setAttribute('color', new THREE.BufferAttribute(c, 3));
@@ -1935,15 +2211,49 @@ export function makeTreeGeosP1() {
   const broad = (spec, detail) => spec.map(([r, x, y, z, sy], i) => ({ g: shade(blob(r, x, y, z, sy || 1.15, i < 3 ? detail : 0), 2.2, 5.5) }));
   const A = [[1.55, 0, 3.7, 0], [1.1, 0.95, 3.1, 0.35], [1.0, -0.85, 3.25, -0.3], [0.9, 0.1, 4.6, -0.5]];
   const B = [[1.25, 0, 3.3, 0, 1.3], [1.15, 0.2, 4.4, 0.2, 1.2], [0.85, -0.7, 3.0, 0.5], [0.8, 0.75, 3.6, -0.55]];
-  const cones = (seg) => [[1.5, 2.2, 2.6], [1.15, 1.9, 3.9], [0.75, 1.6, 5.0]].map(([r, h, y]) => {
-    const c = new THREE.ConeGeometry(r, h, seg, 1); c.translate(0, y, 0); return { g: shade(c, 1.5, 6.0) };
-  });
+  /* 杉(すぎ): 細長い円すい1つの輪ごとに半径をゆらし、1つおきの輪を25%外へ出して 枝の段を作る(紙のクリスマスツリーにしない)。
+   * 先は少し横へずらし、上のほうに小さな葉のかたまりを3つ。hash: 輪と頂点の番号から決まる 0..1 */
+  const hash2 = (i, k) => { const h = Math.sin(i * 127.1 + k * 311.7 + 17.3) * 43758.5453; return h - Math.floor(h); };
+  const sugiCone = (r, h, seg, rows, y, open) => {
+    const g = new THREE.ConeGeometry(r, h, seg, rows, open);
+    const p = g.attributes.position;
+    const ax = (rnd() - 0.5) * 0.3, az = (rnd() - 0.5) * 0.3;
+    /* 頂点は 上(先)の輪から順に (seg+1) 個ずつ(最後は継ぎ目の重複)。ふたの頂点は輪の後ろ */
+    const side = (rows + 1) * (seg + 1);
+    const top = h / 2;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i), yy = p.getY(i), z = p.getZ(i);
+      if (Math.abs(yy - top) < 1e-4) { p.setXYZ(i, x + ax, yy, z + az); continue; }
+      const iy = i < side ? Math.floor(i / (seg + 1)) : rows;
+      const ix = i < side ? (i % (seg + 1)) % seg : Math.round(((Math.atan2(z, x) / (2 * Math.PI)) * seg + seg) % seg) % seg;
+      const k = (0.8 + 0.45 * hash2(iy, ix)) * (iy % 2 === 1 ? 1.25 : 1);
+      p.setXYZ(i, x * k, yy, z * k);
+    }
+    g.translate(0, y, 0);
+    g.computeVertexNormals();
+    return g;
+  };
+  const sugi = () => {
+    const parts = [{ g: shade(sugiCone(1.0, 6.4, 8, 6, 3.6, true), 0.4, 6.8) }];
+    [[4.3, 0.55, 0.6], [5.1, 0.4, 2.7], [5.85, 0.3, 4.6]].forEach(([y, d, a]) => {
+      const sp = lumpSpec(0.35 + rnd() * 0.15, Math.cos(a) * d, y, Math.sin(a) * d);
+      parts.push({ g: shade(lump(sp, 0, 0, y - 0.6, 0), 0.4, 6.8) });
+    });
+    return parts;
+  };
   /* 近景用: 広がった樹冠(A)と、背の高い樹冠(B) */
-  const crownA = crown(0, 3.75, 0, 1.45, 1.15, 1.4, 8).map((g) => ({ g: shade(g, 2.2, 5.5) }));
-  const crownB = crown(0, 3.95, 0, 1.15, 1.55, 1.15, 9).map((g) => ({ g: shade(g, 2.2, 5.8) }));
-  const hi = [mergeParts([...crownA, trunk()]), mergeParts([...crownB, trunk()]), mergeParts([...cones(7), trunkC()])];
-  const lo = [mergeParts(broad(A, 0)), mergeParts(broad(B, 0)), mergeParts(cones(5))];
-  return { hi, lo };
+  const sA = crownSpec(0, 3.75, 0, 1.45, 1.15, 1.4, 8), sB = crownSpec(0, 3.95, 0, 1.15, 1.55, 1.15, 9);
+  const crowns = (hiQ) => [
+    mergeParts([...crown(sA, hiQ).map((g) => ({ g: shade(g, 2.2, 5.5) })), trunk()]),
+    mergeParts([...crown(sB, hiQ).map((g) => ({ g: shade(g, 2.2, 5.8) })), trunk()]),
+  ];
+  const conifer = mergeParts([...sugi(), trunkC()]);
+  const hi = crowns(false).concat([conifer]);
+  /* 高画質だけの近景(上の4つのかたまりが細かい)。杉は同じ形を使う */
+  const hiQ = crowns(true).concat([conifer]);
+  /* 遠景(165mより先・丘の稜線)の広葉樹は3つのかたまり(60三角形)。いちばん数が多いので軽く */
+  const lo = [mergeParts(broad([A[0], A[1], A[3]], 0)), mergeParts(broad([B[0], B[1], B[3]], 0)), mergeParts([{ g: shade(sugiCone(1.1, 6.2, 6, 2, 3.5, true), 0.4, 6.6) }])];
+  return { hi, hiQ, lo };
 }
 
 /* list: [{x,y,z|p, s, sc, sy?, tint, conifer?}] → チャンク(300m)ごとの InstancedMesh */
@@ -1981,19 +2291,22 @@ export function plantTreesP1(rs, list, rng) {
     const it = { x: t.x, y: t.y, z: t.z, yaw: rng() * Math.PI * 2, sx: sc, sy: sc * (t.sy || 1) * (0.88 + rng() * 0.3), sz: sc, s, sh: band === 0, band };
     const k = t.tint;
     /* 葉の模様(平均0.8)ぶん明るめに */
-    if (t.conifer) _c.setRGB(k * 0.28, k * 0.41, k * 0.31, THREE.SRGBColorSpace);
+    /* 杉は青みのある濃い緑 */
+    if (t.conifer) _c.setRGB(k * 0.22, k * 0.33, k * 0.26, THREE.SRGBColorSpace);
     else _c.setRGB(k * 0.49, k * 0.6, k * 0.35, THREE.SRGBColorSpace);
     it.r = _c.r; it.g = _c.g; it.b = _c.b;
     groups[t.conifer ? 2 : (keyNum(s, band) + band) % 2].push(it);
   });
   const cells = [];
+  /* 近景の形: 高画質だけ樹冠の上のかたまりが細かい組(hiQ) */
+  const HI = rs.quality === 'high' && G.hiQ ? G.hiQ : G.hi;
   groups.forEach((all, gi) => {
     if (!all.length) return;
     /* 線路から200mより外(丘の稜線・遠くの林)はいつも軽い形(かたまりの外接矩形は大きいので、
      * 近いと判定されて細かい形にならないように) */
     const near = all.filter((it) => it.band < 2), farI = all.filter((it) => it.band === 2);
     const meshes = [];
-    if (near.length) emitInstanced(g, G.hi[gi], mat, near, bandKey, { shadow: true }).forEach((m) => { m.userData.treeHi = G.hi[gi]; meshes.push(m); });
+    if (near.length) emitInstanced(g, HI[gi], mat, near, bandKey, { shadow: true }).forEach((m) => { m.userData.treeHi = HI[gi]; meshes.push(m); });
     if (farI.length) emitInstanced(g, G.lo[gi], mat, farI, bandKey, { shadow: true }).forEach((m) => { m.userData.treeHi = G.lo[gi]; meshes.push(m); });
     meshes.forEach((im) => {
       const hiG = im.userData.treeHi;
@@ -2012,12 +2325,14 @@ export function plantTreesP1(rs, list, rng) {
   return g;
 }
 
-/* ---------- 丘(多摩丘陵): でこぼこの半球3種を線路方向に引きのばして稜線に ---------- */
-function hillGeo(seed) {
-  const g = new THREE.SphereGeometry(1, 40, 12, 0, Math.PI * 2, 0, Math.PI / 2);
+/* ---------- 丘(多摩丘陵): でこぼこの半球3種を線路方向に引きのばして稜線に ----------
+ * 上のほう(y>.45)は方位の細かい波で ふくらませ・持ち上げて、稜線を樹冠のでこぼこにする(なめらかな おわん形にしない) */
+function hillGeo(seed, seg) {
+  const g = new THREE.SphereGeometry(1, seg, 12, 0, Math.PI * 2, 0, Math.PI / 2);
   const p = g.attributes.position;
   const r = makeRng(seed);
   const ph = [r() * 6, r() * 6, r() * 6];
+  const pc = [r() * 6, r() * 6, r() * 6];
   const col = new Float32Array(p.count * 3);
   const low = srgbLin(0x7d8a63), mid = srgbLin(0x3b5130);
   const lf = [low[0] / mid[0], low[1] / mid[1], low[2] / mid[2]];
@@ -2028,6 +2343,12 @@ function hillGeo(seed) {
     x *= n; z *= n;
     y = Math.min(y, 0.82) / 0.82;
     y = y * (0.9 + 0.2 * (0.5 + 0.5 * Math.sin(th * 2 + ph[1]))) - 0.04;
+    /* 樹冠のでこぼこ(上のほうだけ。すそは地面になじませる)。てっぺんの点(方位が決まらない)は動かさない(すき間を作らない) */
+    if (y > 0.45 && x * x + z * z > 1e-8) {
+      const b = 1 + 0.035 * Math.sin(th * 23 + pc[0]) * Math.sin(th * 41 + pc[1]);
+      x *= b; z *= b;
+      y += 0.025 * (0.5 + 0.5 * Math.sin(th * 29 + pc[2]));
+    }
     p.setXYZ(i, x, y, z);
     /* すその15%は明るい草地・畑の色へ */
     const t = clamp(1 - (y + 0.04) / 0.15, 0, 1);
@@ -2036,16 +2357,21 @@ function hillGeo(seed) {
   }
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
   g.computeVertexNormals();
-  /* 急な斜面ほど暗く(上から光の当たる頂上は明るい) */
+  /* 急な斜面ほど少し暗く(上から光の当たる頂上は明るい)。かげの側が石板のように沈まないよう、暗さは控えめ */
   const nr = g.attributes.normal;
   for (let i = 0; i < p.count; i++) {
-    const k = 0.72 + 0.28 * clamp(nr.getY(i), 0, 1);
+    const k = 0.84 + 0.16 * clamp(nr.getY(i), 0, 1);
     col[i * 3] *= k; col[i * 3 + 1] *= k; col[i * 3 + 2] *= k;
   }
-  /* 稜線の木を植えてよい頂点(上のほう) */
-  const top = [];
-  for (let i = 0; i < p.count; i++) if (p.getY(i) >= 0.62) top.push(i);
+  /* 稜線の木を植えてよい頂点(上のほう)。edge: その中で斜面の頂点(法線の上向きが .85 未満 = 横から見た輪郭の上) */
+  const top = [], edge = [];
+  for (let i = 0; i < p.count; i++) {
+    if (p.getY(i) < 0.62) continue;
+    top.push(i);
+    if (nr.getY(i) < 0.85) edge.push(i);
+  }
   g.userData.top = top;
+  g.userData.edge = edge.length ? edge : top;
   return g;
 }
 /* 丘ごとの色味(明るさはそろえて色相だけ少し変える: 黄緑・青緑・オリーブ)。3色の平均が白(1,1,1)になるように */
@@ -2058,18 +2384,12 @@ const HILL_TINT = (() => {
   const m = [0, 1, 2].map((k) => (t[0][k] + t[1][k] + t[2][k]) / 3);
   return t.map((a) => a.map((v, k) => v / m[k]));
 })();
-export function buildHillsP1(rs) {
+/* 丘の置き場所と稜線の木(乱数 777 の列)。遠くの家並み(buildFarBlocks)が丘のすそをよけるために先に使うので、
+ * 結果を rs._hillPlan に置いておき、buildHillsP1 が同じものを使う(乱数の並びは前と同じ) */
+function hillPlan(rs, T, HG) {
+  if (rs._hillPlan && rs._hillPlan.line === rs.line && rs._hillPlan.HG === HG) return rs._hillPlan;
   const F = rs.frames, step = rs.step, L = rs.line.meta.length;
-  const T = rs._town;
   const rng = makeRng(777);
-  if (!rs._p1HillMat) {
-    const t = texForest();
-    /* 樹冠1つが1〜3mになる細かさ(粗いと迷彩柄に見える) */
-    t.repeat.set(30, 6);
-    rs._p1HillMat = new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1 });
-    rs._keep.add(rs._p1HillMat); rs._keep.add(t);
-  }
-  if (!GEO.hills) GEO.hills = [hillGeo(11), hillGeo(23), hillGeo(37)];
   const lists = [[], [], []];
   const trees = [];
   const fr = FR();
@@ -2093,32 +2413,59 @@ export function buildHillsP1(rs) {
       };
       tintHill(it, rng);
       lists[vi].push(it);
-      /* 稜線の木(上のほうの頂点に。稜線の形をでこぼこにする) */
-      const pg = GEO.hills[vi].attributes.position, top = GEO.hills[vi].userData.top;
-      /* 本数は三角形の予算に合わせて控えめに(遠い木はいつも軽い形。針葉樹のほうが軽い) */
-      const nT = Math.floor((rb / 6) * (T ? T.q : 1));
+      /* 稜線の木(上のほうの頂点に。稜線の形をでこぼこにする)。中・高画質は輪郭にのる斜面の頂点だけから選ぶ
+       * (平らな頂上の まん中に植えても横からは見えない)。針葉樹は2割(多いとクリスマスツリーの並びに見える) */
+      const qh = T ? T.q : 1;
+      const pg = HG[vi].attributes.position, top = qh >= 0.75 ? HG[vi].userData.edge : HG[vi].userData.top;
+      const nT = Math.floor((rb / 6) * qh);
       _q.setFromAxisAngle(Y_AXIS, it.yaw);
       for (let i = 0; i < nT && top.length; i++) {
         const vi2 = top[Math.floor(rng() * top.length)];
         v.set(pg.getX(vi2) * it.sx, pg.getY(vi2) * it.sy, pg.getZ(vi2) * it.sz).applyQuaternion(_q);
-        trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4, z: it.z + v.z, s, sc: 1.8 + rng() * 1.2, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.55 });
+        /* 樹冠の下の端(幹の高さ ≈ 1.6×大きさ)まで地面にうめる(稜線の上に棒つきの丸い木が浮いて見えないように) */
+        const sc = 1.8 + rng() * 1.2;
+        trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4 - 1.6 * sc, z: it.z + v.z, s, sc, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.2 });
       }
     }
   }
+  rs._hillPlan = { line: rs.line, HG, lists, trees, rng };
+  return rs._hillPlan;
+}
+/* 丘の形(品質ごと。モジュールで1回だけ作る) */
+function hillGeos(rs) {
+  /* 方位の分け方: 高画質は56(稜線のでこぼこが細かい)、中・低は44(三角形の数をおさえる) */
+  const hseg = rs.quality === 'high' ? 56 : 44, hk = 'hills' + hseg;
+  if (!GEO[hk]) GEO[hk] = [hillGeo(11, hseg), hillGeo(23, hseg), hillGeo(37, hseg)];
+  return GEO[hk];
+}
+export function buildHillsP1(rs) {
+  const T = rs._town;
+  if (!rs._p1HillMat) {
+    const t = texForest();
+    /* 樹冠1つが4〜8mになる細かさ(細かいと芝生に、粗いと迷彩柄に見える) */
+    t.repeat.set(11, 1.6);
+    rs._p1HillMat = new THREE.MeshStandardMaterial({ map: t, vertexColors: true, roughness: 1 });
+    rs._keep.add(rs._p1HillMat); rs._keep.add(t);
+  }
+  const HG = hillGeos(rs);
+  const plan = hillPlan(rs, T, HG);
+  rs._hillPlan = null;   // 1回だけ使う(つぎの路線では作りなおす)
+  const lists = plan.lists, trees = plan.trees.slice(), rng = plan.rng;
+  const v = new THREE.Vector3();
   /* ほかの担当がたのんだ丘(観覧車の足もとの丘など) */
   (rs._extraHills || []).forEach((h) => {
     const it = { x: h.x, y: h.y, z: h.z, yaw: h.yaw, sx: h.rb, sy: h.h, sz: h.sz || h.rb, s: h.s || 0, sh: false };
     tintHill(it, rng);
     lists[0].push(it);
     /* すその林(頂上のまわりは空ける: 観覧車の脚が立つ所) */
-    const pg = GEO.hills[0].attributes.position;
+    const pg = HG[0].attributes.position;
     _q.setFromAxisAngle(Y_AXIS, it.yaw);
     for (let i = 0, n = 0; i < 400 && n < Math.floor((h.rb / 4) * (T ? T.q : 1)); i++) {
       const vi2 = Math.floor(rng() * pg.count);
       const ux = pg.getX(vi2), uz = pg.getZ(vi2), uy = pg.getY(vi2);
       if (Math.hypot(ux, uz) < 0.45 || uy < 0.08) continue;
       v.set(ux * it.sx, uy * it.sy, uz * it.sz).applyQuaternion(_q);
-      trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4, z: it.z + v.z, s: it.s, sc: 1.6 + rng() * 1.0, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.4 });
+      trees.push({ x: it.x + v.x, y: it.y + v.y - 0.4, z: it.z + v.z, s: it.s, sc: 1.6 + rng() * 1.0, tint: 0.6 + rng() * 0.35, conifer: rng() < 0.2 });
       n++;
     }
   });
@@ -2128,7 +2475,7 @@ export function buildHillsP1(rs) {
   lists.forEach((arr, i) => {
     if (!arr.length) return;
     /* 大きな輪郭なので、描く距離の段階で消さない */
-    emitInstanced(g, GEO.hills[i], rs._p1HillMat, arr, 1500, { colors: true, receive: true }).forEach((m) => { m.userData.keepFar = true; });
+    emitInstanced(g, HG[i], rs._p1HillMat, arr, 1500, { colors: true, receive: true }).forEach((m) => { m.userData.keepFar = true; });
   });
   return trees;
 }
@@ -2177,7 +2524,7 @@ function applyLook(rs, T, L) {
   for (let i = 0; i < T.glows.length; i++) T.glows[i].visible = lamps;
   /* 街灯の光だまり(材質で切り替える: メッシュは _splitInstances で作り直されるので参照を持たない)。ぬれた道は少し明るく */
   M.lampPool.visible = lamps;
-  M.lampPool.opacity = (L.night ? 0.24 : 0.11) * (L.wet ? 1.3 : 1);
+  M.lampPool.opacity = (L.night ? 0.34 : 0.11) * (L.wet ? 1.3 : 1);
   /* 玄関の明かり(夜だけ) */
   M.porchPool.visible = !!L.night;
   M.porchPool.opacity = 0.42 * (L.wet ? 1.3 : 1);
@@ -2318,8 +2665,8 @@ export function updateTown(rs, dt) {
   const L = rs.look || fallbackLook(rs, T);
   /* 最初の数フレームは街灯も見せておく(夜に切り替えたとき新しいシェーダを作らないため) */
   if (T.frame > 2 && L.rev !== T.rev) { T.rev = L.rev; applyLook(rs, T, L); }
-  /* 街の照り返し: 夜は都心ほど強く郊外は弱い(_glowK: 0=都心 1=郊外)、夕方は少し、昼はなし */
-  uFcAmb.value = L.night ? 1 - 0.6 * (rs._glowK || 0) : L.eve ? 0.25 : 0;
+  /* 街の照り返し: 夜は都心ほど強く郊外は弱い(_glowK: 0=都心 1=郊外。郊外でも 0.6 は残す)、夕方は少し、昼はなし */
+  uFcAmb.value = L.night ? 1 - 0.4 * (rs._glowK || 0) : L.eve ? 0.25 : 0;
   const cam = rs.camera, eye = cam.position;
   const far = cam.far;
 
@@ -2372,7 +2719,7 @@ export function updateTown(rs, dt) {
     updateCrossCars(rs, T, Math.min(dt, 0.1));
   }
 
-  /* --- 木のLOD(10フレームに1回。200mより遠いかたまりは軽い形・幹なし・影なし) --- */
+  /* --- 木と車のLOD(10フレームに1回。165mより遠いかたまりは軽い形・幹なし・影なし) --- */
   const jump = (eye.x - T.lodX) * (eye.x - T.lodX) + (eye.z - T.lodZ) * (eye.z - T.lodZ) > 40 * 40;   // 視点の切替・ワープ直後はすぐ判定
   if (T.frame % 10 === 0 || jump) {
     const ex = eye.x, ez = eye.z;
@@ -2383,9 +2730,9 @@ export function updateTown(rs, dt) {
       const dx = ex < c.x0 ? c.x0 - ex : ex > c.x1 ? ex - c.x1 : 0;
       const dz = ez < c.z0 ? c.z0 - ez : ez > c.z1 ? ez - c.z1 : 0;
       const d2 = dx * dx + dz * dz;
-      if (c.far && d2 < 185 * 185) {
+      if (c.far && d2 < 150 * 150) {
         c.far = false; c.mesh.geometry = c.hi; c.mesh.castShadow = c.shadow;
-      } else if (!c.far && d2 > 200 * 200) {
+      } else if (!c.far && d2 > 165 * 165) {
         c.far = true; c.mesh.geometry = c.lo; c.mesh.castShadow = false;
       }
     }
