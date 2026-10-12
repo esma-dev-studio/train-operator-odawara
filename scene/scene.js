@@ -434,8 +434,10 @@ const texGlow = () => {
   return t;
 };
 
+/* 文字の看板の画像。lines: [[文字, 高さの位置, 大きさ, 太さ]]。はばに入らない字は横だけ ちぢめる
+ * (「せいじょうがくえんまえ えき」も 512px に入る)。Webフォントが あとから届いたら1回だけ描き直す */
 function boardTexture(lines, opts = {}) {
-  return canvasTex(opts.w || 256, opts.h || 128, (c, w, h) => {
+  const draw = (c, w, h) => {
     c.fillStyle = opts.bg || '#ffffff';
     c.fillRect(0, 0, w, h);
     if (opts.border) { c.strokeStyle = opts.border; c.lineWidth = 8; c.strokeRect(4, 4, w - 8, h - 8); }
@@ -443,9 +445,30 @@ function boardTexture(lines, opts = {}) {
     c.textAlign = 'center'; c.textBaseline = 'middle';
     lines.forEach(([text, y, size, weight]) => {
       c.font = `${weight || 'bold'} ${size}px "Zen Kaku Gothic New", "Hiragino Sans", Meiryo, sans-serif`;
-      c.fillText(text, w / 2, y);
+      c.fillText(text, w / 2, y, w - 32);
     });
-  });
+  };
+  const tex = canvasTex(opts.w || 256, opts.h || 128, draw);
+  if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
+    const txt = lines.map((l) => l[0]).join('');
+    /* 使っている太さ(900・500 など)ぜんぶが届くのを待つ(700 だけでは 900 の字が代わりの書体のまま残る) */
+    const specs = [];
+    lines.forEach((l) => {
+      const sp = `${l[3] === 'bold' || !l[3] ? '700' : l[3] === 'normal' ? '400' : l[3]} 40px "Zen Kaku Gothic New"`;
+      if (specs.indexOf(sp) < 0) specs.push(sp);
+    });
+    let ok = false;
+    try { ok = specs.every((sp) => document.fonts.check(sp, txt)); } catch (e) { ok = false; }
+    if (!ok) {
+      Promise.all(specs.map((sp) => document.fonts.load(sp, txt))).then(() => {
+        const cv = tex.image;
+        if (!cv || !cv.getContext) return;
+        draw(cv.getContext('2d'), cv.width, cv.height);
+        tex.needsUpdate = true;
+      }).catch(() => {});
+    }
+  }
+  return tex;
 }
 
 export class RailScene {
@@ -3468,7 +3491,9 @@ export class RailScene {
       const n = 1 + Math.floor(rnd() * 2.6);
       for (let i = 0; i < n; i++) {
         const along = side * (13 + i * 5.6 + rnd() * 1.2);   // 線路からの距離(道路方向)
-        const lane = side > 0 ? -1.3 : 1.3;                  // 左側通行
+        /* 左側通行: 線路の左(+left)から線路へ向かう車の左手は +t、右から向かう車の左手は -t
+         * (とまる線・「とまれ」も同じ車線。scene/stations.js buildCrossingAt) */
+        const lane = side > 0 ? 1.3 : -1.3;
         const p = f.p.clone().addScaledVector(f.left, along - 1.9).addScaledVector(f.t, lane);
         /* 前(+z)を線路のほうへ */
         const dx = -side * f.left.x, dz = -side * f.left.z;
@@ -3509,10 +3534,11 @@ export class RailScene {
     const F = this.frames;
     const roofMat = new THREE.MeshStandardMaterial({ color: 0x3d4a56, roughness: 0.8 });
     const bodies = [];
+    /* 線路の上の駅名の看板: かな(+「えき」)が上で いちばん大きく、漢字は下に小さく(小学2年生が読める) */
     const signOf = (st) => new THREE.MeshBasicMaterial({
       map: boardTexture([
-        [`${st.name} 駅`, 36, 34],
-        [STATION_KANA[st.name] || '', 70, 18, 'normal'],
+        [`${STATION_KANA[st.name] || st.name} えき`, 36, 40, '900'],
+        [st.name, 74, 16, '500'],
       ], { bg: '#f5f8fa', border: '#1b56a7', fg: '#16283a', w: 512, h: 96 }),
     });
     this.line.stations.forEach((st, si) => {
@@ -3520,10 +3546,11 @@ export class RailScene {
       if (st.name === '新宿') return;   // 新宿は大屋根ターミナルがあるので省略
       const sty = stationStyle(this, st, si);
       if (sty.kind === 'over' || sty.kind === 'foot') {
-        /* 線路をまたぐ駅舎・跨線橋(下は門型ビームの上 7.9m)。右は駅前まで、左は柵の外まで */
+        /* 線路をまたぐ駅舎・跨線橋(下は門型ビームの上 7.9m)。右は柱(-13.0m)のすぐ外まで、左は柵の外まで。
+         * 右のはしを -13.4m までにして、線路ぎわの街の建物(手前の面が -13.8m より外)に つきささらない */
         const over = sty.kind === 'over';
         const sc = st.s - STAIR.c, f = frameAt(F, this.step, sc);
-        const a = -16, b = Math.max(7.5, fenceOffL(sc, this._qi) + 1.5);
+        const a = -13.4, b = Math.max(7.5, fenceOffL(sc, this._qi) + 1.5);
         const sz = over ? 12 : 3.4, sy = over ? 4.4 : 3.0;
         const p = f.p.clone().addScaledVector(f.left, (a + b) / 2);
         bodies.push({ x: p.x, y: f.p.y + 7.9, z: p.z, yaw: Math.atan2(f.t.x, f.t.z), sx: b - a, sy, sz });
@@ -3743,11 +3770,17 @@ export class RailScene {
       cam.fov = mode === 'drone' ? 50 : 55;
       this._camS = s - back;
     } else if (mode === 'side') {
-      /* 防音壁(高さ1.9m)ごしでも車体が見えるよう、少し高い位置から */
+      /* 防音壁(高さ1.9m)ごしでも車体が見えるよう、少し高い位置から。
+       * 多摩川の橋の上(前後12mをふくむ)は右がわから: 左の 13.5m は急行線のトラスの面(13.25)のすぐ外で、
+       * 部材が画面をふさぐ。右は自分のトラスの右の面(-6.25)の 10.75m 外(-17m)で、トラス1つごしに電車が見える
+       * (近いと手前の斜材が太く写って画面の1割ちかくをふさぐ) */
       const fc = at(s - 22);
       const inT = this._inTunnel(s - 22) || this._inTerminal(s - 22, 6);
-      const p = fc.p.clone().addScaledVector(fc.left, inT ? 4.4 : 13.5);
-      p.y += inT ? 2.6 : 6.2;
+      const rv = this.line.sections.river;
+      let onBr = false;
+      for (let i = 0; i < rv.length; i++) if (s - 22 >= rv[i].from - 12 && s - 22 <= rv[i].to + 12) onBr = true;
+      const p = fc.p.clone().addScaledVector(fc.left, inT ? 4.4 : onBr ? -17 : 13.5);
+      p.y += inT ? 2.6 : onBr ? 4.6 : 6.2;
       cam.position.copy(p);
       const look = at(s - 14).p.clone();
       look.y += 2.0;
@@ -3757,11 +3790,25 @@ export class RailScene {
     } else if (mode === 'front') {
       /* 線路わきの「撮影地」: 先頭が通りすぎたら次の地点へ */
       /* 近すぎず遠すぎず(カーブの内側の壁で隠れないよう 150m 前後) */
-      if (this._frontCamS == null || s > this._frontCamS + 40) this._frontCamS = Math.min(L - 10, s + 120 + (sim.v / 3.6) * 2.5);
+      if (this._frontCamS == null || s > this._frontCamS + 40) {
+        this._frontCamS = Math.min(L - 10, s + 120 + (sim.v / 3.6) * 2.5);
+        this._frontBr = false;
+        /* 多摩川の橋の上(前後8mをふくむ)には立たない: 横 4.4m は急行線のトラスの面(4.55)の部材の中。
+         * 橋をわたりきった 25m 先の、自分の線路と上り線のあいだ(横 -1.9m)の高いところ(電車の屋根より上・
+         * 架線の腕より下)から、トラスの中を まっすぐ見通して、橋をわたってくる電車をむかえる
+         * (トラスの外からだと、トラスの面を ななめに見るので 部材が重なって電車がかくれる) */
+        const rv = this.line.sections.river;
+        for (let i = 0; i < rv.length; i++) {
+          if (this._frontCamS >= rv[i].from - 8 && this._frontCamS <= rv[i].to + 8) {
+            this._frontCamS = Math.min(L - 10, rv[i].to + 25);
+            this._frontBr = true;
+          }
+        }
+      }
       /* 線路のすぐ左(ホームの端・柵の内側)から列車を迎える */
       const fc = at(this._frontCamS);
-      const p = fc.p.clone().addScaledVector(fc.left, 4.4);
-      p.y += 2.7;
+      const p = fc.p.clone().addScaledVector(fc.left, this._frontBr ? -1.9 : 4.4);
+      p.y += this._frontBr ? 5.4 : 2.7;
       cam.position.copy(p);
       const look = f.p.clone();
       look.y += 2.2;

@@ -90,13 +90,25 @@ const hmix = (x) => {
   x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
   return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
 };
+/* 大きな駅(乗りかえ・急行の止まる駅・終点): 名前の hash より先に決める(地上の駅だけ)。
+ * 線路の上の駅舎か跨線橋・長い屋根(125m)。終点の新百合ヶ丘と登戸は明るい屋根 */
+const HUB = {
+  '新百合ヶ丘': { kind: 'over', roofA: 125, roofCol: 0xcfd2d4 },
+  '登戸': { kind: 'over', roofA: 125, roofCol: 0xcfd2d4 },
+  '成城学園前': { kind: 'over', roofA: 125 },
+  '代々木上原': { kind: 'over', roofA: 125 },
+  '向ヶ丘遊園': { kind: 'foot', roofA: 125 },
+};
 export function stationStyleOf(name, plain) {
   let h = 2166136261;
   for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 16777619); }
   const u1 = hmix(h + 300), u2 = hmix(h + 23), u3 = hmix(h + 37);
+  const hub = plain ? HUB[name] : null;
+  const roofCol = ROOF_COLS[Math.floor(u2 * 3) % 3];
+  if (hub) return { kind: hub.kind, roofCol: hub.roofCol != null ? hub.roofCol : roofCol, roofA: hub.roofA };
   const kind = !plain ? 'house' : u1 < 0.4 ? 'over' : u1 < 0.7 ? 'foot' : 'house';
   const roofs = kind === 'house' ? [95, 125, 140] : [95, 125];
-  return { kind, roofCol: ROOF_COLS[Math.floor(u2 * 3) % 3], roofA: roofs[Math.floor(u3 * roofs.length) % roofs.length] };
+  return { kind, roofCol, roofA: roofs[Math.floor(u3 * roofs.length) % roofs.length] };
 }
 /* 路線ぜんぶの駅の型(rs.stationStyles に作り置き。路線が変わったら作り直す) */
 export function stationStyles(rs) {
