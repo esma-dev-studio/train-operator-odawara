@@ -14,7 +14,7 @@
  *   ・横向きスマホ: 目盛りは横一列の13段(1段 44px 以上・文字 11px 以上・左=ひじょう 右=P4)。レバーの列は出さない
  *   ・タッチ: 段のさかいで ±3px ゆれながら動かしても 段は1回しか変わらない / いまの段の1つ上をタップすると1段だけ
  *   ・iPadの 画面分割(678x1024): 運転モニタの 行き先が 切れていない
- *   ・外のカメラ(body.cab-compact): 計器盤は ほそい帯(1100px より広い画面は 120px 以下、せまい画面は 156px 以下)。
+ *   ・外のカメラ(body.cab-compact): 計器盤は ほそい帯(1100px より広い画面・横向きのスマホは 120px 以下、iPadの たては 156px 以下)。
  *     マスコンは 横一列の13段(1段 44x44px 以上)、ブロックどうしが 重ならない、3Dの画面の下のはし = 計器盤の上のはし、
  *     表示灯・ブレーキのLEDは出さない。クラスを はずすと もとの計器盤(レバーの持ち手が いまの段に そろう)にもどる
  * 段の高さの下限: iPad縦(768x1024・678x1024) 18px / iPad横(1180x820) 14px / ほか 12px(横向きスマホは横一列なので幅で見る)
@@ -37,11 +37,14 @@ const VIEWS = [
   { name: 'iPad縦 768x1024', w: 768, h: 1024, touch: true, dpr: 2, minRow: 18 },
   { name: 'iPad縦 となりにアプリ 678x1024', w: 678, h: 1024, touch: true, dpr: 2, minRow: 18 },
   { name: 'スマホ横 844x390', w: 844, h: 390, touch: true, minRow: 7, strip: true },
-  /* 外のカメラ(追いかけ・横・前・空): ほそい計器盤 */
+  /* 外のカメラ(追いかけ・横・前・空): ほそい計器盤(1400px 以上は 1だん、それより せまいと 2だん) */
+  { name: 'そとのカメラ 1440x900', w: 1440, h: 900, minRow: 7, strip: true, compact: true, maxH: 120 },
   { name: 'そとのカメラ 1280x800', w: 1280, h: 800, minRow: 7, strip: true, compact: true, maxH: 120 },
   { name: 'そとのカメラ iPad横 1180x820', w: 1180, h: 820, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 120 },
   { name: 'そとのカメラ iPad縦 768x1024', w: 768, h: 1024, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 156 },
   { name: 'そとのカメラ 画面分割 678x1024', w: 678, h: 1024, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 156 },
+  /* 横向きのスマホ: ふつうの計器盤(134px)より 高くしない */
+  { name: 'そとのカメラ スマホ横 844x390', w: 844, h: 390, touch: true, minRow: 7, strip: true, compact: true, maxH: 120 },
 ];
 
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
@@ -179,6 +182,21 @@ for (const v of VIEWS) {
       });
       const sp = document.querySelector('#speedo');
       if (sp.clientWidth > 100 || sp.clientWidth < 80) out.push(`速度計の大きさ ${sp.clientWidth}px(84〜96px のはず)`);
+      /* 運転モニタの1行: 長い駅名(祖師ヶ谷大蔵)・2けたの km・つく時刻 でも 切れない(ためしに入れて もとにもどす) */
+      {
+        const tm = document.querySelector('#cab .tims-main');
+        const nx = document.querySelector('#tims-next'), ds = document.querySelector('#tims-dist'), sc = document.querySelector('#tims-sch');
+        const save = [nx.innerHTML, ds.innerHTML, sc.innerHTML];
+        nx.innerHTML = '<ruby>祖師ヶ谷大蔵<rt>そしがやおおくら</rt></ruby>';
+        ds.textContent = '12.3 km'; sc.textContent = '10:41 つく';
+        const b = tm.getBoundingClientRect();
+        [nx, ds, sc].forEach((el) => {
+          if (getComputedStyle(el).display === 'none' || !el.getClientRects().length) return;
+          const e = el.getBoundingClientRect();
+          if (e.right > b.right + 0.5 || e.bottom > b.bottom + 0.5) out.push(`運転モニタの #${el.id} が 切れる (右 ${(e.right - b.right).toFixed(1)}px / 下 ${(e.bottom - b.bottom).toFixed(1)}px)`);
+        });
+        nx.innerHTML = save[0]; ds.innerHTML = save[1]; sc.innerHTML = save[2];
+      }
       return out;
     }, v.maxH);
     rc.forEach((s) => fails.push(`${v.name}: ${s}`));

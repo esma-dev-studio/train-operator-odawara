@@ -12,7 +12,7 @@
  * 軽さ: キャンバスは等倍(DPR 1)で、窓に外接する四角の大きさだけ。粒は使い回し(毎フレームの new なし)、
  *       水滴も筋もない乾いたときは消して何もしない。
  * 外との約束: setActive(on) / setMode('rain'|'snow') / resize(w, h) / render(dt, v, cockpit, dry)
- *   cockpit からは windowRects() / wiperScreen() / sillLevel() / quality を読む(なくても動く)
+ *   cockpit からは windowRects() / wiperScreen() / sillLevel() / occluder()(窓より手前の時刻表の形。そこは描かない) / quality を読む(なくても動く)
  * ========================================================= */
 const CAP_MAX = 320;        // 粒の最大数(画質「かるい」は CAP_LOW)
 const CAP_LOW = 200;
@@ -69,8 +69,8 @@ function makeSprites() {
   cv.width = SPR * 5; cv.height = SPR;
   const c = cv.getContext('2d');
   waterDrop(c, 32, 32, 0.58, '8,12,16', 'rgba(20,30,40,0.14)', 0.10, 0.45, 0.9);
-  /* 雪がとけた水滴: ふちは うすい灰青 0.2・まん中は白っぽく(白い景色の前で 黒い輪・シャボン玉にならない) */
-  waterDrop(c, SPR * SPR_MELT + 32, 32, 0.2, '70,80,92', 'rgba(150,160,172,0.06)', 0.14, 0.24, 0.42);
+  /* 雪がとけた水滴: ふちは うすい灰青 0.14・まん中は白っぽく(白い景色の前で 黒い輪・シャボン玉にならない) */
+  waterDrop(c, SPR * SPR_MELT + 32, 32, 0.14, '70,80,92', 'rgba(150,160,172,0.08)', 0.16, 0.22, 0.4);
   const tmp = document.createElement('canvas');
   tmp.width = tmp.height = SPR;
   const tc = tmp.getContext('2d');
@@ -253,6 +253,7 @@ export class RainGlass {
     this._filmPat = null;   // 大きさを変えると文脈がリセットされるので作りなおす
     this._filmW = -1;
     this._masks[0] = this._masks[1] = null;
+    this._fitOcc();
     this._nR = Math.min(2, rects.length);
     let area = 0;
     for (let i = 0; i < this._nR; i++) {
@@ -435,7 +436,32 @@ export class RainGlass {
       c.restore();
       any = true;
     }
+    /* 天板に立てた時刻表(窓より手前)の上には しもを描かない */
+    if (any) this._cutOcc(c);
     this._filmClean = !any;
+  }
+
+  /* 窓より手前の物(天板に立てた時刻表)の 画面の形を、キャンバスの座標へ(大きさ・形が変わったときだけ) */
+  _fitOcc() {
+    const s = this._occSrc;
+    if (!s || s.length < 8) { this._occ = null; return; }
+    const o = this._occ || (this._occ = new Float32Array(8));
+    for (let i = 0; i < 4; i++) { o[i * 2] = s[i * 2] * this.W - this.bx; o[i * 2 + 1] = s[i * 2 + 1] * this.H - this.by; }
+  }
+
+  /* その形を けす(destination-out。座標は そのまま = setTransform(1,0,0,1,0,0) のあとで呼ぶ) */
+  _cutOcc(c) {
+    const o = this._occ;
+    if (!o) return;
+    c.globalCompositeOperation = 'destination-out';
+    c.globalAlpha = 1;
+    c.fillStyle = '#000';
+    c.beginPath();
+    c.moveTo(o[0], o[1]);
+    for (let i = 1; i < 4; i++) c.lineTo(o[i * 2], o[i * 2 + 1]);
+    c.closePath();
+    c.fill();
+    c.globalCompositeOperation = 'source-over';
   }
 
   /* v: km/h, cockpit: scene.cockpit(窓の範囲とワイパー角), dry: トンネル内など */
@@ -443,7 +469,9 @@ export class RainGlass {
     if (!this.active || !(this.W > 0) || !(this.H > 0)) return;
     if (!this.spr) this.spr = makeSprites();
     const rects = (cockpit && cockpit.windowRects && cockpit.windowRects()) || this._full;
-    if (rects !== this._rects || this._dirty) { this._rects = rects; this._fit(rects); }
+    const occ = cockpit && typeof cockpit.occluder === 'function' ? cockpit.occluder() : null;
+    if (rects !== this._rects || this._dirty) { this._rects = rects; this._occSrc = occ; this._fit(rects); }
+    else if (occ !== this._occSrc) { this._occSrc = occ; this._fitOcc(); this._filmW = -1; }
     const c = this.c, P = this.P, snowMode = this.mode === 'snow';
     const cap = cockpit && cockpit.quality === 'low' ? CAP_LOW : CAP_MAX;
     /* 描画が重い端末でも、雨の量・流れは実時間で(dt は描画側で0.1秒に切られている)。
@@ -609,5 +637,7 @@ export class RainGlass {
       c.fill();
       c.globalCompositeOperation = 'source-over';
     }
+    /* 天板に立てた時刻表(窓より手前)の上には 粒を描かない */
+    this._cutOcc(c);
   }
 }

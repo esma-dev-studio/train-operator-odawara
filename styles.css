@@ -801,10 +801,10 @@ body.cab-dark .lamp.on.lamp-green { background: radial-gradient(ellipse at 50% 3
 .nt.on.nt-b { background: #d9903f; color: #2a1800; }
 .nt.on.nt-eb { background: #d64545; color: #fff; }
 /* つぎにねらう段(cab.setTarget): 水色の枠が点滅。いまの段になったら みどりで止まる。
- * 枠は 段の外がわに(字に かからない。となりの段の さかい線の上に のる) */
+ * 枠は 段の外がわに(字に かからない。上下は 段の さかいから 外へ 2px だけ: となりの段の字にも かかりにくい) */
 .nt.tgt { z-index: 3; }
 .nt.tgt::before {
-  content: ''; position: absolute; inset: -1px -3px; z-index: 3;
+  content: ''; position: absolute; top: 0; bottom: 0; left: -3px; right: -3px; z-index: 3;
   border: 0; border-radius: 4px; box-shadow: 0 0 0 2px var(--hi); pointer-events: none;
   animation: tgtBlink 0.6s ease-in-out infinite alternate;
 }
@@ -1062,7 +1062,7 @@ body #cab .lever-grip { left: -4px; right: -4px; }
  * 追いかけ・横・前・空の視点では 3Dの運転台が見えないので、計器盤を ほそい帯(118px)にする(body.cab-compact。
  * main.js が 外のカメラに切りかえたときに つけて resizeGL を呼ぶ)。
  * 速度計(92px) | 運転モニタ(1行) | 制限の標識 | マスコン(横一列の13段。左=ひじょう … 右=P4。1段 44px 以上)。
- * はばが 1100px 以下は 2だん(下の段に 13段)、860px 以下は 13段を 画面のはばいっぱいに(154px)。
+ * はばが 1400px より せまいときは 2だん(下の段に 13段)、860px 以下(背の高い画面)は 13段を 画面のはばいっぱいに(154px)。
  * 表示灯・ブレーキのLED・天板のつづきの ふち・日だまりは出さない。背景は HUD と同じ。
  * たて長のスマホ(560px 以下)は 13段が 44px で入らないので ふつうの計器盤のまま */
 @media (min-width: 561px) {
@@ -1128,13 +1128,9 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body.cab-compact #cab .nt[data-i="11"] { grid-column: 2; }
   body.cab-compact #cab .nt[data-i="12"] { grid-column: 1; }
 }
-/* 1240px 以下: 13段は 592px(台の すきまを のぞいて 1段 44px)にして、運転モニタの はばを とる(つく時刻は出さない) */
-@media (min-width: 1101px) and (max-width: 1240px) {
-  body.cab-compact #cab { grid-template-columns: 96px minmax(0, 1fr) 168px 592px; }
-  body.cab-compact #cab #tims-sch { display: none; }
-}
-/* 1100px 以下: 2だん。上に 運転モニタ、下に 横一列の13段。速度計と制限は 2だんぶん(制限は たてに 標識 → 文字) */
-@media (min-width: 561px) and (max-width: 1100px) {
+/* 1400px より せまい画面: 2だん。上に 運転モニタ(1行)、下に 横一列の13段。速度計と制限は 2だんぶん(制限は たてに 標識 → 文字)。
+ * (1だんだと 1280px でも モニタが 300px ほどしかなく、「祖師ヶ谷大蔵」で のこり距離・つく時刻が 切れた) */
+@media (min-width: 561px) and (max-width: 1399px) {
   body.cab-compact #cab { grid-template-columns: 96px minmax(0, 1fr) 104px; grid-template-rows: minmax(0, 1fr) 48px; gap: 6px 8px; }
   body.cab-compact #cab .cab-speedo { grid-row: 1 / 3; }
   body.cab-compact #cab .cab-limit { grid-row: 1 / 3; flex-direction: column; justify-content: center; padding: 4px 2px; gap: 2px; }
@@ -1145,13 +1141,24 @@ body #cab .lever-grip { left: -4px; right: -4px; }
   body.cab-compact #cab .ln-board { min-width: 20px; height: 16px; line-height: 12px; font-size: 0.7rem; }
   body.cab-compact #cab .cab-mascon { grid-column: 2; grid-row: 2; padding: 2px 4px; }
   body.cab-compact #cab .tims-body { padding: 0 10px; }
-  body.cab-compact #cab #tims-next { font-size: 1.15rem; }
-  body.cab-compact #cab #tims-dist { font-size: 1rem; }
-  body.cab-compact #cab #tims-sch { display: none; }
-  body.cab-compact #cab .tims-cap { display: none; }
+  body.cab-compact #cab #tims-next { font-size: 1.3rem; }
+  body.cab-compact #cab #tims-dist { font-size: 1.1rem; }
 }
-/* 860px 以下(iPadの たて・画面分割・横向きのスマホ): 13段を 画面のはばいっぱいに(1段 44px 以上)。上の段に 速度計・モニタ・制限 */
-@media (min-width: 561px) and (max-width: 860px) {
+/* 861〜1399px: 制限は 上の段の右に 横ならび(標識 → 「◯ まで / あと ◯m」。字を 大きめに)、13段は 下の段の はばいっぱい */
+@media (min-width: 861px) and (max-width: 1399px) {
+  body.cab-compact #cab { grid-template-columns: 96px minmax(0, 1fr) 200px; }
+  body.cab-compact #cab .cab-limit { grid-row: 1; flex-direction: row; justify-content: flex-start; padding: 2px 8px; gap: 8px; }
+  body.cab-compact #cab #lim-now { width: 44px; height: 44px; line-height: 36px; font-size: 1.3rem; border-width: 4px; margin: 0; }
+  body.cab-compact #cab #lim-now.l3 { font-size: 1.05rem; }
+  body.cab-compact #cab #lim-next { width: auto; min-width: 0; flex: 1; font-size: 0.8rem; }
+  body.cab-compact #cab .ln-l1, body.cab-compact #cab .ln-l2 { justify-content: flex-start; }
+  body.cab-compact #cab .ln-bar { margin: 2px 0 0; }
+  body.cab-compact #cab .ln-board { min-width: 22px; height: 18px; line-height: 14px; font-size: 0.75rem; }
+  body.cab-compact #cab .cab-mascon { grid-column: 2 / -1; }
+}
+/* 860px 以下(iPadの たて・画面分割): 13段を 画面のはばいっぱいに(1段 44px 以上)。上の段に 速度計・モニタ・制限。
+ * 背の低い横向きのスマホ(高さ 540px 以下)は 上の 2だん(118px)のまま(ふつうの計器盤 134px より 高くしない) */
+@media (min-width: 561px) and (max-width: 860px) and (min-height: 541px) {
   body.cab-compact { --cab-h: calc(154px + var(--safe-b)); }
   body.cab-compact #cab { grid-template-columns: 92px minmax(0, 1fr) 104px; padding: 5px 10px calc(6px + var(--safe-b)); }
   body.cab-compact #cab .cab-speedo { grid-row: 1; }

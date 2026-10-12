@@ -15,10 +15,11 @@
  *   晴れの日の 日だまり(sunPatch。カーブで 天板の上を すべる。加算の板1枚)。
  * 外との約束: useOverlay() / renderOverlay(renderer, camera) / setHeadOffset(dx,dy,pitch,roll) /
  *   update(dt, {light, flash, tr,tg,tb, night, wiper, snow, clockMin, sunK, sunX, sunEve}) / setTimetable(names, idx, times) /
- *   windowRects() / wiperScreen() / sillLevel() / layoutFor(aspect) / light(なめらかにした明るさ。flash は入らない) /
+ *   windowRects() / wiperScreen() / sillLevel() / occluder()(立てた時刻表の画面の形) / layoutFor(aspect) / light(なめらかにした明るさ。flash は入らない) /
  *   sunK・sunX(なめらかにした日だまりの こさ 0..1 と 横の位置 -1..1。計器盤の cab.setSun にも使う)
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
+import { STATION_KANA } from '../sim/kana.js';
 
 const TAN = Math.tan(THREE.MathUtils.degToRad(29));   // 縦FOV58°の半分
 
@@ -269,7 +270,9 @@ function drawStaff(c, min, tt) {
       c.textBaseline = 'middle';
       c.textAlign = 'left';
       c.font = `700 ${r === 0 ? 20 : 15}px ${JP_FONT}`;
-      c.fillText(String(tt.names[i]), 14, y + h / 2, W - 92);
+      /* 駅名は かなで(小学2年生が読める。長い名前は はばに おさめる) */
+      const nm = String(tt.names[i]);
+      c.fillText(STATION_KANA[nm] || nm, 14, y + h / 2, W - 92);
       const t = tt.times && tt.times[i];
       if (t) {
         c.textAlign = 'right';
@@ -746,11 +749,20 @@ export class Cockpit {
     /* --- 立てた時刻表(上に 時:分)。台(天板の絵の みぞ)から 少し うしろへ ねかせて立てる。
      * 縦長の画面では けいてきボタンの下になるので置かない --- */
     this.staff = null;
+    this._staffScr = null;
     if (!narrow) {
       const pl = onDash(STAFF.u0, STAFF.v), pr = onDash(STAFF.u1, STAFF.v);
       const H = Math.hypot(pr[0] - pl[0], pr[2] - pl[2]) * (STAFF_H / STAFF_W);
       const dy = H * Math.cos(STAFF.lean), dz = -H * Math.sin(STAFF.lean);
-      this.staff = quad([pl, pr, [pr[0], pr[1] + dy, pr[2] + dz], [pl[0], pl[1] + dy, pl[2] + dz]], this.matClock, 13);
+      const sq = [pl, pr, [pr[0], pr[1] + dy, pr[2] + dz], [pl[0], pl[1] + dy, pl[2] + dz]];
+      /* 窓の下のふちの雪(14)・ワイパー(13)より あとに描く(板は どちらよりも手前) */
+      this.staff = quad(sq, this.matClock, 15);
+      /* 画面の上の 板の形(0..1、左上原点)。板は窓より手前なので、雨・雪のガラス(ui/rainglass.js)は ここを けす */
+      this._staffScr = [];
+      sq.forEach((p) => {
+        const iz = 1 / Math.max(1e-4, -p[2]);
+        this._staffScr.push((p[0] * iz / (TAN * aspect) + 1) / 2, (1 - p[1] * iz / TAN) / 2);
+      });
     }
 
     /* --- ワイパー(根元は運転士窓の右下。休止位置は窓の下のゴムに沿って寝ている) --- */
@@ -861,6 +873,10 @@ export class Cockpit {
     ];
     return this._rects;
   }
+
+  /* 天板に立てた時刻表の 画面の上の形 [u0,v0, u1,v1, u2,v2, u3,v3](0..1、左上原点)。なければ null。
+   * 窓より手前にあるので、雨・雪のガラスは この形を描かない(作りなおしたときだけ 新しい配列) */
+  occluder() { return this._staffScr || null; }
 
   /* ワイパーの根元・長さ(画面の高さに対する比)・角度・ブレードの帯(腕の中心から 下 b0 〜 上 b1。画面の高さに対する比)。
    * 毎フレーム呼ばれるので同じ箱を書きかえて返す */
