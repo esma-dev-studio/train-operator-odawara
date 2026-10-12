@@ -47,14 +47,16 @@ export function poolStripTexture() {
   return t;
 }
 
-/* 加算合成の材質の霧: 霧の色を混ぜる代わりに、遠いほど光を弱める */
+/* 加算合成の材質の霧: 霧の色を混ぜる代わりに、遠いほど光を弱める。
+ * 弱めるのは不透明度(a)のほう: 加算(SRC_ALPHA, ONE)では rgb に掛けるのと同じ明るさになり、
+ * 同じシェーダを ふつうの合成で使う「足もとの影」(黒)も、霧の中では人といっしょに うすくなる */
 export function fixAdditiveFog(mat, key) {
   mat.onBeforeCompile = (sh) => {
     sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `#ifdef USE_FOG
   #ifdef FOG_EXP2
-    gl_FragColor.rgb *= exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+    gl_FragColor.a *= exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
   #else
-    gl_FragColor.rgb *= 1.0 - smoothstep( fogNear, fogFar, vFogDepth );
+    gl_FragColor.a *= 1.0 - smoothstep( fogNear, fogFar, vFogDepth );
   #endif
 #endif`);
   };

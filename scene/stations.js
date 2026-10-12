@@ -488,16 +488,17 @@ function drawTermExtra(c, y0, physLeft, goalName) {
     c.fillStyle = '#239a52'; c.fillRect(x + 10, y + 12, 12, h - 24);
     fitText(c, 'のりかえ', x + w / 2 + 10, y + h / 2 + 2, w - 50, 40, 900);
   }
-  /* 終点のつり下げ板: 左に黄色の「しゅうてん」、右に駅名のかな(大)と漢字(小) */
+  /* 終点のつり下げ板: 左に黄色の「しゅうてん」(駅名のかなと同じくらい大きく。この板でいちばん大事な字)、
+   * 右に駅名のかな(大)と漢字(小) */
   if (goalName) {
     const [x, y, w, h] = R(TERM_EX.goal);
     c.fillStyle = '#133c75'; c.fillRect(x, y, w, h);
     c.fillStyle = '#5a6a80'; c.fillRect(x, y + h - 5, w, 5);
-    c.fillStyle = '#b29a2a'; c.fillRect(x + 12, y + 14, 148, h - 28);
-    c.fillStyle = '#133c75'; fitText(c, 'しゅうてん', x + 86, y + h / 2 + 1, 136, 32, 900);
+    c.fillStyle = '#b29a2a'; c.fillRect(x + 10, y + 10, 212, h - 25);
+    c.fillStyle = '#133c75'; fitText(c, 'しゅうてん', x + 116, y + (h - 5) / 2 + 1, 200, 44, 900);
     c.fillStyle = '#ababab';
-    fitText(c, kanaOf(goalName), x + 338, y + 38, 330, 44, 900);
-    fitText(c, goalName, x + 338, y + 78, 200, 20, 700);
+    fitText(c, kanaOf(goalName), x + 367, y + 36, 270, 40, 900);
+    fitText(c, goalName, x + 367, y + 74, 200, 18, 700);
   }
   const L = TERM_EX.lamp;
   c.fillStyle = '#ff3020'; c.fillRect(L[0], y0 + L[1], L[2] - L[0], L[3] - L[1]);

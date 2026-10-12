@@ -451,11 +451,16 @@ function boardTexture(lines, opts = {}) {
   const tex = canvasTex(opts.w || 256, opts.h || 128, draw);
   if (typeof document !== 'undefined' && document.fonts && document.fonts.load) {
     const txt = lines.map((l) => l[0]).join('');
-    const spec = '700 40px "Zen Kaku Gothic New"';
+    /* 使っている太さ(900・500 など)ぜんぶが届くのを待つ(700 だけでは 900 の字が代わりの書体のまま残る) */
+    const specs = [];
+    lines.forEach((l) => {
+      const sp = `${l[3] === 'bold' || !l[3] ? '700' : l[3] === 'normal' ? '400' : l[3]} 40px "Zen Kaku Gothic New"`;
+      if (specs.indexOf(sp) < 0) specs.push(sp);
+    });
     let ok = false;
-    try { ok = document.fonts.check(spec, txt); } catch (e) { ok = false; }
+    try { ok = specs.every((sp) => document.fonts.check(sp, txt)); } catch (e) { ok = false; }
     if (!ok) {
-      document.fonts.load(spec, txt).then(() => {
+      Promise.all(specs.map((sp) => document.fonts.load(sp, txt))).then(() => {
         const cv = tex.image;
         if (!cv || !cv.getContext) return;
         draw(cv.getContext('2d'), cv.width, cv.height);
