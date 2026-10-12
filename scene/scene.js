@@ -4029,36 +4029,7 @@ export class RailScene {
     if (this.traffic) this.traffic.update(dt);
 
     /* 停止位置の光の目印(つぎに とまる駅だけ) */
-    const nxt = sim.stops[sim.stopIdx];
-    const pin = this.stopPin;
-    if (this.guide !== false && nxt && !sim.doorOpen && nxt.stopAt - sim.pos < 650 && nxt.stopAt - sim.pos > -2) {
-      /* 「8」の標識が停止位置より a8 m 先に立つとき(駅の側で _stop8Ahead を決める)は、その柱の位置に。
-       * 横の位置は駅の側の _stop8Lat(なければ 標識の柱 1.93m / 標識なし 2.3m) */
-      const hasB = this._stop8Ahead != null;
-      const a8 = hasB ? this._stop8Ahead : 0;
-      const lat = this._stop8Lat != null ? this._stop8Lat : (a8 ? 1.93 : 2.3);
-      const fb = frameInto(this.frames, this.step, Math.min(L - 2, nxt.stopAt + a8), this._frB);
-      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, lat);
-      this.stopBeam.position.y += 4.4;
-      this._beamMat.opacity = 0.5 + 0.22 * Math.sin(this.clockT * 4);
-      this.stopBeam.visible = true;
-      /* 画面の目印(ui/stoppin.js)の位置: 光の柱の2m下(標識の高さ)を、いまのカメラで画面へ写す */
-      if (this.camMode === 'cab') {
-        this.camera.updateMatrixWorld();
-        _pinV.copy(this.stopBeam.position);
-        _pinV.y -= 2.0;
-        _pinV.project(this.camera);
-        pin.vis = _pinV.z < 1 && Math.abs(_pinV.x) < 1 && Math.abs(_pinV.y) < 1;
-        pin.x = (_pinV.x + 1) / 2;
-        pin.y = (1 - _pinV.y) / 2;
-        pin.d = nxt.stopAt - sim.pos;
-      } else {
-        pin.vis = false;
-      }
-    } else {
-      this.stopBeam.visible = false;
-      pin.vis = false;
-    }
+    this._updateStopPin(s, L);
     /* 観覧車をゆっくり回す */
     if (this.wheelSpin) this.wheelSpin.rotation.z += dt * 0.05;
     /* 踏切と駅の人々 */
@@ -4122,6 +4093,54 @@ export class RailScene {
         this.fps = this._fpsN / this._fpsAcc;
         this._fpsAcc = 0; this._fpsN = 0;
       }
+    }
+  }
+
+  /* 停止位置の光の目印(つぎに とまる駅だけ)と、画面の「8」の目印(ui/stoppin.js)の位置 scene.stopPin。
+   * stopPin: { vis, x, y(画面の 0〜1), d(「8」まで m), dist(カメラから 板の中心まで 視線の向きの m),
+   *            fov(カメラの たての画角 度), size(板の大きさ m) }
+   * 目印は 板の中心(レール面から _stop8Y m)を さす。近づくと stoppin.js が 目印を 板に かさねて 消す */
+  _updateStopPin(s, L) {
+    const sim = this.sim;
+    const nxt = sim.stops[sim.stopIdx];
+    const pin = this.stopPin;
+    if (this.guide !== false && nxt && !sim.doorOpen && nxt.stopAt - sim.pos < 650 && nxt.stopAt - sim.pos > -2) {
+      /* 「8」の標識が停止位置より a8 m 先に立つとき(駅の側で _stop8Ahead を決める)は、その柱の位置に。
+       * 横の位置は駅の側の _stop8Lat(なければ 標識の柱 1.93m / 標識なし 2.3m) */
+      const hasB = this._stop8Ahead != null;
+      const a8 = hasB ? this._stop8Ahead : 0;
+      const lat = this._stop8Lat != null ? this._stop8Lat : (a8 ? 1.93 : 2.3);
+      const fb = frameInto(this.frames, this.step, Math.min(L - 2, nxt.stopAt + a8), this._frB);
+      this.stopBeam.position.copy(fb.p).addScaledVector(fb.left, lat);
+      this.stopBeam.position.y += 4.4;
+      /* 運転台から見て のこり 30m からは 光の柱も うすくして 12m で消す(黒い「8」の板だけが のこる) */
+      const d8 = nxt.stopAt - sim.pos;
+      const u8 = this.camMode === 'cab' ? Math.min(1, Math.max(0, (d8 - 12) / 18)) : 1;
+      const k8 = u8 * u8 * (3 - 2 * u8);
+      this._beamMat.opacity = (0.5 + 0.22 * Math.sin(this.clockT * 4)) * k8;
+      this.stopBeam.visible = k8 > 0.01;
+      /* 画面の目印(ui/stoppin.js)の位置: 板の中心(駅の側の _stop8Y。なければ レール面から2.8m)を、いまのカメラで画面へ写す */
+      if (this.camMode === 'cab') {
+        const cam = this.camera;
+        cam.updateMatrixWorld();
+        _pinV.copy(fb.p).addScaledVector(fb.left, lat);
+        _pinV.y = fb.p.y + (this._stop8Y != null ? this._stop8Y : 2.8);
+        /* project() と同じ2段(先に 視線の向きの きょりを とる。板が画面で何pxになるかに使う) */
+        _pinV.applyMatrix4(cam.matrixWorldInverse);
+        pin.dist = -_pinV.z;
+        _pinV.applyMatrix4(cam.projectionMatrix);
+        pin.vis = pin.dist > 0.1 && _pinV.z < 1 && Math.abs(_pinV.x) < 1 && Math.abs(_pinV.y) < 1;
+        pin.x = (_pinV.x + 1) / 2;
+        pin.y = (1 - _pinV.y) / 2;
+        pin.d = d8;
+        pin.fov = cam.fov;
+        pin.size = this._stop8Size || 0.5;
+      } else {
+        pin.vis = false;
+      }
+    } else {
+      this.stopBeam.visible = false;
+      pin.vis = false;
     }
   }
 }
