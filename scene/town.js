@@ -1220,7 +1220,7 @@ function buildPlazas(rs, T) {
   });
 }
 
-/* 駅前の駐輪場: どの駅も駅舎の側(右)の 線路から20〜22m・st.s-77〜-66(駅舎より手前。駅と駅前の HARD の中)に、
+/* 駅前の駐輪場: どの駅も駅舎の側(右)の 線路から20〜22m・st.s-76〜-64(駅舎より手前。駅と駅前の HARD の中)に、
  * 自転車を2列(1列19台から15%ぬく。列ごとに前の向きを変える)と、前輪を入れる低い横棒。手前のはしに自動販売機2台。
  * 地下の駅・新宿・ターミナルの中は置かない */
 const BIKE_PAINTS = [0xb8bcc0, 0xb8bcc0, 0xe8e8e4, 0x2a2c30, 0x9a2a2a, 0x2c4a7a, 0x4f6b4f, 0xc8c0a8];
@@ -1235,18 +1235,18 @@ function buildBikes(rs, T) {
       const lat = row ? -22.3 : -19.9, dir = row ? -1 : 1;
       for (let k = 0; k < 19; k++) {
         if (rng() < 0.15) continue;
-        const s = st.s - 77 + k * 0.62 + (rng() - 0.5) * 0.08;
+        const s = st.s - 75.6 + k * 0.62 + (rng() - 0.5) * 0.08;
         sampleFrame(F, step, s, fr);
         const yaw = Math.atan2(dir * fr.lx, dir * fr.lz) + (rng() - 0.5) * 0.12;
         T.bikes.push(paint({ x: fr.x + fr.lx * lat, y: fr.y - 0.48, z: fr.z + fr.lz * lat, yaw, sx: 1, sy: 1, sz: 1, s: st.s, k: si, sh: false }, pick(BIKE_PAINTS, rng), 0.05, rng));
       }
       /* 前輪を入れる低い横棒(銀) */
-      sampleFrame(F, step, st.s - 71.4, fr);
+      sampleFrame(F, step, st.s - 70.0, fr);
       const rl = lat + dir * 0.62;
-      T.boxesPre.push({ x: fr.x + fr.lx * rl, y: fr.y - 0.5 + 0.28, z: fr.z + fr.lz * rl, yaw: fr.yaw, sx: 0.05, sy: 0.05, sz: 12.2, s: st.s, sh: false, r: 0.6, g: 0.61, b: 0.62 });
+      T.boxesPre.push({ x: fr.x + fr.lx * rl, y: fr.y - 0.5 + 0.28, z: fr.z + fr.lz * rl, yaw: fr.yaw, sx: 0.05, sy: 0.05, sz: 11.8, s: st.s, sh: false, r: 0.6, g: 0.61, b: 0.62 });
     }
     /* 駐輪場の手前のはしに自動販売機2台(前の面は駅に入ってくる列車のほう。夜は光る) */
-    sampleFrame(F, step, st.s - 79.6, fr);
+    sampleFrame(F, step, st.s - 77.0, fr);
     const nx = -fr.tx, nz = -fr.tz;
     for (let k = 0; k < 2; k++) {
       const lat = -20.4 - k * 1.02;
@@ -1859,11 +1859,11 @@ function farLatMax(rs, s, side) {
 /* ---------- 遠くの家並み(線路から175〜560m) ----------
  * 家並みの屋根の地面の所(trackbed の rs._roofsAt: 世田谷の低層住宅地・郊外・丘陵の駅の前後500m)に、
  * 2〜3軒つながった切妻の列(遠くの家と同じ形と外壁の材質。シェーダは増えない)を 26m×12m のます目にまばらに置く。
- * 高画質は5割(どこでも)。中画質は丘陵の駅の前後500m(ゴールの そらからの視点など)だけ FAR_MID
- * (世田谷・郊外は家並みが続いて数が多く、iPad の三角形の予算をこえるので置かない)。低画質は置かない。
+ * 高画質だけ(5割)。中・低画質は置かない: iPad(中)の三角形の予算(世田谷の夕方で +11k)と描画の回数(ゴールで +1)をこえるため。
+ * FAR_MID を 0.12 にすると中画質でも丘陵の駅の前後500mだけ置く(世田谷・郊外は数が多いので置かない)。
  * ほかの物の上・川・トンネル・ランドマーク・丘のすそ(半径+20m)はよける。
  * 9列目から先の家(buildHouses の T.farHouses)と同じ1000mのかたまりにまとめて出す(描画はほとんど増えない)。影は落とさない */
-const FAR_MID = 0.12;
+const FAR_MID = 0;
 function buildFarBlocks(rs, T) {
   const far = T.farHouses || [];
   T.farHouses = null;
