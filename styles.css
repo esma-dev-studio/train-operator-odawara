@@ -295,7 +295,7 @@ ruby rt { font-size: max(0.5em, 9.5px); opacity: 0.9; letter-spacing: 0; font-we
 #rs-win.rs-tight { grid-template-columns: minmax(0, max-content) minmax(110px, 1fr) max-content auto auto; }
 .rs-tight .rs-after, .rs-tight .rs-seg2 { display: none; }
 .rs-node { display: flex; align-items: center; gap: 5px; white-space: nowrap; min-width: 0; }
-.rs-prev span, .rs-after span { display: block; min-width: 0; max-width: 8.5em; overflow: hidden; text-overflow: ellipsis; }
+.rs-prev span, .rs-after span { display: block; min-width: 0; max-width: 11em; overflow: hidden; text-overflow: ellipsis; }
 .rs-node i { width: 9px; height: 9px; border-radius: 50%; border: 2px solid #6b7e89; background: #0e1418; flex: none; }
 .rs-node span { font-size: var(--fs-cap); font-weight: 700; color: #a9becb; letter-spacing: 0.04em; }
 .rs-prev i { border-color: var(--acc-2); background: var(--acc-2); }
@@ -1960,3 +1960,7 @@ body.mode-drive #bighud #bh-lim-next { display: none !important; }
 }
 /* いきすぎパネル: 「もういちど とめる」の せつめい(180m もどって ゆっくり)は 2行めに(ことばの とちゅうで おれない) */
 .ov-card .btn-big small { display: block; margin-top: 2px; font-size: var(--fs-cap); font-weight: 700; letter-spacing: 0.04em; opacity: 0.85; }
+/* 路線の帯: 上の帯の つぎの制限を 出さなく なった ぶん 大型HUDが せまい。帯を すこし ひろく(ながい 駅名が きれない) */
+@media (min-width: 861px) and (min-height: 541px) {
+  #drive-head { max-width: 700px; }
+}
