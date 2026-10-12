@@ -6,6 +6,7 @@ import * as THREE from '../vendor/three.module.min.js';
 
 const BOX = { x: 34, y: 22, z: 70 };   // 幅・高さ・奥行き(カメラ前方へ)
 const TOP = BOX.y * 0.7;               // 粒を入れ直す上の高さ(カメラから)
+const SNOW_NEAR = 2.2;                 // 雪の粒の いちばん手前(カメラから m。これより近づいたら前方の遠くへ入れ直す)
 
 /* 雨のすじの「先ほど濃く、うしろへ消えていく」形:
  * 同じすじを、先から長さ 1/4・2/4・3/4・4/4 の4本の線で重ねて描く(先の1/4は4回重なって濃く、うしろの1/4は1回だけ)。
@@ -16,17 +17,17 @@ const layerAlpha = (head) => 1 - Math.pow(1 - head, 1 / LAY);
 
 /* 雪の粒: 中心は白く、ふちへ向かってなめらかに灰色になりながら消える玉(明るいくもり空の前では灰色の点、
  * 家や木の前では白い点に見える。真っ白なぼかしの点だと、白い空にとけて見えなくなる)。
- * ふちは少し濃い灰色にして、白い雪の地面の前でも粒の形が見えるようにする。
- * ふちを濃いまま急に切ると、手前の大きな粒が「輪のあるシャボン玉」に見えるので、濃さもなめらかに下げる */
+ * ふちは うすい灰色(白い雪の地面の前でも粒の形が見える)。濃い灰色の輪にすると、
+ * 手前の大きな粒が「レンズについた よごれ・灰」に見えるので、灰色は うすく・外へ なめらかに消す */
 function flakeTex() {
   const cv = document.createElement('canvas');
   cv.width = cv.height = 32;
   const c = cv.getContext('2d');
   const g = c.createRadialGradient(16, 16, 0, 16, 16, 15);
   g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.3, 'rgba(214,218,226,0.95)');
-  g.addColorStop(0.6, 'rgba(118,124,136,0.65)');
-  g.addColorStop(1, 'rgba(118,124,136,0)');
+  g.addColorStop(0.35, 'rgba(238,242,248,0.9)');
+  g.addColorStop(0.7, 'rgba(176,184,196,0.35)');
+  g.addColorStop(1, 'rgba(176,184,196,0)');
   c.fillStyle = g; c.fillRect(0, 0, 32, 32);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -67,8 +68,9 @@ export class WeatherFx {
     this.snowPh = new Float32Array(this.nSnow);
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.nSnow * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    /* 粒の大きさ 0.10m(いちばん手前 2.2m で 画面に約35画素まで。もっと近い粒は置かない: _seed・update) */
     this.snowMat = new THREE.PointsMaterial({
-      map: flakeTex(), size: 0.12, sizeAttenuation: true, transparent: true, opacity: 1,
+      map: flakeTex(), size: 0.10, sizeAttenuation: true, transparent: true, opacity: 1,
       depthWrite: false, color: 0xffffff,
     });
     this.snow = new THREE.Points(sg, this.snowMat);
@@ -95,7 +97,8 @@ export class WeatherFx {
    * view=true(雨): 近くのすじも、横は画面に入る幅(運転台の画角の少し外まで)に置く
    * (箱の幅いっぱいだと、近くのすじの半分以上が画面の外で、雨がほとんど見えない) */
   _seed(arr, i, anyY, near, view) {
-    const z = 1 + (near ? Math.pow(this._r(), 1.8) : Math.pow(this._r(), 0.7)) * BOX.z;
+    /* 雪(near)は カメラから 2.2m より手前に置かない(手前すぎる粒は 画面に大きな ぼやけた玉になる) */
+    const z = (near ? SNOW_NEAR : 1) + (near ? Math.pow(this._r(), 1.8) : Math.pow(this._r(), 0.7)) * BOX.z;
     const w = near ? Math.min(BOX.x, 4 + 1.4 * z) : view ? Math.min(BOX.x, 4 + 1.8 * z) : BOX.x;
     const fl = this._floor;
     arr[i * 3] = (this._r() - 0.5) * w;
@@ -181,7 +184,7 @@ export class WeatherFx {
       const hx = BOX.x / 2;
       for (let i = 0; i < this.nSnow; i++) {
         let x0 = P[i * 3] - mx, y = P[i * 3 + 1] - 1.0 * dt - my, z = P[i * 3 + 2] - mz;
-        if (z < 0.3) {
+        if (z < SNOW_NEAR) {
           /* 追いこした粒は、前方の遠くに高さもばらばらで入れ直す(近づくにつれて大きく見える)。
            * 上端から入れ直すと、走っている間は近くの粒がずっと画面の上の外にいて、雪がほとんど見えない */
           x0 = (this._r() - 0.5) * BOX.x;

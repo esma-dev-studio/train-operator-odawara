@@ -4,16 +4,19 @@
  * ・HDRの空の下ごしらえ(太陽の円盤を抑える・地平線の色を測る)
  * ・ぬれ/雪を全部の材質にまとめて足すシェーダ部品(weather chunk)
  * ・夜空(星と月)・夕焼けの空(どちらもテクスチャなしの手続きシェーダ)
- * ・トーンマップの仕上げ(彩度・明暗の色み)
+ * ・トーンマップの仕上げ(彩度・明暗の色み)と、出力パスの 表ごとの仕上げ(grade: 夕方の彩度・夜の黒・雪の色み)
  * 色は見た目(sRGB)で書く。THREE.Color の setHex は sRGB → リニアに直して持つ。
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
 import { LuminosityHighPassShader } from '../vendor/addons/LuminosityHighPassShader.js';
+import { OutputShader } from '../vendor/addons/OutputShader.js';
 
 /* sun: [強さ, 色] / hemi: [強さ, 空の色, 地面の色] / fog: [色(nullは空から自動), 近, 遠]
  * fogLin: 霧の色をリニアの光の強さで直接(夕焼けの地平線に合わせる) / env: 空の映りこみの強さ(倍率)
  * wire: 架線・電線の明るさ(倍率。夜は空より明るく光らないよう暗く)
  * bloom: [しきい値, 強さ, 半径](nullはブルームなしで直接描く) / head: 前照灯 / wet・snow: ぬれ・雪の量
+ * grade: 最後の色の仕上げ(中・高画質の出力パスだけ。下の「表ごとの仕上げ」)
+ *   { lift: 黒のうき上がり[r,g,b](画面の値 0..1), sat: 彩度の倍率, gain: 色ごとの倍率[r,g,b] }(書かない所は 0 / 1 / 1)
  * 影は どの表でも太陽(夜は月)から落とす(影の有無を切りかえると全シェーダの作り直しになるため) */
 export const LOOK = {
   /* 晴れの昼: 太陽を強く・空の光(環境光)を控えめにして、日なたと日かげの差をはっきり(色もあざやかに) */
@@ -21,38 +24,55 @@ export const LOOK = {
     sun: [5.5, 0xffe6c4], hemi: [0.5, 0x9cbcf0, 0x5c5444],
     exposure: 1.2, bg: 0.9, env: 0.85, wire: 1, fog: [null, 30, 1300], fogFallback: 0xb6b9c4,
     bloom: null, head: 0, wet: 0, snow: 0,
+    grade: { lift: [0, 0, 0], sat: 1, gain: [1, 1, 1] },
   },
   /* 夕方: 金色の低い日ざし。霧は夕焼けの地平線と同じ色(太陽の側はさらに明るく: 霧の照り返し)。
    * 日かげは青みの空の光(空は青紫・地面の照り返しは暖色)。日なただけが だいだい色になる(全部ピンクにしない)。
+   * 低い日ざしでは 線路は ほとんど 家や柵の影の中。影の中を照らす 空の光(hemi)と 夕焼けの空の映りこみ(env)は、
+   * 線路の砂利・日かげの壁が 黒くつぶれない強さに(運転台の下半分は ほとんど砂利)。
+   * 仕上げで 彩度を少し下げる(夕焼けの空は もともと あざやかなので、全体の仕上げの 1.12倍と重なって強すぎる)。
    * ブルームは太陽のまわりの強い所だけ(しきい値を上げて、左の建物まで白くにじませない) */
   eve: {
-    sun: [2.6, 0xffa25a], hemi: [0.6, 0x8c96bc, 0x4a3a30],
-    exposure: 0.95, bg: 1, env: 0.7, wire: 0.75, fog: [null, 40, 1350], fogLin: [0.97, 0.29, 0.16], fogFallback: 0x9a7a6a,
+    sun: [2.6, 0xffa25a], hemi: [1.2, 0x8c96bc, 0x5a4838],
+    exposure: 0.95, bg: 1, env: 1.0, wire: 0.75, fog: [null, 40, 1350], fogLin: [0.97, 0.29, 0.16], fogFallback: 0x9a7a6a,
     bloom: [2.6, 0.42, 0.2], head: 70, wet: 0, snow: 0,
+    grade: { lift: [0.002, 0.002, 0.0035], sat: 0.88 },
   },
   /* 夜: まっ黒にしない。紺の空・月明かり・街の明かりで遠くは灰色にかすむ。
    * 壁は暗く(昼を暗くしただけの絵にしない)、窓・街灯・ホームの明かりが目立つように。
-   * desat: 暗い所ほど色がうすく見える(芝や木の緑が青い光の下で黒くつぶれない。明かりの当たる所は色が残る) */
+   * トーンマップ(ACES)は とても暗い値を まっ黒にするので、地面・壁は空の光(hemi)で もち上げる
+   * (露出を上げると 窓の明かりが 白くとぶ)。仕上げの lift で いちばん暗い所も紺色の黒に。
+   * desat: 暗い所ほど色がうすく見える(芝や木の緑が青い光の下で黒くつぶれない。明かりの当たる所は色が残る)。
+   * うすくした色は 灰色ではなく 少し青い灰色へ(目は暗い所で青を強く感じる: 夜らしい青い影) */
   night: {
-    sun: [0.38, 0x9fb4e0], hemi: [0.95, 0x5c6a88, 0x1e1c1a], desat: 0.65,
+    sun: [0.38, 0x9fb4e0], hemi: [1.42, 0x5c6a88, 0x2e2b2c], desat: 0.65,
     exposure: 1.3, bg: 1, env: 1.0, wire: 0.2, fog: [0x262b3a, 60, 1050],
     bloom: [1.0, 0.5, 0.3], head: 420, wet: 0, snow: 0,
+    grade: { lift: [0.004, 0.005, 0.008] },
   },
   nightWet: {
-    sun: [0.3, 0x9fb4e0], hemi: [0.85, 0x56606f, 0x201e1c], desat: 0.3,
+    sun: [0.3, 0x9fb4e0], hemi: [1.2, 0x56606f, 0x201e1c], desat: 0.3,
     exposure: 1.25, bg: 1, env: 1.0, wire: 0.25, fog: [0x2a2d34, 40, 560],
     bloom: [1.1, 0.55, 0.25], head: 480, wet: 1, snow: 0,
+    grade: { lift: [0.004, 0.0045, 0.006] },
   },
-  /* 雨: 晴れより暗い くもり空。ぬれた地面(明るい空と暗い地面の差がつく)・水たまり・遠くは雨のかすみ */
+  /* 雨: 晴れより暗い くもり空。ぬれた地面(明るい空と暗い地面の差がつく)・水たまり・遠くは雨のかすみ。
+   * ブルームはなし(くもりの昼に しきい値をこえる明るさは ないので、にじみの計算はむだ。トンネルの中では にじむ) */
   rain: {
     sun: [0.3, 0xd0d8e2], hemi: [0.5, 0xa4b2c0, 0x4a4e4a],
     exposure: 0.82, bg: 0.42, env: 0.65, wire: 0.9, fog: [null, 18, 480], fogFallback: 0x9da4a8,
-    bloom: [2.0, 0.25, 0.3], head: 0, wet: 1, snow: 0,
+    bloom: null, head: 0, wet: 1, snow: 0,
+    grade: { sat: 1.06 },
   },
+  /* 雪: 白い世界でも 家や木の形が見えるように、空の光(どの向きにも同じ明かり)を弱め・太陽(影の出る光)を強く。
+   * 明るいくもり空の映りこみ(env)が 壁も雪も同じように明るくするので、それも弱める(家の壁 p50 約150・雪 約205)。
+   * 地面の照り返しは 雪の白ではなく少し灰色(家の下側・軒下が白くとばない)。露出も少し下げる。
+   * 仕上げは わずかに青く・彩度を少し上げる(灰色一色にしない) */
   snow: {
-    sun: [0.6, 0xf2f4f8], hemi: [0.7, 0xcfdcf5, 0xe8ecf0],
-    exposure: 0.88, bg: 1.0, env: 0.9, wire: 1, fog: [null, 20, 520], fogFallback: 0xd5d8dc,
-    bloom: [4.0, 0.15, 0.3], head: 0, wet: 0.3, snow: 1,
+    sun: [0.95, 0xf2f4f8], hemi: [0.62, 0xc8d6ee, 0xb8bec6],
+    exposure: 0.82, bg: 1.0, env: 0.55, wire: 1, fog: [null, 20, 520], fogFallback: 0xd5d8dc,
+    bloom: null, head: 0, wet: 0.3, snow: 1,
+    grade: { gain: [0.97, 0.99, 1.03], sat: 1.1 },
   },
   /* トンネル・ターミナル(目の慣れ k で外の値とまぜる)。ブルームは灯りのまわりだけ(天井全体を白くかすませない) */
   indoor: { fog: [0x050607, 5, 220], bloom: [1.8, 0.32, 0.18], head: 420 },
@@ -112,6 +132,48 @@ const TM_GRADE = `
   }
 }
 
+/* ---------- 表ごとの仕上げ(グレード): 出力パス(OutputPass)のトーンマップの直後 ----------
+ * 上の TM_GRADE は どの時間帯にも同じ。こちらは LOOK の grade を時間帯・天気ごとに
+ * (夕方は彩度を下げる・夜は いちばん暗い所を紺色の黒に・雪は わずかに青く)。
+ * 中・高画質は いつも出力パスを通るので、描く回数は増えない(全画面の1回の中で 計算が少し増えるだけ)。
+ * 値は uniform(RailScene._applyLightLevel が毎フレーム書く)なので、時間帯を変えてもコンパイルしない。
+ *   c = ACES(x)(TM_GRADE こみ) → 彩度 uGrSat → 色ごとの倍率 uGrGain → 黒のうき上がり c + uGrLift × (1 - c)
+ * 低画質(出力パスなし・材質ごとにトーンマップ)は TM_GRADE だけ(表ごとの仕上げはない)。
+ * 出力パスを作る前(このモジュールを読みこんだ時)に1回だけ書きかえる */
+{
+  const OS = OutputShader;
+  const fs = OS && OS.fragmentShader;
+  const A_TM = 'gl_FragColor.rgb = ACESFilmicToneMapping( gl_FragColor.rgb );';
+  const A_U = 'uniform sampler2D tDiffuse;';
+  if (typeof fs === 'string' && fs.indexOf('uGrSat') < 0) {
+    if (fs.indexOf(A_TM) >= 0 && fs.indexOf(A_U) >= 0 && OS.uniforms) {
+      OS.uniforms.uGrLift = { value: new THREE.Vector3(0, 0, 0) };
+      OS.uniforms.uGrGain = { value: new THREE.Vector3(1, 1, 1) };
+      OS.uniforms.uGrSat = { value: 1 };
+      OS.fragmentShader = fs
+        .replace(A_U, A_U + '\n\t\tuniform vec3 uGrLift;\n\t\tuniform vec3 uGrGain;\n\t\tuniform float uGrSat;')
+        .replace(A_TM, '{\n\t\t\t\tvec3 grC = ACESFilmicToneMapping( gl_FragColor.rgb );' +
+          '\n\t\t\t\tfloat grL = dot( grC, vec3( 0.2126, 0.7152, 0.0722 ) );' +
+          '\n\t\t\t\tgrC = max( mix( vec3( grL ), grC, uGrSat ), 0.0 ) * uGrGain;' +
+          '\n\t\t\t\tgl_FragColor.rgb = grC + uGrLift * ( 1.0 - grC );\n\t\t\t}');
+    } else {
+      console.warn('[look] 出力パスの仕上げを入れる場所が見つからない(three.js の版が変わった?)');
+    }
+  }
+}
+
+/* 表の grade を出力パスの uniform へ(作業用の値に書くだけ。new しない)。
+ * k: 目の慣れ(トンネルの中は 黒のうき上がりを なくす)。U は OutputPass.uniforms(なければ何もしない) */
+export function applyGrade(U, grade, k) {
+  if (!U || !U.uGrSat || !U.uGrLift || !U.uGrGain) return;
+  const g = grade || null;
+  const lf = g && g.lift ? g.lift : null, gn = g && g.gain ? g.gain : null;
+  const kk = k > 0 ? Math.min(1, k) : 0;
+  U.uGrSat.value = g && typeof g.sat === 'number' ? g.sat : 1;
+  if (lf) U.uGrLift.value.set(lf[0] * kk, lf[1] * kk, lf[2] * kk); else U.uGrLift.value.set(0, 0, 0);
+  if (gn) U.uGrGain.value.set(gn[0], gn[1], gn[2]); else U.uGrGain.value.set(1, 1, 1);
+}
+
 /* ---------- 色の計算(霧の色を空の地平線にぴったり合わせるため) ---------- */
 /* three.js r160 の ACESFilmicToneMapping と同じ式(露出/0.6 → 入力行列 → RRT+ODT → 出力行列)+上の仕上げ */
 export function acesFilmic(rgb, exposure) {
@@ -153,8 +215,11 @@ export function horizonRadiance(tex) {
 
 /* 晴れのHDRの太陽の円盤を明るさ8までに抑える(そのままだと影のつかない光が強すぎて、
  * 影がうすく平たい絵になる)。いちばん明るい点の向き=太陽の向きを返す。
- * 地平線より下は、映りこんだ空の代わりにあたたかい地面の明るさにする(2°でなめらかに) */
-export function prepareClearHdr(tex) {
+ * 地平線より下は、映りこんだ空の代わりにあたたかい地面の明るさにする。
+ * hor(horizonRadiance で先に測った地平線の明るさ)があれば、地平線から10°かけて
+ * 「地平線の明るさ(=霧の色)」→ 地面の明るさ へ なめらかに(そらからの視点で 街の外の地面の先に
+ * 霧と ちがう色の帯が見えない)。なければ 今までどおり 2°で 空の画素から地面へ */
+export function prepareClearHdr(tex, hor) {
   const img = tex && tex.image;
   if (!img || !img.data || !(img.data instanceof Uint16Array)) return null;
   const W = img.width, H = img.height, d = img.data;
@@ -170,13 +235,21 @@ export function prepareClearHdr(tex) {
   }
   /* 地平線より下(日なたの地面の照り返し。強い日ざしに合わせて少し明るく・あたたかく) */
   const G = [0.24, 0.22, 0.18], Gh = G.map((v) => t16(v));
-  const band = 2 / 180 * H;
+  const hz = Array.isArray(hor) && hor.length >= 3 && hor.every((v) => isFinite(v) && v >= 0) ? hor : null;
+  const band = (hz ? 10 : 2) / 180 * H;
+  const row = [0, 0, 0];
   for (let y = Math.floor(H / 2); y < H; y++) {
     const below = (y + 0.5) - H / 2;            // 地平線からの行数
     const w = Math.min(1, below / band);
+    if (hz) {
+      /* 行ごとに同じ値(地平線の明るさ → 地面)。なめらかに(smoothstep) */
+      const s = w * w * (3 - 2 * w);
+      for (let c = 0; c < 3; c++) row[c] = t16(hz[c] * (1 - s) + G[c] * s);
+    }
     for (let x = 0; x < W; x++) {
       const o = (y * W + x) * 4;
       if (w >= 1) { d[o] = Gh[0]; d[o + 1] = Gh[1]; d[o + 2] = Gh[2]; continue; }
+      if (hz) { d[o] = row[0]; d[o + 1] = row[1]; d[o + 2] = row[2]; continue; }
       for (let c = 0; c < 3; c++) d[o + c] = t16(f16(d[o + c]) * (1 - w) + G[c] * w);
     }
   }
@@ -240,7 +313,7 @@ export function makeMacroTex() {
 }
 
 /* ---------- ぬれ・雪(全部の標準材質に足す共通シェーダ部品) ----------
- * U = { uSnow, uWet, uSnowCol, uWxMacro, uFogSun, uSunDirW, uFogAnti, uFogDir, uNightDs, uDsLo, uDsHi } を全プログラムで共有するので、
+ * U = { uSnow, uWet, uSnowCol, uWxMacro, uFogSun, uSunDirW, uFogAnti, uFogDir, uNightDs, uDsLo, uDsHi, uDsTint } を全プログラムで共有するので、
  * 天気を変えても値を書きかえるだけ(作り直し=コンパイルが起きない)。
  * 他の部品の色の加工(color_fragment の後)より後、roughnessmap_fragment の直前に入れる。
  * 霧(fog_fragment)も ここで置きかえ、夕方は太陽の側の霧を明るくする(霧の照り返し)。
@@ -273,6 +346,7 @@ uniform float uPud;
 uniform float uNightDs;
 uniform float uDsLo;
 uniform float uDsHi;
+uniform vec3 uDsTint;
 varying vec3 vWxN;
 varying vec3 vWxP;
 float wxH2( vec2 p ) {
@@ -357,11 +431,12 @@ const WX_ROUGH = `
   roughnessFactor = mix( roughnessFactor, 0.03, wxPud * ( 1.0 - wxCov ) );`;
 /* 夜の色のうすさ: 暗い所だけ色をぬく(目は暗い所で色を感じにくいが、明かりの当たる所の色は見える)。
  * 照らされたあとの明るさで決めるので、ホームの床・車体の帯・店先など明かりの当たる所は色が残る。
+ * ぬいた色は灰色ではなく uDsTint の色み(夜は少し青。明るさは ほぼ同じ: 0.2126r+0.7152g+0.0722b ≒ 1)へ。
  * uDsLo/uDsHi は描き方で変える(ブルーム経由=トーンマップ前のリニア / 直接=トーンマップ後) */
 const WX_DS = `
   if ( uNightDs > 0.0 ) {
     float wxLo = dot( gl_FragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
-    gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( wxLo ), uNightDs * ( 1.0 - smoothstep( uDsLo, uDsHi, wxLo ) ) );
+    gl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( wxLo ) * uDsTint, uNightDs * ( 1.0 - smoothstep( uDsLo, uDsHi, wxLo ) ) );
   }`;
 /* 霧: three の標準の式に、太陽の方向ほど明るい霧(夕方の照り返し)を足す。
  * 夕方は太陽と反対の側(地球の影の側)の霧を、地平線と同じ青紫がかった灰色へ寄せる(uFogDir)。
@@ -395,6 +470,8 @@ export function makeWeatherUniforms() {
     uNightDs: { value: 0 },
     uDsLo: { value: 0.01 },
     uDsHi: { value: 0.12 },
+    /* 色をぬいた暗い所の色み(1,1,1=灰色。夜は青みへ: RailScene._applyLightLevel が書く) */
+    uDsTint: { value: new THREE.Vector3(1, 1, 1) },
   };
 }
 
@@ -403,7 +480,7 @@ export function makeWeatherUniforms() {
 export function installWeather(m, U) {
   if (!m || !m.isMeshStandardMaterial || m.userData.wx || m.userData.noWeather) return false;
   /* 古い作り方の U(この部品より前の makeWeatherUniforms)でも動くよう、足りない値は足しておく */
-  if (!U.uFogSun || !U.uSunDirW || !U.uNightDs || !U.uFogAnti || !U.uFogDir || !U.uDsLo || !U.uDsHi) {
+  if (!U.uFogSun || !U.uSunDirW || !U.uNightDs || !U.uFogAnti || !U.uFogDir || !U.uDsLo || !U.uDsHi || !U.uDsTint) {
     const D = makeWeatherUniforms();
     Object.keys(D).forEach((k) => { if (!U[k]) U[k] = D[k]; });
   }
@@ -424,6 +501,7 @@ export function installWeather(m, U) {
     sh.uniforms.uNightDs = U.uNightDs;
     sh.uniforms.uDsLo = U.uDsLo;
     sh.uniforms.uDsHi = U.uDsHi;
+    sh.uniforms.uDsTint = U.uDsTint;
     if (macro) { sh.uniforms.uWxMacro = U.uWxMacro; sh.uniforms.uWxFar = U.uWxFar; }
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>' + WX_VERT_HEAD)
