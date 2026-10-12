@@ -11,11 +11,15 @@
  * ガラスらしさ: ふちの黒いセラミック(フリット)・運転士窓の上の遮光幕・天板のうすい映り込み。
  * ふちのギザギザ: 窓のふちはフリットの帯(テクスチャで ぼける)、ワイパーは 1.5画素の ぼかしの帯でかくす
  *   (COCKPIT_FEATHER。描画側はこれを見て キャンバスのアンチエイリアスを切ってよい)。
+ * 天板の上: 立てた時刻表(上に大きな 時:分。いまの駅の行は だいだい。分・駅が かわったときだけ描く)と、
+ *   晴れの日の 日だまり(sunPatch。カーブで 天板の上を すべる。加算の板1枚)。
  * 外との約束: useOverlay() / renderOverlay(renderer, camera) / setHeadOffset(dx,dy,pitch,roll) /
- *   update(dt, {light, flash, tr,tg,tb, night, wiper, snow, clockMin}) / setTimetable(names, idx) /
- *   windowRects() / wiperScreen() / sillLevel() / layoutFor(aspect) / light(なめらかにした明るさ。flash は入らない)
+ *   update(dt, {light, flash, tr,tg,tb, night, wiper, snow, clockMin, sunK, sunX, sunEve}) / setTimetable(names, idx, times) /
+ *   windowRects() / wiperScreen() / sillLevel() / occluder()(立てた時刻表の画面の形) / layoutFor(aspect) / light(なめらかにした明るさ。flash は入らない) /
+ *   sunK・sunX(なめらかにした日だまりの こさ 0..1 と 横の位置 -1..1。計器盤の cab.setSun にも使う)
  * ========================================================= */
 import * as THREE from '../vendor/three.module.min.js';
+import { STATION_KANA } from '../sim/kana.js';
 
 const TAN = Math.tan(THREE.MathUtils.degToRad(29));   // 縦FOV58°の半分
 
@@ -169,13 +173,18 @@ const canvasTex = (cv, srgb) => {
   return t;
 };
 
-/* 天板の時刻表差しの位置(テクスチャの画素。u .09〜.215, v .25〜.85。画面の左はしで切れないよう少し内寄り) */
-const CARD = { x0: Math.round(0.09 * 1024), x1: Math.round(0.215 * 1024), y0: Math.round(0.25 * 128), y1: Math.round(0.85 * 128) };
-/* 天板の時計の位置(テクスチャの u,v。v は下が0)と 時計の板の半分の大きさ(u,v) */
-const CLOCK_UV = [0.84, 1 - 0.55, 20 / 1024, 20 / 128];
+/* 立てた時刻表(スタフ)の板の位置: 天板の u .095〜.21(画面の左はしで切れないよう少し内寄り)、
+ * 台は天板の v .36(手前より。板が窓の景色に かかりすぎない) */
+const STAFF = { u0: 0.095, u1: 0.205, v: 0.36, lean: 0.2 };
+/* 板の絵の大きさ(上に 時:分、下に 3行の時刻表)。板の3Dの高さは はばの半分(絵と同じ比)。
+ * 板は 台から うしろへ lean(rad, 約11°)だけ ねかせる(ほぼ目のほうを向く: 字が読める) */
+const STAFF_W = 256, STAFF_H = 128;
+/* 数字の書体(計器盤と同じ) */
+const NUM_FONT = '"DIN Alternate","DIN Condensed",Bahnschrift,"Roboto Condensed","Zen Kaku Gothic New",sans-serif';
+const JP_FONT = '"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic UI",Meiryo,sans-serif';
 
-/* 天板の表面 1024x128(一度だけ。時刻表の紙は setTimetable で描きなおす)。画像の上が奥(窓の下)、下が手前(計器盤とのさかい)。
- * 左に時刻表(スタフ)差し、右の時計は別の小さな板(分ごとに針が動く)。まん中(u .33〜.67)は「いまやること」の帯がかかるので何も置かない */
+/* 天板の表面 1024x128(一度だけ)。画像の上が奥(窓の下)、下が手前(計器盤とのさかい)。
+ * 左に 立てた時刻表の台(黒い台座だけ。板は別の1枚)。まん中(u .33〜.67)は「いまやること」の帯がかかるので何も置かない */
 function dashTexture() {
   const W = 1024, H = 128;
   const cv = document.createElement('canvas');
@@ -200,13 +209,14 @@ function dashTexture() {
     c.fillRect(x, 12, 10, 1);
   }
   /* (化粧板の継ぎ目は描かない: 台形の天板では ななめの線に見えて「いまやること」の帯のわきが きずのように見えた) */
-  /* 時刻表差しの台(黒い枠・落ち影・上の押さえ金具)。紙は drawCard */
+  /* 立てた時刻表の台座(黒い台・落ち影・上のふちの光)。板そのものは drawStaff の絵を 立てた1枚で */
   {
-    const { x0, x1, y0, y1 } = CARD;
-    c.fillStyle = 'rgba(0,0,0,0.35)'; c.fillRect(x0 + 2, y0 + 3, x1 - x0, y1 - y0);   // 落ち影
-    c.fillStyle = '#15181b'; c.fillRect(x0, y0, x1 - x0, y1 - y0);
+    const x0 = Math.round(STAFF.u0 * W) - 6, x1 = Math.round(STAFF.u1 * W) + 6, yc = Math.round((1 - STAFF.v) * H);
+    c.fillStyle = 'rgba(0,0,0,0.38)'; c.fillRect(x0 + 3, yc - 7, x1 - x0, 20);   // 落ち影
+    c.fillStyle = '#15181b'; c.fillRect(x0, yc - 10, x1 - x0, 18);
+    c.fillStyle = 'rgba(255,255,255,0.10)'; c.fillRect(x0, yc - 10, x1 - x0, 1);
+    c.fillStyle = '#0b0c0d'; c.fillRect(x0 + 4, yc - 2, x1 - x0 - 8, 3);         // 板を差しこむ みぞ
   }
-  drawCard(c, null, 0);
   /* 奥ほど暗く(上30%) / 奥の見切りの影 / 手前のふちのハイライト */
   const g = c.createLinearGradient(0, 0, 0, H * 0.3);
   g.addColorStop(0, 'rgba(0,0,0,0.25)'); g.addColorStop(1, 'rgba(0,0,0,0)');
@@ -218,64 +228,85 @@ function dashTexture() {
   return { tex, c };
 }
 
-/* 時刻表(スタフ)の紙: 6行。駅名の長さの「字のかたまり(こい線)」と 時刻の線。つぎに止まる駅の行は だいだい。
- * 実物の字は読めない大きさ(画面で 約170x45px)なので、行ごとに長さがかわる線で「本物の時刻表」に見せる */
-function drawCard(c, names, idx) {
-  const { x0, x1, y0, y1 } = CARD;
-  c.fillStyle = '#d9d5c8'; c.fillRect(x0 + 3, y0 + 3, x1 - x0 - 6, y1 - y0 - 6);
-  const lh = (y1 - y0 - 10) / 7;
-  /* 見出しの帯(列車番号・種別のらん) */
-  c.fillStyle = 'rgba(30,34,40,0.55)'; c.fillRect(x0 + 6, y0 + 6, x1 - x0 - 12, Math.round(lh) - 3);
-  c.fillStyle = 'rgba(0,0,0,0.35)';
-  for (let k = 1; k <= 6; k++) c.fillRect(x0 + 6, Math.round(y0 + 4 + k * lh), x1 - x0 - 12, 1);
-  c.fillStyle = 'rgba(0,0,0,0.22)';
-  const xm = x0 + Math.round((x1 - x0) * 0.62);
-  c.fillRect(xm, y0 + 6, 1, y1 - y0 - 10);
-  if (names && names.length) {
-    const n = names.length;
-    const first = Math.max(0, Math.min(idx - 1, n - 6));
-    for (let r = 0; r < 6; r++) {
-      const i = first + r;
-      if (i >= n) break;
-      const yy = Math.round(y0 + 4 + (r + 1) * lh);
-      if (i === idx) { c.fillStyle = 'rgba(255,176,46,0.75)'; c.fillRect(x0 + 6, yy + 1, x1 - x0 - 12, Math.round(lh) - 1); }
-      const len = Math.min(xm - x0 - 12, 8 + String(names[i]).length * 7);
-      c.fillStyle = i < idx ? 'rgba(20,20,20,0.35)' : 'rgba(20,20,20,0.78)';
-      c.fillRect(x0 + 8, yy + Math.round(lh * 0.35), len, Math.max(2, Math.round(lh * 0.38)));
-      c.fillRect(xm + 5, yy + Math.round(lh * 0.35), x1 - xm - 14, Math.max(2, Math.round(lh * 0.38)));
-    }
-  }
-  /* 上の押さえ金具 */
-  c.fillStyle = '#0b0c0d'; c.fillRect(x0 - 2, y0, x1 - x0 + 4, 6);
-  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(x0 - 2, y0 + 6, x1 - x0 + 4, 1);
+/* 角丸の四角(古いSafariには ctx.roundRect がないので arcTo で) */
+function rrect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
 }
 
-/* 天板の時計 64x64(黒い台・白い文字盤・目盛り・針2本・落ち影)。分が変わったときだけ描きなおす */
-function drawClock(c, min) {
-  const S = 64, cx = 30, cy = 29;
-  c.clearRect(0, 0, S, S);
-  c.fillStyle = 'rgba(0,0,0,0.35)';
-  c.beginPath(); c.arc(cx + 3, cy + 4, 27, 0, Math.PI * 2); c.fill();
-  c.fillStyle = '#0e1012';
-  c.beginPath(); c.arc(cx, cy, 27, 0, Math.PI * 2); c.fill();
-  c.fillStyle = '#cfd3d6';
-  c.beginPath(); c.arc(cx, cy, 18, 0, Math.PI * 2); c.fill();
-  c.strokeStyle = '#3a4046'; c.lineWidth = 1.5;
-  for (let k = 0; k < 12; k++) {
-    const a = (k / 12) * Math.PI * 2, r0 = k % 3 ? 15 : 13;
-    c.beginPath(); c.moveTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0); c.lineTo(cx + Math.sin(a) * 17, cy - Math.cos(a) * 17); c.stroke();
-  }
+/* 立てた時刻表(スタフ)の板 256x128: 黒い板の上に 時:分(大きく)、下に紙(いまの駅・そのつぎ・そのつぎの3行。
+ * いまの駅の行は だいだいで大きく)。画面では 約150x90px。分か駅が かわったときだけ描きなおす。
+ * tt: { names, times, idx }(なければ 線だけの紙) */
+function drawStaff(c, min, tt) {
+  const W = STAFF_W, H = STAFF_H;
+  c.clearRect(0, 0, W, H);
+  /* 板(黒い金属のホルダー。上のふちが少し明るい) */
+  c.fillStyle = '#171a1d'; rrect(c, 0, 0, W, H, 9); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.13)'; c.fillRect(8, 1, W - 16, 1.5);
+  /* 時計: 黒い窓に 白い 時:分 */
+  c.fillStyle = '#060708'; rrect(c, 6, 5, W - 12, 37, 5); c.fill();
   const m = ((min % 1440) + 1440) % 1440;
-  const am = (m % 60) / 60 * Math.PI * 2, ah = ((m / 60) % 12) / 12 * Math.PI * 2;
-  c.strokeStyle = '#15181b'; c.lineCap = 'round';
-  c.lineWidth = 3;
-  c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.sin(ah) * 9, cy - Math.cos(ah) * 9); c.stroke();
-  c.lineWidth = 2;
-  c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.sin(am) * 14, cy - Math.cos(am) * 14); c.stroke();
-  c.fillStyle = '#15181b';
-  c.beginPath(); c.arc(cx, cy, 2, 0, Math.PI * 2); c.fill();
-  c.fillStyle = 'rgba(255,255,255,0.14)';
-  c.fillRect(cx - 24, cy - 27, 48, 2);
+  c.fillStyle = '#eef4f7';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.font = `700 31px ${NUM_FONT}`;
+  c.fillText(`${(m / 60) | 0}:${String(m % 60).padStart(2, '0')}`, W / 2, 25);
+  /* 紙(押さえ金具の下) */
+  const py = 46, ph = H - py - 5;
+  c.fillStyle = '#dcd8cb'; c.fillRect(6, py, W - 12, ph);
+  const n = tt && tt.names ? tt.names.length : 0;
+  const rowsH = [32, 22, 22];
+  let y = py + 2;
+  for (let r = 0; r < 3; r++) {
+    const h = rowsH[r], i = (tt ? tt.idx : 0) + r;
+    if (r === 0) { c.fillStyle = 'rgba(255,170,40,0.92)'; c.fillRect(8, y, W - 16, h - 2); }
+    else { c.fillStyle = 'rgba(0,0,0,0.22)'; c.fillRect(10, y - 1, W - 20, 1); }
+    if (n && i < n) {
+      c.fillStyle = r === 0 ? '#1d1300' : '#2a2c30';
+      c.textBaseline = 'middle';
+      c.textAlign = 'left';
+      c.font = `700 ${r === 0 ? 20 : 15}px ${JP_FONT}`;
+      /* 駅名は かなで(小学2年生が読める。長い名前は はばに おさめる) */
+      const nm = String(tt.names[i]);
+      c.fillText(STATION_KANA[nm] || nm, 14, y + h / 2, W - 92);
+      const t = tt.times && tt.times[i];
+      if (t) {
+        c.textAlign = 'right';
+        c.font = `700 ${r === 0 ? 20 : 15}px ${NUM_FONT}`;
+        c.fillText(t, W - 14, y + h / 2);
+      }
+    } else if (!n) {
+      /* 運転の前: 字のかわりの線 */
+      c.fillStyle = 'rgba(20,20,20,0.5)';
+      c.fillRect(14, y + h / 2 - 2, 70 + r * 12, 4);
+      c.fillRect(W - 60, y + h / 2 - 2, 46, 4);
+    }
+    y += h;
+  }
+  /* 紙の上の押さえ金具 */
+  c.fillStyle = '#0b0c0d'; c.fillRect(4, py - 2, W - 8, 4);
+}
+
+/* 日だまり 128x32: まん中が あたたかい白(#fff1d6)、ふちへ透明(横長の だ円) */
+function sunTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 128; cv.height = 32;
+  const c = cv.getContext('2d');
+  c.setTransform(64, 0, 0, 16, 64, 16);
+  const g = c.createRadialGradient(0, 0, 0, 0, 0, 1);
+  g.addColorStop(0, 'rgba(255,241,214,1)');
+  g.addColorStop(0.45, 'rgba(255,241,214,0.6)');
+  g.addColorStop(1, 'rgba(255,241,214,0)');
+  c.fillStyle = g;
+  c.fillRect(-1, -1, 2, 2);
+  const t = canvasTex(cv, true);
+  t.generateMipmaps = false;
+  t.minFilter = THREE.LinearFilter;
+  return t;
 }
 
 /* フリット(ガラスのふちの黒いセラミック) 64x32: 横(u)は窓のふちにそってくりかえし、縦は 絵の上(v=1)が ふち → 下(v=0)が内。
@@ -297,8 +328,8 @@ function fritTexture() {
   return t;
 }
 
-/* 遮光幕(運転士窓の上) 512x64: 半透明の黒い布(3pxごとの織り目)・下に 6px の すそ(金具)・まん中に 10px の引き手 */
-const BLIND = { fabric: 44, hem: 6, tab: 10 };
+/* 遮光幕(運転士窓の上) 512x64: 半透明の黒い布(3pxごとの織り目)・下に 6px の すそ(金具) */
+const BLIND = { fabric: 44, hem: 6 };
 function blindTexture() {
   const W = 512, H = 64, cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
@@ -313,10 +344,7 @@ function blindTexture() {
   c.fillStyle = '#2b3034'; c.fillRect(0, BLIND.fabric, W, BLIND.hem);
   c.fillStyle = 'rgba(255,255,255,0.16)'; c.fillRect(0, BLIND.fabric, W, 1);
   c.fillStyle = 'rgba(0,0,0,0.5)'; c.fillRect(0, BLIND.fabric + BLIND.hem - 1, W, 1);
-  /* 引き手 */
-  const tw = 40, tx = (W - tw) / 2, ty = BLIND.fabric + BLIND.hem;
-  c.fillStyle = '#1b1f22'; c.fillRect(tx, ty, tw, BLIND.tab);
-  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(tx + 2, ty + 1, tw - 4, 1);
+  /* (引き手は描かない: 上の帯(HUD)で布がかくれると、黒い引き手だけが ガラスの まん中に うかんで見えた) */
   const t = canvasTex(cv, true);
   t.anisotropy = 4;
   return t;
@@ -383,13 +411,22 @@ export class Cockpit {
     this._updRefl();
     this.matRefl = glassM({ map: this._reflTex, blending: THREE.AdditiveBlending });
     this.matFeather = glassM({ map: featherTexture() });
-    this._clockCv = document.createElement('canvas');
-    this._clockCv.width = this._clockCv.height = 64;
-    this._clockC = this._clockCv.getContext('2d');
+    /* 立てた時刻表(上に 時:分)。分・つぎの駅が かわったときだけ描きなおす */
+    this._staffCv = document.createElement('canvas');
+    this._staffCv.width = STAFF_W; this._staffCv.height = STAFF_H;
+    this._staffC = this._staffCv.getContext('2d');
     this._clockMin = 600;
-    drawClock(this._clockC, this._clockMin);
-    this._clockTex = canvasTex(this._clockCv, true);
-    this.matClock = glassM({ map: this._clockTex, depthTest: false });
+    this._tt = null;
+    drawStaff(this._staffC, this._clockMin, null);
+    this._staffTex = canvasTex(this._staffCv, true);
+    this._staffTex.anisotropy = 4;
+    this.matClock = glassM({ map: this._staffTex, depthTest: false });
+    /* 日だまり(加算。天板の上に のせる板。ほかのガラスまわりと同じシェーダ) */
+    this.matSun = glassM({ map: sunTexture(), blending: THREE.AdditiveBlending, depthTest: false });
+    this.matSun.color.setRGB(0, 0, 0);
+    this.sunK = 0;           // 日だまりの こさ(なめらか 0..1)
+    this.sunX = 0;           // 日だまりの 横の位置(なめらか -1..1。右が +)
+    this._sunC = -1; this._sunPX = 0;
     this._tmpS = [0, 0, 0];
     this._tmpC = new THREE.Color();
     this.light = 1;          // 室内の明るさ(昼1・夜/トンネル小)。なめらか・flash なし(計器盤もこれを使う)
@@ -447,7 +484,7 @@ export class Cockpit {
     /* 本体のシーン用に作られていたシェーダは もう使わないので手放す(材質ごとに作りおきされて残るため)。
      * 次に描くときに上描き用だけが作られる */
     [this.matFrame, this.matSeal, this.matDash, this.matDashEdge, this.matWiper, this.matRubber, this.matChrome, this.matSill,
-      this.matFrit, this.matBlind, this.matRefl, this.matFeather, this.matClock]
+      this.matFrit, this.matBlind, this.matRefl, this.matFeather, this.matClock, this.matSun]
       .forEach((m) => m.dispose());
   }
 
@@ -672,23 +709,18 @@ export class Cockpit {
     lip.renderOrder = 12;
     this.root.add(lip);
 
-    /* --- 天板の時計(分ごとに針が動く小さな板)。天板の三角形(奥左・手前右・奥右)の上の (u,v) の点を
-     * 同じ三角形の割合で3Dへ。縦長の画面では けいてきボタンの下になるので置かない --- */
-    this.clock = null;
-    if (!narrow) {
-      const [cu, cv, du, dv] = CLOCK_UV;
-      const V = (i) => [dp[i * 3], dp[i * 3 + 1], dp[i * 3 + 2]];
-      const fl = V(0), fR = V(1), nr = V(2), nl = V(3);
-      /* (u,v) → 天板の上の点(u+v>1 は 奥左・手前右・奥右、それ以外は 奥左・手前左・手前右 の三角形) */
-      const onDash = (u, v) => {
-        let a, b, A, B;
-        if (u + v >= 1) { a = 1 - v; b = u - a; A = nr; B = fR; }
-        else { b = u; a = 1 - v - u; A = nl; B = nr; }
-        return [0, 1, 2].map((k) => fl[k] + a * (A[k] - fl[k]) + b * (B[k] - fl[k]));
-      };
-      const cps = [onDash(cu - du, cv - dv), onDash(cu + du, cv - dv), onDash(cu + du, cv + dv), onDash(cu - du, cv + dv)];
+    /* 天板の上の (u,v) の点を 3Dへ(天板の三角形(奥左・手前右・奥右 / 奥左・手前左・手前右)の割合で) */
+    const V = (i) => [dp[i * 3], dp[i * 3 + 1], dp[i * 3 + 2]];
+    const fl = V(0), fR = V(1), nr = V(2), nl = V(3);
+    const onDash = (u, v) => {
+      let a, b, A, B;
+      if (u + v >= 1) { a = 1 - v; b = u - a; A = nr; B = fR; }
+      else { b = u; a = 1 - v - u; A = nl; B = nr; }
+      return [0, 1, 2].map((k) => fl[k] + a * (A[k] - fl[k]) + b * (B[k] - fl[k]));
+    };
+    const quad = (cps, mat, order) => {
       const pos = [];
-      cps.forEach((p) => pos.push(p[0], p[1] + 0.0005, p[2]));
+      cps.forEach((p) => pos.push(p[0], p[1], p[2]));
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
@@ -696,10 +728,41 @@ export class Cockpit {
       const b = { pos, idx: [0, 1, 2, 0, 2, 3], col: [], uv: [] };
       faceCamera(b);
       g.setIndex(b.idx);
-      this.clock = new THREE.Mesh(g, this.matClock);
-      this.clock.renderOrder = 13;
-      this.clock.frustumCulled = false;
-      this.root.add(this.clock);
+      const m = new THREE.Mesh(g, mat);
+      m.renderOrder = order;
+      m.frustumCulled = false;
+      this.root.add(m);
+      return m;
+    };
+
+    /* --- 日だまり: 天板の まん中に のせた 横長の だ円(加算)。update() で 横へ すべらせ、こさを かえる --- */
+    {
+      const v0 = 0.12, v1 = 0.92, u0 = 0.3, u1 = 0.7, lift = 0.0008;
+      const cps = [onDash(u0, v0), onDash(u1, v0), onDash(u1, v1), onDash(u0, v1)];
+      cps.forEach((p) => { p[1] += lift; });
+      this.sunPatch = quad(cps, this.matSun, 12);
+      this.sunPatch.visible = this.sunK > 0.005;
+      this._hwFar = hwFar;
+      this._sunPX = NaN;
+    }
+
+    /* --- 立てた時刻表(上に 時:分)。台(天板の絵の みぞ)から 少し うしろへ ねかせて立てる。
+     * 縦長の画面では けいてきボタンの下になるので置かない --- */
+    this.staff = null;
+    this._staffScr = null;
+    if (!narrow) {
+      const pl = onDash(STAFF.u0, STAFF.v), pr = onDash(STAFF.u1, STAFF.v);
+      const H = Math.hypot(pr[0] - pl[0], pr[2] - pl[2]) * (STAFF_H / STAFF_W);
+      const dy = H * Math.cos(STAFF.lean), dz = -H * Math.sin(STAFF.lean);
+      const sq = [pl, pr, [pr[0], pr[1] + dy, pr[2] + dz], [pl[0], pl[1] + dy, pl[2] + dz]];
+      /* 窓の下のふちの雪(14)・ワイパー(13)より あとに描く(板は どちらよりも手前) */
+      this.staff = quad(sq, this.matClock, 15);
+      /* 画面の上の 板の形(0..1、左上原点)。板は窓より手前なので、雨・雪のガラス(ui/rainglass.js)は ここを けす */
+      this._staffScr = [];
+      sq.forEach((p) => {
+        const iz = 1 / Math.max(1e-4, -p[2]);
+        this._staffScr.push((p[0] * iz / (TAN * aspect) + 1) / 2, (1 - p[1] * iz / TAN) / 2);
+      });
     }
 
     /* --- ワイパー(根元は運転士窓の右下。休止位置は窓の下のゴムに沿って寝ている) --- */
@@ -811,6 +874,10 @@ export class Cockpit {
     return this._rects;
   }
 
+  /* 天板に立てた時刻表の 画面の上の形 [u0,v0, u1,v1, u2,v2, u3,v3](0..1、左上原点)。なければ null。
+   * 窓より手前にあるので、雨・雪のガラスは この形を描かない(作りなおしたときだけ 新しい配列) */
+  occluder() { return this._staffScr || null; }
+
   /* ワイパーの根元・長さ(画面の高さに対する比)・角度・ブレードの帯(腕の中心から 下 b0 〜 上 b1。画面の高さに対する比)。
    * 毎フレーム呼ばれるので同じ箱を書きかえて返す */
   wiperScreen() {
@@ -833,15 +900,15 @@ export class Cockpit {
     this._reflTex.needsUpdate = true;
   }
 
-  /* 時刻表の紙: 運転の停車駅の名前と つぎに止まる駅の番号。かわったときだけ天板の絵を描きなおす */
-  setTimetable(names, idx) {
-    if (!this._dashC) return;
-    const key = names ? names.join('|') : '';
+  /* 立てた時刻表: 運転の停車駅の名前・つく時刻(時:分の文字)と つぎに止まる駅の番号。かわったときだけ描きなおす */
+  setTimetable(names, idx, times) {
+    if (!this._staffC) return;
+    const key = (names ? names.join('|') : '') + '/' + (times ? times.join('|') : '');
     if (key === this._ttKey && idx === this._ttIdx) return;
     this._ttKey = key; this._ttIdx = idx;
-    drawCard(this._dashC, names, idx);
-    this._dashTex.needsUpdate = true;
-    this._updRefl();
+    this._tt = names && names.length ? { names, times: times || null, idx: Math.max(0, idx | 0) } : null;
+    drawStaff(this._staffC, this._clockMin, this._tt);
+    this._staffTex.needsUpdate = true;
   }
 
   /* 明るさが変わったときだけ、各部の色を計器盤と同じ式で決めなおす */
@@ -912,11 +979,35 @@ export class Cockpit {
       || ((this._tR !== T[0] || this._tG !== T[1] || this._tB !== T[2]) && this._tR === tr && this._tG === tg && this._tB === tb);
     if (Math.abs(this.light - this._shadeL) > 0.005 || (this.light === light && this._shadeL !== light)
       || Math.abs(this.flash - this._shadeF) > 0.005 || (this.flash === 0 && this._shadeF !== 0) || tintMoved) this._applyShade();
-    /* 天板の時計: 分が変わったときだけ描きなおす */
+    /* 立てた時刻表の 時:分: 分が変わったときだけ描きなおす */
     if (o.clockMin != null && o.clockMin !== this._clockMin) {
       this._clockMin = o.clockMin;
-      drawClock(this._clockC, o.clockMin);
-      this._clockTex.needsUpdate = true;
+      drawStaff(this._staffC, o.clockMin, this._tt);
+      this._staffTex.needsUpdate = true;
+    }
+    /* 日だまり: こさ(sunK)・横の位置(sunX)を 明るさと同じ速さで追いかける。
+     * 色(加算: 見た目で k×0.16)と位置は 変わったときだけ書く */
+    {
+      const kT = o.sunK > 0 ? Math.min(1, o.sunK) : 0;
+      const xT = o.sunX > 1 ? 1 : o.sunX < -1 ? -1 : (o.sunX || 0);
+      this.sunK += (kT - this.sunK) * a;
+      this.sunX += (xT - this.sunX) * a;
+      if (Math.abs(this.sunK - kT) < 0.002) this.sunK = kT;
+      if (Math.abs(this.sunX - xT) < 0.002) this.sunX = xT;
+      if (this.sunPatch) {
+        const vis = this.sunK > 0.005;
+        if (this.sunPatch.visible !== vis) this.sunPatch.visible = vis;
+        if (vis) {
+          /* 見た目(sRGB)で k×0.16(加算なので 画面では +35 ほど)。昼は あたたかい白、夕方は だいだい */
+          const cc = this.sunK * 0.16, eve = !!o.sunEve;
+          if (Math.abs(cc - this._sunC) > 0.0005 || eve !== this._sunEve) {
+            this._sunC = cc; this._sunEve = eve;
+            this.matSun.color.setRGB(cc, cc * (eve ? 0.7 : 0.9), cc * (eve ? 0.42 : 0.72), THREE.SRGBColorSpace);
+          }
+          const px = this.sunX * (this._hwFar || 1) * 0.6;
+          if (!(Math.abs(px - this._sunPX) < 0.001)) { this._sunPX = px; this.sunPatch.position.x = px; }
+        }
+      }
     }
     /* 雪: 外にいるあいだ20秒かけて積もり、屋内・雪なしでは8秒でとける。
      * 雪の日の運転のはじめ(1分以上 雪を見ていなかった)は、もう少し積もっているところから

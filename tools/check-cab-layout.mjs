@@ -13,6 +13,10 @@
  *   ・表示灯は1枚の表示盤(.lamps-grid の中に4つ)。ドアの灯は「ドア しまった」
  *   ・横向きスマホ: 目盛りは横一列の13段(1段 44px 以上・文字 11px 以上・左=ひじょう 右=P4)。レバーの列は出さない
  *   ・タッチ: 段のさかいで ±3px ゆれながら動かしても 段は1回しか変わらない / いまの段の1つ上をタップすると1段だけ
+ *   ・iPadの 画面分割(678x1024): 運転モニタの 行き先が 切れていない
+ *   ・外のカメラ(body.cab-compact): 計器盤は ほそい帯(1100px より広い画面・横向きのスマホは 120px 以下、iPadの たては 156px 以下)。
+ *     マスコンは 横一列の13段(1段 44x44px 以上)、ブロックどうしが 重ならない、3Dの画面の下のはし = 計器盤の上のはし、
+ *     表示灯・ブレーキのLEDは出さない。クラスを はずすと もとの計器盤(レバーの持ち手が いまの段に そろう)にもどる
  * 段の高さの下限: iPad縦(768x1024・678x1024) 18px / iPad横(1180x820) 14px / ほか 12px(横向きスマホは横一列なので幅で見る)
  *
  * 使い方: (ローカルHTTPサーバを立ててから)
@@ -33,6 +37,14 @@ const VIEWS = [
   { name: 'iPad縦 768x1024', w: 768, h: 1024, touch: true, dpr: 2, minRow: 18 },
   { name: 'iPad縦 となりにアプリ 678x1024', w: 678, h: 1024, touch: true, dpr: 2, minRow: 18 },
   { name: 'スマホ横 844x390', w: 844, h: 390, touch: true, minRow: 7, strip: true },
+  /* 外のカメラ(追いかけ・横・前・空): ほそい計器盤(1400px 以上は 1だん、それより せまいと 2だん) */
+  { name: 'そとのカメラ 1440x900', w: 1440, h: 900, minRow: 7, strip: true, compact: true, maxH: 120 },
+  { name: 'そとのカメラ 1280x800', w: 1280, h: 800, minRow: 7, strip: true, compact: true, maxH: 120 },
+  { name: 'そとのカメラ iPad横 1180x820', w: 1180, h: 820, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 120 },
+  { name: 'そとのカメラ iPad縦 768x1024', w: 768, h: 1024, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 156 },
+  { name: 'そとのカメラ 画面分割 678x1024', w: 678, h: 1024, touch: true, dpr: 2, minRow: 7, strip: true, compact: true, maxH: 156 },
+  /* 横向きのスマホ: ふつうの計器盤(134px)より 高くしない */
+  { name: 'そとのカメラ スマホ横 844x390', w: 844, h: 390, touch: true, minRow: 7, strip: true, compact: true, maxH: 120 },
 ];
 
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
@@ -46,10 +58,19 @@ for (const v of VIEWS) {
   await page.waitForFunction(() => window.__test && __test.app.mode === 'title', null, { timeout: 180000 });
   await page.evaluate(() => __test.setup({ start: 8 }));
   await page.waitForTimeout(1200);
+  /* 外のカメラ: 追いかけの視点にして ほそい計器盤(main.js がつけるクラスを ここでも つける) */
+  if (v.compact) {
+    await page.evaluate(() => {
+      if (__test.cam) __test.cam('chase');
+      document.body.classList.add('cab-compact');
+      if (__test.app && typeof __test.app.resizeGL === 'function') __test.app.resizeGL();
+    });
+    await page.waitForTimeout(800);
+  }
   /* EBにして持ち手の位置もみる(ドアが開いていてもブレーキは入る) */
   await page.evaluate(() => __test.app.sim.setNotch(-8));
-  await page.waitForFunction(() => document.querySelector('#lever-grip').textContent.trim() === 'EB', null, { timeout: 60000 })
-    .catch(() => fails.push(`${v.name}: EBにしても持ち手の表示が変わらない`));
+  await page.waitForFunction(() => document.querySelector('#lever-grip').textContent.trim() === 'ひじょう', null, { timeout: 60000 })
+    .catch(() => fails.push(`${v.name}: EBにしても持ち手の表示が「ひじょう」に変わらない`));
   await page.waitForTimeout(300);
   /* 持ち手は 90ms でカチッと動く(CSSの transition)。ソフト描画ではコマが遅いので、動きおわるまで待つ */
   await page.waitForFunction(() => {
@@ -130,6 +151,65 @@ for (const v of VIEWS) {
     }
     return { out, ebH: +ebH.toFixed(1), rowsH: +(box(rows[12]).bottom - box(rows[0]).top).toFixed(1), cabH: box(document.querySelector('#cab')).height };
   }, [v.minRow, !!v.strip]);
+  /* 外のカメラの ほそい計器盤: 高さ・重なり・段の大きさ・3Dの画面とのさかい */
+  if (v.compact) {
+    const rc = await page.evaluate((maxH) => {
+      const out = [];
+      const box = (el) => el.getBoundingClientRect();
+      const cab = document.querySelector('#cab'), cb = box(cab);
+      if (cb.height > maxH + 0.5) out.push(`ほそい計器盤の高さ ${cb.height.toFixed(1)}px > ${maxH}px`);
+      const gw = document.querySelector('#gl-wrap');
+      if (gw && Math.abs(box(gw).bottom - cb.top) > 1) out.push(`3Dの画面の下のはし ${box(gw).bottom.toFixed(1)} ≠ 計器盤の上 ${cb.top.toFixed(1)}`);
+      const blocks = ['.cab-speedo', '.cab-tims', '.cab-limit', '.cab-mascon'].map((q) => document.querySelector('#cab ' + q))
+        .filter((el) => el && getComputedStyle(el).display !== 'none');
+      if (blocks.length !== 4) out.push(`見えるブロックが ${blocks.length} こ(4こ のはず)`);
+      for (let i = 0; i < blocks.length; i++) {
+        const a = box(blocks[i]);
+        if (a.top < cb.top - 1 || a.bottom > cb.bottom + 1) out.push(`${blocks[i].className} が計器盤から はみ出し`);
+        for (let j = i + 1; j < blocks.length; j++) {
+          const b = box(blocks[j]);
+          const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left), oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (ox > 1 && oy > 1) out.push(`${blocks[i].className} と ${blocks[j].className} が重なる`);
+        }
+      }
+      document.querySelectorAll('#notch-list .nt').forEach((el) => {
+        const b = box(el);
+        if (b.width < 44 - 0.01 || b.height < 44 - 0.01) out.push(`${el.textContent} の段 ${b.width.toFixed(1)}x${b.height.toFixed(1)}px < 44x44px`);
+      });
+      ['.cab-lamps', '.bc-wrap'].forEach((q) => {
+        const el = document.querySelector('#cab ' + q);
+        if (el && el.getClientRects().length && getComputedStyle(el).display !== 'none') out.push(`ほそい計器盤に ${q} が出ている`);
+      });
+      const sp = document.querySelector('#speedo');
+      if (sp.clientWidth > 100 || sp.clientWidth < 80) out.push(`速度計の大きさ ${sp.clientWidth}px(84〜96px のはず)`);
+      /* 運転モニタの1行: 長い駅名(祖師ヶ谷大蔵)・2けたの km・つく時刻 でも 切れない(ためしに入れて もとにもどす) */
+      {
+        const tm = document.querySelector('#cab .tims-main');
+        const nx = document.querySelector('#tims-next'), ds = document.querySelector('#tims-dist'), sc = document.querySelector('#tims-sch');
+        const save = [nx.innerHTML, ds.innerHTML, sc.innerHTML];
+        nx.innerHTML = '<ruby>祖師ヶ谷大蔵<rt>そしがやおおくら</rt></ruby>';
+        ds.textContent = '12.3 km'; sc.textContent = '10:41 つく';
+        const b = tm.getBoundingClientRect();
+        [nx, ds, sc].forEach((el) => {
+          if (getComputedStyle(el).display === 'none' || !el.getClientRects().length) return;
+          const e = el.getBoundingClientRect();
+          if (e.right > b.right + 0.5 || e.bottom > b.bottom + 0.5) out.push(`運転モニタの #${el.id} が 切れる (右 ${(e.right - b.right).toFixed(1)}px / 下 ${(e.bottom - b.bottom).toFixed(1)}px)`);
+        });
+        nx.innerHTML = save[0]; ds.innerHTML = save[1]; sc.innerHTML = save[2];
+      }
+      return out;
+    }, v.maxH);
+    rc.forEach((s) => fails.push(`${v.name}: ${s}`));
+  }
+  /* iPadの 画面分割: 行き先が 切れていない */
+  if (!v.compact && v.w <= 720 && v.h >= 900) {
+    const rd = await page.evaluate(() => {
+      const d = document.querySelector('#tims-dest');
+      if (!d || !d.getClientRects().length) return ['運転モニタの 行き先が 見えない'];
+      return d.scrollWidth > d.clientWidth + 0.5 ? [`行き先が 切れている (${d.scrollWidth} > ${d.clientWidth})`] : [];
+    });
+    rd.forEach((s) => fails.push(`${v.name}: ${s}`));
+  }
   /* つぎにねらう段の点滅(cab.setTarget)と、トラックパッドつきiPad用の (any-pointer: coarse) の指定 */
   const r2 = await page.evaluate(() => {
     const out = [], cab = __test.app.cab;
@@ -197,6 +277,35 @@ for (const v of VIEWS) {
       return out;
     }, !!v.strip);
     r3.forEach((s) => fails.push(`${v.name}: ${s}`));
+  }
+  /* ほそい計器盤 → もとの計器盤(運転台の視点に もどす): レバーが出て、持ち手が いまの段(ひじょう)に そろう */
+  if (v.compact) {
+    await page.evaluate(() => {
+      if (__test.cam) __test.cam('cab');
+      document.body.classList.remove('cab-compact');
+      if (__test.app && typeof __test.app.resizeGL === 'function') __test.app.resizeGL();
+      __test.app.sim.setNotch(-8);
+    });
+    await page.waitForTimeout(900);
+    await page.waitForFunction(() => {
+      const g = document.querySelector('#lever-grip');
+      return !g.getAnimations || g.getAnimations().every((a) => a.playState === 'finished');
+    }, null, { timeout: 30000, polling: 100 }).catch(() => { /* 下で見る */ });
+    const rb = await page.evaluate(() => {
+      const out = [], box = (el) => el.getBoundingClientRect();
+      const cab = box(document.querySelector('#cab'));
+      if (cab.height < 130) out.push(`もとの計器盤に もどらない (高さ ${cab.height.toFixed(1)}px)`);
+      const lv = document.querySelector('#lever');
+      const narrow = matchMedia('(max-height: 540px) and (orientation: landscape)').matches;
+      if (!narrow) {
+        if (getComputedStyle(lv).display === 'none') out.push('もとの計器盤で レバーが出ない');
+        const g = box(document.querySelector('#lever-grip')), eb = box(document.querySelector('.nt-eb'));
+        const c1 = (g.top + g.bottom) / 2, c2 = (eb.top + eb.bottom) / 2;
+        if (Math.abs(c1 - c2) > Math.max(3, eb.height / 2)) out.push(`もどしたあと 持ち手(${c1.toFixed(1)})が ひじょうの段(${c2.toFixed(1)})と ずれている`);
+      }
+      return out;
+    });
+    rb.forEach((s) => fails.push(`${v.name}: ${s}`));
   }
   if (Array.isArray(r)) r.forEach((s) => fails.push(`${v.name}: ${s}`));
   else {

@@ -3827,6 +3827,9 @@ export class RailScene {
    *    ホームに いるあいだは 夜.46・夕方.62 以上(地下のホームは .5 以上)
    *  flash: トンネルの灯具(12mごと)が窓の上を通るときの 速い明かり(3Dの枠と天板だけ。計器盤には入れない)
    *  tint: 枠の色み(屋内は青白・夕方は だいだい・夜は青・雨は少し青)
+   *  sunK / sunX: 天板の日だまりの こさ(0..1)と 横の位置(-1..1)の目標。晴れの昼と夕方だけ。
+   *    トンネル・ターミナル・ホームの屋根の下(rs._roofSpans。なければ 駅の停止位置の ±60m)・夜・雨・雪では 0。
+   *    なめらかにするのは cockpit 側(ck.sunK / ck.sunX。計器盤の cab.setSun にも使う)
    * 毎フレームの new をしない(渡す箱は使い回し) */
   _updateCockpit(dt, s, indoorEye) {
     const ck = this.cockpit, sim = this.sim;
@@ -3858,7 +3861,7 @@ export class RailScene {
       const g = x * (7 / 12);
       flash = 0.16 * Math.exp(-g * g) * Math.min(1, sim.v / 30);
     }
-    const o = this._ckO || (this._ckO = { light: 1, flash: 0, tr: 1, tg: 1, tb: 1, night: false, wiper: false, snow: false, clockMin: 0 });
+    const o = this._ckO || (this._ckO = { light: 1, flash: 0, tr: 1, tg: 1, tb: 1, night: false, wiper: false, snow: false, clockMin: 0, sunK: 0, sunX: 0, sunEve: false });
     o.light = light;
     o.flash = flash;
     /* 枠の色み(見た目の比率)。屋内 → 夕方 → 夜 → ぬれ の順にきめる */
@@ -3874,16 +3877,55 @@ export class RailScene {
     /* 天板の時計(ゲーム内の 時:分。計器盤のモニタと同じ: 夜19時・夕方16時・昼10時はじまり) */
     const baseHour = night ? 19 : eve ? 16 : 10;
     o.clockMin = Math.floor((sim.t + baseHour * 3600) / 60);
+    /* 天板の日だまり: 太陽の向きを カメラから見た向きにして、横の位置(x)と こさ(k)を決める。
+     * 太陽が地平線すれすれ・高すぎ(真上)は うすく、うしろ(z > 0.2)からは 3わり。夕方は だいだい(o.sunEve) */
+    let sunK = 0, sunX = 0;
+    if (wx === 'clear' && !night && !inTun && !inTerm && this.camMode === 'cab' && this.camera) {
+      const eye = s - 1.0;
+      let roof = false;
+      const rsp = this._roofSpans;
+      if (Array.isArray(rsp)) {
+        for (let i = 0; i < rsp.length; i++) {
+          const r = rsp[i];
+          if (r && eye > r[0] && eye < r[1]) { roof = true; break; }
+        }
+      } else {
+        for (let i = 0; i < sts.length; i++) {
+          if (Math.abs(eye - sts[i].s) < 60) { roof = true; break; }
+        }
+      }
+      const sd = this._curSunDir || this._sunDir;
+      if (!roof && sd) {
+        const v = this._ckSunV || (this._ckSunV = new THREE.Vector3());
+        v.copy(sd).normalize();
+        /* 高さ(y)で smoothstep(0.02, 0.15) × (1 - smoothstep(0.8, 0.95))(関数を作らない。夕方の低い日も入る) */
+        const e0 = Math.min(1, Math.max(0, (v.y - 0.02) / 0.13)), e1 = Math.min(1, Math.max(0, (v.y - 0.8) / 0.15));
+        const kUp = e0 * e0 * (3 - 2 * e0) * (1 - e1 * e1 * (3 - 2 * e1));
+        v.transformDirection(this.camera.matrixWorldInverse);
+        sunK = kUp * (v.z < 0.2 ? 1 : 0.3);
+        sunX = Math.min(1, Math.max(-1, -v.x));
+      }
+    }
+    o.sunK = sunK;
+    o.sunX = sunX;
+    o.sunEve = eve;
     /* 雨のガラス(ui/rainglass.js)が 粒の数の上限を きめるのに使う */
     ck.quality = this.quality;
-    /* 天板の時刻表: 運転・つぎの駅が かわったときだけ書きなおす */
+    /* 天板の時刻表: 運転・つぎの駅が かわったときだけ書きなおす(駅名と つく時刻 時:分) */
     if (typeof ck.setTimetable === 'function' && (this._ttSim !== sim || this._ttIdx !== sim.stopIdx)) {
       this._ttSim = sim;
       this._ttIdx = sim.stopIdx;
-      const names = [];
-      const stops = sim.stops || [];
-      for (let i = 0; i < stops.length; i++) names.push(stops[i].name);
-      ck.setTimetable(names, sim.stopIdx);
+      const names = [], times = [];
+      const stops = sim.stops || [], tt = sim.timetable || [];
+      for (let i = 0; i < stops.length; i++) {
+        names.push(stops[i].name);
+        const arr = tt[i] ? tt[i].arr : null;
+        if (typeof arr === 'number') {
+          const m = Math.floor((Math.floor(arr) + baseHour * 3600) / 60);
+          times.push(`${Math.floor(m / 60) % 24}:${String(m % 60).padStart(2, '0')}`);
+        } else times.push('');
+      }
+      ck.setTimetable(names, sim.stopIdx, times);
     }
     ck.update(dt, o);
   }
