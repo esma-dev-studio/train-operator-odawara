@@ -927,6 +927,8 @@ export function buildTrackBed(rs, o = {}) {
   const sA = stS('代々木上原'), sB = stS('和泉多摩川');
   const lrLo = sA !== null && sB !== null ? Math.min(sA, sB) : 1e9, lrHi = sA !== null && sB !== null ? Math.max(sA, sB) : -1e9;
   const roofsAt = (s, k) => (k === 1 && s > lrLo && s < lrHi) || k === 2 || (k === 3 && sts.some((st) => Math.abs(st.s - s) < 500));
+  /* 街の担当(town.js buildFarBlocks)が「家並みの屋根」の所に遠くの家の列を立てるので、同じ判定を公開する */
+  rs._roofsAt = roofsAt;
   const segs = [];
   let cur = null;
   for (let q = 0; q < N; q++) {

@@ -1,10 +1,13 @@
 /* =========================================================
  * scene/cars.js — 自動車(軽・ミニバン・セダン・路線バス): 家の車庫・月極駐車場・踏切待ちの車・道を走る車
  *
- * ・形は「横から見た輪郭」を左右に押し出した角柱 + 窓ガラス(グリーンハウス) + タイヤ4つ + 灯火。
- *   1台およそ110三角形。種類ごと・700mごとに1つの InstancedMesh にまとめる(描画は種類×かたまりの数だけ)。
+ * ・形は「横から見た輪郭」を左右に押し出した角柱。腰(窓の下の線)から下は車の幅いっぱい、上(屋根・窓)は9割の幅で
+ *   すぼめる。窓ガラス・タイヤ4つ(十角形・ホイールキャップつき・タイヤハウスの暗いくぼみの中)・前後のバンパー・
+ *   ドアミラー・灯火・車の下の接地影(黒い板)。1台およそ190三角形。
+ *   種類ごと・700mごとに1つの InstancedMesh にまとめる(描画は種類×かたまりの数だけ)。
  * ・材質は木の材質と同じシェーダ('fc-tree')を使う(新しいシェーダを増やさない):
  *   頂点色が2以上の部分(ガラス・タイヤ・灯火)は「固定色」で、インスタンス色(塗装)に染めない。
+ *   固定色のうち とても暗いもの(2.00〜2.05: タイヤ・タイヤハウス・接地影)は つやなし(空を映さない)。
  * ・影は線路の近くの車(sh)だけ。先頭に並べて、影を描くときだけ数を減らす(town.js と同じやり方)。
  * ・夜の灯火: 頂点色の r が 2.45 より大きい部分(前照灯・尾灯)は、インスタンス色の r が 2 以上の車
  *   (走っている車・踏切待ちの車。止めてある車は消灯)だけ uCarLamp の強さで光る。
@@ -24,9 +27,10 @@ export function patchTreeCar(sh) {
   sh.uniforms.uCarLamp = uCarLamp;
   sh.uniforms.uFcAmb = uFcAmb;
   sh.vertexShader = sh.vertexShader
-    .replace('#include <common>', '#include <common>\nvarying float vLamp;')
+    .replace('#include <common>', '#include <common>\nvarying float vLamp;\nvarying float vMatte;')
     .replace('#include <color_vertex>', `#include <color_vertex>
 vLamp = 0.;
+vMatte = 0.;
 #ifdef USE_COLOR
 #ifdef USE_INSTANCING_COLOR
 float fcOn = step(1.5, instanceColor.r);
@@ -34,9 +38,13 @@ vColor.r -= 2. * fcOn * color.r;
 vLamp = step(2.45, color.r) * fcOn;
 #endif
 if (color.r > 1.5) vColor.xyz = color.xyz - 2.0;
+vMatte = step(1.5, color.r) * step(color.r, 2.05);
 #endif`);
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', '#include <common>\nuniform float uCarLamp;\nuniform float uFcAmb;\nvarying float vLamp;')
+    .replace('#include <common>', '#include <common>\nuniform float uCarLamp;\nuniform float uFcAmb;\nvarying float vLamp;\nvarying float vMatte;')
+    .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+roughnessFactor = mix(roughnessFactor, 1., vMatte);
+metalnessFactor *= 1. - vMatte;`)
     .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 #ifdef USE_COLOR
 totalEmissiveRadiance += vColor.rgb * vLamp * uCarLamp;
@@ -75,19 +83,28 @@ export const CAR_PAINTS = [0xf2f2f0, 0xf2f2f0, 0xd9dadc, 0xd9dadc, 0x2a2c30, 0x8
 const COL_GLASS = [2.06, 2.08, 2.1], COL_TIRE = [2.03, 2.03, 2.03], COL_HEAD = [2.92, 2.9, 2.8], COL_TAIL = [2.5, 2.04, 2.04];
 /* バスのすその灰色(固定色。2.45 より小さいこと: 灯火とまちがえない) */
 const COL_SKIRT = [2.2, 2.21, 2.22];
+/* タイヤハウスのくぼみ・接地影(とても暗い固定色: つやなし)・ホイールキャップ(銀)・バンパー(樹脂の濃い灰) */
+const COL_WELL = [2.02, 2.02, 2.02], COL_SHADOW = [2.015, 2.015, 2.015], COL_HUB = [2.32, 2.33, 2.34], COL_BUMPER = [2.18, 2.18, 2.2];
 
-/* 多角形(x-y平面・反時計回り。0番の頂点から全体が見えること)を z0..z1 に押し出した角柱。
- * caps: 'both' / 'z0' / 'z1'(見えない側のふたを省く) */
-function prism(poly, z0, z1, caps = 'both') {
+/* 多角形(x-y平面・反時計回り)を z0..z1 に押し出した角柱。ふたは耳切り(ShapeUtils)で三角形にする(へこみのある輪郭でもよい)。
+ * caps: 'both' / 'z0' / 'z1' / 'none'(見えない側のふたを省く)。skip: 側面を作らない辺の番号の配列(k → k+1 の辺。隠れる面) */
+const _v2 = (p) => new THREE.Vector2(p[0], p[1]);
+function prism(poly, z0, z1, caps = 'both', skip = null) {
   const pos = [], nor = [];
   const tri = (a, b, c, n) => { pos.push(...a, ...b, ...c); nor.push(...n, ...n, ...n); };
   const n = poly.length;
-  for (let k = 1; k < n - 1; k++) {
-    const A = poly[0], B = poly[k], C = poly[k + 1];
-    if (caps !== 'z0') tri([A[0], A[1], z1], [B[0], B[1], z1], [C[0], C[1], z1], [0, 0, 1]);
-    if (caps !== 'z1') tri([A[0], A[1], z0], [C[0], C[1], z0], [B[0], B[1], z0], [0, 0, -1]);
+  if (caps !== 'none') {
+    const faces = THREE.ShapeUtils.triangulateShape(poly.map(_v2), []);
+    faces.forEach(([i, j, k]) => {
+      let A = poly[i], B = poly[j], C = poly[k];
+      /* 反時計回り(+z から見て)にそろえる */
+      if ((B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]) < 0) { const t = B; B = C; C = t; }
+      if (caps !== 'z0') tri([A[0], A[1], z1], [B[0], B[1], z1], [C[0], C[1], z1], [0, 0, 1]);
+      if (caps !== 'z1') tri([A[0], A[1], z0], [C[0], C[1], z0], [B[0], B[1], z0], [0, 0, -1]);
+    });
   }
   for (let k = 0; k < n; k++) {
+    if (skip && skip.indexOf(k) >= 0) continue;
     const A = poly[k], B = poly[(k + 1) % n];
     const dx = B[0] - A[0], dy = B[1] - A[1], l = Math.hypot(dx, dy) || 1;
     const nn = [dy / l, -dx / l, 0];
@@ -99,6 +116,8 @@ function prism(poly, z0, z1, caps = 'both') {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   return g;
 }
+/* ふただけの板(z の位置に1枚。sd>0 は +z 向き、sd<0 は -z 向き) */
+const capAt = (poly, z, sd) => (sd > 0 ? prism(poly, z - 0.001, z, 'z1', poly.map((_, k) => k)) : prism(poly, z, z + 0.001, 'z0', poly.map((_, k) => k)));
 
 /* 前後の灯火: x=一定の面に貼る四角(法線 ±x) */
 function lampQuad(x, y, z, w, h, nx) {
@@ -111,10 +130,18 @@ function lampQuad(x, y, z, w, h, nx) {
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
   return g;
 }
-/* タイヤ(六角柱・外側のふただけ。半径 r) */
-const hexOf = (r) => {
+/* 地面に寝かせた四角(上向き。車の長さ方向 x・幅 z。接地影) */
+function floorQuad(x0, x1, z0, z1, y) {
+  const pos = [x0, y, z0, x0, y, z1, x1, y, z0, x1, y, z0, x0, y, z1, x1, y, z1];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+  return g;
+}
+/* 正多角形(半径 r・n角。反時計回り) */
+const ngon = (r, n, rot = 0) => {
   const a = [];
-  for (let k = 0; k < 6; k++) a.push([r * Math.cos((k * Math.PI) / 3 + Math.PI / 6), r * Math.sin((k * Math.PI) / 3 + Math.PI / 6)]);
+  for (let k = 0; k < n; k++) a.push([r * Math.cos((k * 2 * Math.PI) / n + rot), r * Math.sin((k * 2 * Math.PI) / n + rot)]);
   return a;
 };
 
@@ -139,36 +166,196 @@ function merge(parts) {
   return out;
 }
 
-/* 1台の形(モジュールで1回だけ作る)。原点=車体の中心の真下(地面)、前=+z、幅=x */
+/* 輪郭を高さ yb で上下に切る(above=true で上の部分)。反時計回りのまま。続けて同じ点になったら1つにする */
+function clipY(poly, yb, above) {
+  const out = [];
+  const inside = (p) => (above ? p[1] >= yb - 1e-6 : p[1] <= yb + 1e-6);
+  for (let k = 0; k < poly.length; k++) {
+    const A = poly[k], B = poly[(k + 1) % poly.length];
+    const ia = inside(A), ib = inside(B);
+    if (ia) out.push(A);
+    if (ia !== ib) {
+      const t = (yb - A[1]) / (B[1] - A[1]);
+      out.push([A[0] + (B[0] - A[0]) * t, yb]);
+    }
+  }
+  return out.filter((p, i) => { const q = out[(i + out.length - 1) % out.length]; return Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) > 1e-6; });
+}
+/* 高さ y の水平な辺の番号(腰の線の辺: 隠れるので側面を作らない) */
+const flatEdges = (poly, y, tol) => {
+  const a = [];
+  for (let k = 0; k < poly.length; k++) {
+    const A = poly[k], B = poly[(k + 1) % poly.length];
+    if (Math.abs(A[1] - y) < tol && Math.abs(B[1] - y) < tol) a.push(k);
+  }
+  return a;
+};
+
+/* 1台の形(モジュールで1回だけ作る)。原点=車体の中心の真下(地面)、前=+z、幅=x。
+ * lo=true は遠く(150mより先)の軽い形: 車体・窓・タイヤ(八角形のふただけ)・灯火・接地影(およそ80三角形)。
+ * town.js が木と同じしくみ(かたまりごとの距離)で形を差しかえる */
 const GEO = {};
-export function geoCar(type) {
-  if (GEO[type]) return GEO[type];
+export function geoCar(type, lo = false) {
+  const key = lo ? type + ':lo' : type;
+  if (GEO[key]) return GEO[key];
   const S = SPEC[type], hw = S.w / 2, L = CAR_LEN[type];
-  const parts = [{ g: prism(S.prof, -hw, hw), col: [1, 1, 1] }];
-  /* 窓ガラス: 車体より少しだけ外に出して、横の窓・前後のガラスとして見せる(屋根の縁は塗装のまま) */
-  parts.push({ g: prism(S.glass, -hw - 0.005, hw + 0.005), col: COL_GLASS });
+  const belt = S.glass[0][1];                       // 腰の線(窓の下の端)
+  const sill = S.prof[0][1];                        // 車体の下の端
+  const cw = hw * (type === 'bus' ? 0.97 : 0.9);    // 屋根・窓の半幅(すぼめる。バスは箱形なので少しだけ)
+  const parts = [];
+  /* 腰から下: 車の幅いっぱい。上の面(腰の線)は 屋根の幅の外だけ見える肩になる */
+  parts.push({ g: prism(clipY(S.prof, belt, false), -hw, hw), col: [1, 1, 1] });
+  /* 腰から上(キャビン): 9割の幅。下の面(腰の線)は下の箱に隠れるので作らない */
+  const upper = clipY(S.prof, belt, true);
+  parts.push({ g: prism(upper, -cw, cw, 'both', flatEdges(upper, belt, 1e-6)), col: [1, 1, 1] });
+  /* 窓ガラス: キャビンより少しだけ外に出して、横の窓・前後のガラスとして見せる(屋根の縁は塗装のまま) */
+  parts.push({ g: prism(S.glass, -cw - 0.005, cw + 0.005, 'both', flatEdges(S.glass, belt, 0.02)), col: COL_GLASS });
   /* バスのすそ(灰色の帯) */
   if (S.skirt) parts.push({ g: prism(S.skirt, -hw - 0.008, hw + 0.008), col: COL_SKIRT });
-  /* タイヤ(軸は幅の向き。外側のふただけ) */
-  const tr = S.r || 0.3, HEX = hexOf(tr);
-  S.wheels.forEach((x) => {
+  /* タイヤ(十角形。軸は幅の向き)。タイヤハウスの暗いくぼみ(上が半円の形)を車体の横に重ね、その上にタイヤとホイールキャップ。
+   * 車体の横から1〜3cmだけ外なので、出っぱった六角形には見えない。タイヤの踏み面は地面に近い下の2辺だけ(ほかは車体とくぼみに隠れる) */
+  const tr = S.r || 0.3, R = tr + 0.07;
+  const TIRE = ngon(tr, 10, Math.PI / 10), HUB = ngon(tr * 0.55, 8, Math.PI / 8);
+  const noTread = [0, 1, 2, 3, 4, 5, 8, 9];   // 角度 234°〜306° の2辺(6・7番)だけ踏み面を作る
+  if (lo) {
+    const T8 = ngon(tr, 8, Math.PI / 8);
+    S.wheels.forEach((x) => {
+      const tire = T8.map(([px, py]) => [x + px, tr + py]);
+      [-1, 1].forEach((sd) => parts.push({ g: capAt(tire, sd * (hw + 0.02), sd), col: COL_TIRE }));
+    });
+  }
+  if (!lo) S.wheels.forEach((x) => {
+    const yb = Math.max(0.02, sill - 0.02);
+    const well = [[x - R, yb], [x + R, yb]];
+    for (let k = 0; k <= 4; k++) { const a = (k / 4) * Math.PI; well.push([x + R * Math.cos(a), tr + R * Math.sin(a)]); }
+    const tire = TIRE.map(([px, py]) => [x + px, tr + py]);
+    const hub = HUB.map(([px, py]) => [x + px, tr + py]);
     [-1, 1].forEach((sd) => {
-      const poly = HEX.map(([px, py]) => [x + px, tr + py]);
-      const zi = sd * (hw - 0.18), zo = sd * (hw + 0.02);
-      parts.push({ g: sd > 0 ? prism(poly, zi, zo, 'z1') : prism(poly, zo, zi, 'z0'), col: COL_TIRE });
+      const zt = sd * (hw + 0.02), zi = sd * (hw - 0.2);
+      parts.push({ g: capAt(well, sd * (hw + 0.008), sd), col: COL_WELL });
+      parts.push({ g: sd > 0 ? prism(tire, zi, zt, 'z1', noTread) : prism(tire, zt, zi, 'z0', noTread), col: COL_TIRE });
+      parts.push({ g: capAt(hub, sd * (hw + 0.03), sd), col: COL_HUB });
     });
   });
-  /* 前照灯・尾灯(車体の前後の面に貼る) */
+  /* バンパー(前後。長さ0.25m・高さ0.3m・車体より1.5cm広い)。車体に隠れる内側の面は作らない */
+  const by0 = Math.max(0.16, sill - 0.03), by1 = by0 + 0.3, bw = hw + 0.015;
+  if (!lo) {
+    parts.push({ g: prism([[L - 0.23, by0], [L + 0.02, by0], [L + 0.02, by1], [L - 0.23, by1]], -bw, bw, 'both', [3]), col: COL_BUMPER });
+    parts.push({ g: prism([[-0.02, by0], [0.23, by0], [0.23, by1], [-0.02, by1]], -bw, bw, 'both', [1]), col: COL_BUMPER });
+  }
+  /* ドアミラー(塗装の色。前の窓の下の角の少し後ろで、車体の外へ張り出す)。バスは付けない */
+  if (type !== 'bus' && !lo) {
+    let gf = 0;
+    S.glass.forEach((p) => { if (Math.abs(p[1] - belt) < 0.02 && p[0] > gf) gf = p[0]; });
+    const mx = gf - 0.32, my = belt + 0.1;
+    const box = [[mx - 0.05, my - 0.06], [mx + 0.05, my - 0.06], [mx + 0.05, my + 0.06], [mx - 0.05, my + 0.06]];
+    parts.push({ g: prism(box, cw, cw + 0.18, 'z1'), col: [1, 1, 1] });
+    parts.push({ g: prism(box, -cw - 0.18, -cw, 'z0'), col: [1, 1, 1] });
+  }
+  /* 前照灯・尾灯(前後の面より少し前に貼る) */
   [-1, 1].forEach((sd) => {
-    parts.push({ g: lampQuad(L + 0.006, S.head, sd * (hw - 0.24), 0.34, 0.16, 1), col: COL_HEAD });
-    parts.push({ g: lampQuad(-0.006, S.tail, sd * (hw - 0.17), 0.24, 0.18, -1), col: COL_TAIL });
+    parts.push({ g: lampQuad(L + 0.02, S.head, sd * (hw - 0.24), 0.34, 0.16, 1), col: COL_HEAD });
+    parts.push({ g: lampQuad(-0.02, S.tail, sd * (hw - 0.17), 0.24, 0.18, -1), col: COL_TAIL });
   });
+  /* 接地影: 車の下の黒い板(太陽の影を落とさない止めてある車も地面になじむ。固定色なので塗装に染まらない) */
+  parts.push({ g: floorQuad(-0.125, L + 0.125, -hw - 0.125, hw + 0.125, 0.025), col: COL_SHADOW });
   const g = merge(parts);
   /* 長さ方向(x)を +z に、中心を原点へ */
   g.rotateY(-Math.PI / 2);
   g.translate(0, 0, -L / 2);
   g.computeBoundingSphere();
-  GEO[type] = g;
+  GEO[key] = g;
+  return g;
+}
+
+/* ---------- 自転車(駅前の駐輪場。ママチャリ: 前かご・低いフレーム) ----------
+ * 原点=地面の中心、前=+z、車輪は y-z の面(幅 x)。車輪は八角形の輪(両面)・フレームは細い角棒・かごとサドルは小さな箱。
+ * 1台およそ120三角形。材質は車と同じ(フレームは塗装の色、ほかは固定色) */
+function bar(a, b, t) {
+  /* a→b の細い角棒(4つの側面だけ。端のふたは見えないので省く) */
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const l = Math.hypot(d[0], d[1], d[2]) || 1;
+  d[0] /= l; d[1] /= l; d[2] /= l;
+  /* 棒に直角な2つの向き(x軸か y軸との外積から) */
+  const ref = Math.abs(d[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
+  let u = [d[1] * ref[2] - d[2] * ref[1], d[2] * ref[0] - d[0] * ref[2], d[0] * ref[1] - d[1] * ref[0]];
+  const ul = Math.hypot(u[0], u[1], u[2]) || 1;
+  u = u.map((v) => v / ul);
+  const v = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];
+  const pos = [], nor = [];
+  const P = (p, s1, s2) => [p[0] + (u[0] * s1 + v[0] * s2) * t, p[1] + (u[1] * s1 + v[1] * s2) * t, p[2] + (u[2] * s1 + v[2] * s2) * t];
+  const C = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+  for (let k = 0; k < 4; k++) {
+    const c0 = C[k], c1 = C[(k + 1) % 4];
+    const nx = (c0[0] + c1[0]) / 2, ny = (c0[1] + c1[1]) / 2;
+    const n = [u[0] * nx + v[0] * ny, u[1] * nx + v[1] * ny, u[2] * nx + v[2] * ny];
+    const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+    const nn = [n[0] / nl, n[1] / nl, n[2] / nl];
+    const A0 = P(a, c0[0], c0[1]), A1 = P(a, c1[0], c1[1]), B0 = P(b, c0[0], c0[1]), B1 = P(b, c1[0], c1[1]);
+    /* 外向きの法線と同じ回りに */
+    const tri = (p, q, r) => {
+      const e1 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]], e2 = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+      const cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+      if (cr[0] * nn[0] + cr[1] * nn[1] + cr[2] * nn[2] < 0) { const s = q; q = r; r = s; }
+      pos.push(...p, ...q, ...r); nor.push(...nn, ...nn, ...nn);
+    };
+    tri(A0, A1, B1); tri(A0, B1, B0);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  return g;
+}
+/* 車輪: 中心(y, z)・外の半径 R・内の半径 r の八角形の輪(両面) */
+function wheelRing(cy, cz, R, r) {
+  const pos = [], nor = [];
+  const pt = (rad, k) => { const a = (k / 8) * Math.PI * 2; return [0, cy + Math.sin(a) * rad, cz + Math.cos(a) * rad]; };
+  for (let k = 0; k < 8; k++) {
+    const o0 = pt(R, k), o1 = pt(R, k + 1), i0 = pt(r, k), i1 = pt(r, k + 1);
+    [1, -1].forEach((sx) => {
+      const off = (p) => [p[0] + sx * 0.015, p[1], p[2]];
+      const q = [off(o0), off(o1), off(i1), off(i0)];
+      [[q[0], q[1], q[2]], [q[0], q[2], q[3]]].forEach((t) => {
+        /* 面の向き(x 成分)が sx と同じ回りに */
+        const cx = (t[1][1] - t[0][1]) * (t[2][2] - t[0][2]) - (t[1][2] - t[0][2]) * (t[2][1] - t[0][1]);
+        if (cx * sx < 0) { const s = t[1]; t[1] = t[2]; t[2] = s; }
+        pos.push(...t[0], ...t[1], ...t[2]); nor.push(sx, 0, 0, sx, 0, 0, sx, 0, 0);
+      });
+    });
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  return g;
+}
+/* 小さな箱(底なし) */
+function boxNoBottom(cx, cy, cz, sx, sy, sz) {
+  const b = new THREE.BoxGeometry(sx, sy, sz);
+  const g = new THREE.BufferGeometry();
+  ['position', 'normal'].forEach((k) => g.setAttribute(k, b.attributes[k]));
+  const idx = Array.from(b.index.array);
+  g.setIndex(idx.slice(0, 18).concat(idx.slice(24)));
+  g.translate(cx, cy, cz);
+  return g;
+}
+const COL_SILVER = [2.3, 2.3, 2.31];
+export function geoBike() {
+  if (GEO.bike) return GEO.bike;
+  const RA = [0, 0.33, -0.52], FA = [0, 0.33, 0.52], BB = [0, 0.28, -0.02], ST = [0, 0.82, -0.2], HT = [0, 0.9, 0.36];
+  const parts = [
+    { g: wheelRing(0.33, -0.52, 0.33, 0.27), col: COL_TIRE },
+    { g: wheelRing(0.33, 0.52, 0.33, 0.27), col: COL_TIRE },
+    { g: bar(BB, HT, 0.022), col: [1, 1, 1] },            // 下の低いフレーム(またぎやすい形)
+    { g: bar(BB, ST, 0.02), col: [1, 1, 1] },             // シートの柱
+    { g: bar(ST, RA, 0.014), col: [1, 1, 1] },            // 後ろの支え
+    { g: bar(HT, FA, 0.018), col: [1, 1, 1] },            // 前のフォーク
+    { g: bar([-0.28, 0.98, 0.32], [0.28, 0.98, 0.32], 0.014), col: COL_SILVER },   // ハンドル
+    { g: boxNoBottom(0, 0.84, 0.6, 0.34, 0.24, 0.28), col: COL_SILVER },            // 前かご
+    { g: boxNoBottom(0, 0.86, -0.22, 0.13, 0.06, 0.25), col: COL_TIRE },            // サドル
+  ];
+  const g = merge(parts);
+  g.computeBoundingSphere();
+  GEO.bike = g;
   return g;
 }
 
@@ -239,8 +426,10 @@ export function addCars(rs, spots, group) {
       im.onBeforeShadow = shadowNearOnly;
       im.onAfterShadow = shadowRestore;
     }
-    /* 自前でかたまりに分けてあるので _splitInstances にはかけない。見え方を切り替えないので遠方の間引き(cullCell)の対象 */
+    /* 自前でかたまりに分けてあるので _splitInstances にはかけない。見え方を切り替えないので遠方の間引き(cullCell)の対象。
+     * carType: 遠くで軽い形に差しかえるとき(town.js carLod)に使う */
     im.userData.noSplit = true;
+    im.userData.carType = arr[0].type;
     im.userData.cullCell = true;
     im.computeBoundingSphere();
     g.add(im);

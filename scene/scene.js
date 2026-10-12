@@ -3039,8 +3039,8 @@ export class RailScene {
       const n = Math.round((25 + rng() * 20) * (0.5 + 0.5 * qk));
       for (let i = 0; i < n; i++) {
         const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * g.r;
-        const con = rng() < 0.5;
-        list.push({ x: g.x + Math.cos(a) * r, y: g.y - 0.5, z: g.z + Math.sin(a) * r, s: g.s, sc: 1.3 + rng() * 0.8, sy: con ? 1.5 : 1, tint: 0.62 + rng() * 0.35, conifer: con });
+        const con = rng() < 0.3;
+        list.push({ x: g.x + Math.cos(a) * r, y: g.y - 0.5, z: g.z + Math.sin(a) * r, s: g.s, sc: 1.3 + rng() * 0.8, sy: con ? 1.3 : 1, tint: 0.62 + rng() * 0.35, conifer: con });
       }
     });
   }
