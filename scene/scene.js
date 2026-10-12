@@ -2143,7 +2143,7 @@ export class RailScene {
     if (act || force) this._shadowHold = 4;
     else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
     /* 動いている間の描きなおしの間隔 per(60fps の コマの数。1 = 毎コマ):
-     *   _shadowEvery(main.js が決める。タッチ端末のタイトルで 4 など)> 0 なら それ。
+     *   _shadowEvery(main.js が決める。いまは 0 = 画質の きまりどおり。2 より 大きくしない)> 0 なら それ。
      *   夜・雨・雪は 4(月・くもり空の影は うすく、ずれは見えない。ブルーム・雨・雪の粒で GPU も いちばん重い)、
      *   中画質(と軽量化の段階)は 2(1秒30回まで)、高は 1。
      * 描いたコマの数ではなく時間で決める(タッチ端末のタイトルは 1秒30コマに おさえて描くので、

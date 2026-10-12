@@ -9,7 +9,8 @@
  *   setService({svcHtml,color,destHtml}) / setLight(lum) / setTarget(n|null: つぎにねらうノッチを点滅) /
  *   setSun(x, k)(天板の日だまり: scene.cockpit.sunX / sunK。計器盤の上の あたたかい光を 横に すべらせる)
  * 外から見せかたを変える: body.cab-compact(外のカメラの ほそい計器盤。マスコンは 横一列。クラスが変わったら はかりなおす)
- *   h.uiLimAt(コーチと同じ まるめた「制限まで あと m」)・h.uiBrakeNow(いまブレーキ)があれば そろえる
+ *   h.uiLimAt(コーチと同じ まるめた「制限まで あと m」)・h.uiBrakeNow(いまブレーキ)・
+ *   h.uiNear(ものさしの あいだ 上の帯と同じ「えきまで」の文字 '3.2 m' / '40 cm')があれば そろえる
  * ========================================================= */
 import { STATION_KANA } from '../sim/kana.js';
 
@@ -895,14 +896,17 @@ export class Cab {
       this._prog = null;
     }
     /* のこりの距離(m は1mごと、km は10mごと)。とまる位置を すぎたら「すぎた ◯m」(あか)。
-     * だいだい(.near)は「いま ブレーキ」のときだけ(コーチ・ブレーキめやすと同じ きまり: だいだい = いま やる) */
+     * だいだい(.near)は「いま ブレーキ」のときだけ(コーチ・ブレーキめやすと同じ きまり: だいだい = いま やる)
+     * さいごの 30m(ものさしが 出ている あいだ)は 上の帯と おなじ 文字(h.uiNear: '3.2 m' / '40 cm')。
+     * 上が「40 cm」で ここが「0 m」に ならないように(1つの数字は 1か所の 書きかた) */
     const d = Math.max(0, nx.dist);
     const past = nx.dist < -0.5;
-    const dk = past ? -1 - Math.round(-nx.dist) : d >= 1000 ? 100000 + Math.round(d / 100) : Math.round(d);
+    const nearTxt = !past && typeof h.uiNear === 'string' ? h.uiNear : null;
+    const dk = past ? -1 - Math.round(-nx.dist) : nearTxt != null ? 'n' + nearTxt : d >= 1000 ? 100000 + Math.round(d / 100) : Math.round(d);
     if (!atSta && dk !== this._distK) {
       this._distK = dk;
       /* km は 小数1けた(上の帯と同じ書き方) */
-      E.timsDist.textContent = past ? `すぎた ${Math.round(-nx.dist)} m` : d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m';
+      E.timsDist.textContent = past ? `すぎた ${Math.round(-nx.dist)} m` : nearTxt != null ? nearTxt : d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m';
       this._cls(E.timsDist, 'late', past);
     }
     if (!atSta) this._cls(E.timsDist, 'near', !past && h.uiBrakeNow === true);

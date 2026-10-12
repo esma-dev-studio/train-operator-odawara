@@ -483,12 +483,13 @@ const App = {
     this.resizeGL();
   },
 
-  /* タイトルを えがく ときの 影の まびき(scene の _shadowEvery。タッチ端末の タイトルは 4コマに1回。
-   * それ以外の 画面は 0 = scene の きまり)。ステージを 作りなおしたときも よぶ */
+  /* 影の まびき(scene の _shadowEvery)。どの 画面も 0 = scene の きまり(中画質は 1秒30回・夜/雨/雪は 15回)。
+   * タッチ端末の タイトルは 1秒30コマで 描くので、4 など 2より 大きくすると 描いた コマの 1つおきに しか 影が
+   * かわらず(1秒15回)、昼の デモ列車の 影が ちらつく。ステージを 作りなおしたときも よぶ */
   _applyShadowEvery() {
     const S = this.scene;
     if (!S) return;
-    S._shadowEvery = this.mode === 'title' && this._touch ? 4 : 0;
+    S._shadowEvery = 0;
   },
 
   /* タイトルの すぐ しゅっぱつ ボタン: さいごに はしりおえた 区間の つぎ(save.next)が あれば「つづきから」、
@@ -1266,14 +1267,17 @@ const App = {
     this._camLabT = setTimeout(() => lab.classList.add('hidden'), 1600);
   },
 
-  /* opt.ceremony: ゴールの そらからの 景色(計器盤は ふつうの まま。おいわいの とちゅうで 画面の 大きさを かえない) */
+  /* opt.ceremony: ゴールの そらからの 景色(計器盤は いまの まま。おいわいの とちゅうで 画面の 大きさを かえない) */
   _setCam(m, opt) {
     this.scene.setCameraMode(m);
     const bc = document.body.classList;
     bc.toggle('cam-cab', m === 'cab');
     /* 外のカメラ(うしろ・よこ・せんろわき・そら)は 運転台が 見えないので 計器盤を ほそい帯に(body.cab-compact)。
      * かわったときだけ 3Dの 大きさを はかりなおす(作りなおしは 子どもが カメラを かえた ときだけ) */
-    const compact = m !== 'cab' && this.mode === 'drive' && !!this.sim && !this.sim.ended && !(opt && opt.ceremony);
+    /* ゴール(opt.ceremony)は いまの 計器盤の まま(外のカメラで ゴールしたら ほそい まま。もとに もどすのは go('result')) */
+    const compact = opt && opt.ceremony
+      ? bc.contains('cab-compact')
+      : (m !== 'cab' && this.mode === 'drive' && !!this.sim && !this.sim.ended);
     if (compact !== bc.contains('cab-compact')) {
       bc.toggle('cab-compact', compact);
       this.resizeGL();
@@ -1412,6 +1416,8 @@ const App = {
     this._resetCoachState();
     this._clearPops();
     this._rcpOn = false;   // 書きかえの 間の はかりかけ(_rafCapProbe)を すてる
+    /* 低電力モードは とちゅうで かわる: 運転ごとに はかりなおす(まえの 運転の「しぼられていない」を もちこまない) */
+    if (this.scene) this.scene._rafCap30 = undefined;
     this.scene.setWorld(this.line, this.sim);
     this.scene.setTimeOfDay(this.daytime);
     this.scene.setWeather(this.weather);
@@ -2038,7 +2044,13 @@ const App = {
     } else if (h.doorOpen) {
       /* のこり びょうは 上の 大型HUDに 1つだけ(ここには 数字を 出さない) */
       if (sim.notch > 0) txt = 'すすむ OK！ ドアが しまったら うごくよ';
-      else if (cd <= 6) txt = 'ドアの ランプが ついたら しゅっぱつ';
+      else if (cd <= 6) {
+        /* ドアの ランプが 画面に ないとき(外のカメラの ほそい計器盤・スマホの せまい 計器盤)は ランプの 話を しない */
+        const ld = this._lampDoorEl || (this._lampDoorEl = $('#lamp-door'));
+        txt = ld && ld.getClientRects().length
+          ? 'ドアの ランプが ついたら しゅっぱつ'
+          : 'ドアが しまったら しゅっぱつ';
+      }
       else txt = 'おきゃくさんが のりおり中…';
     } else if (sim.v < 0.5 && sim._left && sim.stoppedAt == null && nx && nx.dist <= 2 && nx.dist >= -12) {
       /* 「8」で とまる さいごの しゅんかん(とうちゃくの はんていの すこし前)。ここで「しゅっぱつ」や
@@ -2239,6 +2251,8 @@ const App = {
         /* さいごの 30m(ものさしが 出ている あいだ): 1m より 遠いと 小数1けたの m、ちかいと cm */
         const f = PM.fmtNear(dm);
         num = f.num; unit = f.unit;
+        /* 運転モニタ(TIMS)も 上の帯と おなじ 文字にする(fmtNear は 使いまわしの物なので 文字にして わたす) */
+        h.uiNear = f.num + ' ' + f.unit;
       } else {
         num = dm >= 1000 ? (dm / 1000).toFixed(1) : String(Math.round(dm));
         unit = dm >= 1000 ? 'km' : 'm';
@@ -2259,7 +2273,12 @@ const App = {
     const celebrating = now <= (this._celebrateUntil || 0) || !B.card.classList.contains('hidden');
     /* 発車メロディが 鳴っている あいだも 出さない(「メロディが おわったら しまる」の あとに もういちど おして
      * メロディの とちゅうで ドアチャイムが なり、ドアが しまって しまう) */
-    const canSkip = !celebrating && !this._overrun && h.doorOpen && ((nx ? nx.dep : sim._departTime) - sim.t) > 7 && !melodyPlaying(sim);
+    /* おしても 2秒より はやく ならない ときも 出さない(しゅっぱつ駅は 待ちが みじかいので ずっと かくれる。
+     * おしても なにも おきない ボタンや 一瞬だけ 光って きえる ボタンを 出さない)。skipGain が ない 古い エンジンは 今までどおり */
+    const canSkip = !celebrating && !this._overrun && h.doorOpen && !melodyPlaying(sim)
+      && (typeof sim.skipGain === 'function'
+        ? sim.skipGain({ keepMelody: true }) >= 2
+        : ((nx ? nx.dep : sim._departTime) - sim.t) > 7);
     setHidden(B.skip, !canSkip);
     this._updateRouteStrip();
   },
@@ -2389,7 +2408,7 @@ const App = {
     const best = { prevSeg, segBest, retried: this._retried };
     this._queuePop(() => {
       if (this.mode !== 'drive' || this.sim !== sim) return;
-      this._setCam('drone', { ceremony: true });   // 計器盤は ふつうの まま(おいわいの とちゅうで 画面の 大きさを かえない)
+      this._setCam('drone', { ceremony: true });   // 計器盤は いまの まま(おいわいの とちゅうで 画面の 大きさを かえない)
       const lab = $('#cam-label');
       clearTimeout(this._camLabT);
       lab.innerHTML = `${rubyStation(to)} <b>ゴール</b> ・ おつかれさまでした`;
@@ -2687,7 +2706,7 @@ const App = {
     }
   },
 
-  /* 画面の 書きかえが 1秒30回に しぼられているか(iPadの 低電力モードなど)を はかる(ステージごとに 1回)。
+  /* 画面の 書きかえが 1秒30回に しぼられているか(iPadの 低電力モードなど)を はかる(運転ごとに 1回)。
    * しゅっぱつカードで 画面が かくれている あいだ(準備は おわって、カードを 見せて まっている とき)に 3Dを 描かずに
    * rAF の 間を 20回 平均し、28ms より 長ければ しぼられている。scene の 自動画質が「30fps = GPU が おもい」と
    * まちがえないように S._rafCap30 に 書く(scene.js が よむ。ないときは 今までどおり)。

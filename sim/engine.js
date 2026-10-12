@@ -618,6 +618,17 @@ export class TrainSim {
     return false;
   }
 
+  /* skipDwell(opts) が いま 何秒 発車を はやめるか(0 = なにも かわらない)。
+   * 状態は かえない(しらべるだけ)。画面の「はやく しゅっぱつ」ボタンは、おしても
+   * なにも おきない/すこししか はやくならない ときは 出さない(main.js の canSkip) */
+  skipGain(opts = {}) {
+    if (!this.doorOpen || this.finished) return 0;
+    const schedDep = this.timetable[Math.max(0, this.stopIdx - 1)].dep;
+    const keep = !!(opts && opts.keepMelody) && !this._melodyDone;
+    const target = Math.max(this.t + (keep ? 16 : 6), schedDep - 120);
+    return Math.max(0, this._departTime - target);
+  }
+
   /* ============ 評定 ============ */
   result() {
     const S = this.score;
