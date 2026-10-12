@@ -1457,6 +1457,7 @@ const App = {
     this._sd = {};
     this._want = undefined; this._wantDir = undefined;
     this._tbMode = null; this._hotCued = false; this._lateHold = 0;
+    this._rulerIdx = -1;   // ものさしの 先頭の うけわたしも わすれる(やりなおし・あたらしい 運転)
     /* ブレーキの けいかく(ui/coachplan.js)の まえの めあても わすれる */
     const CP = this._cplan;
     this._cpSt = CP && typeof CP.makePlanState === 'function' ? CP.makePlanState() : {};
@@ -1639,7 +1640,10 @@ const App = {
     const x = 50 + Math.sign(err) * Math.min(1, Math.sqrt(abs / 3)) * 46;
     let from = 'translateX(-96%)';
     const P = this._pin;
-    if (P && typeof P.noseX === 'function') {
+    /* ものさしが この駅で 出ていたときだけ(外の カメラで 着いた・やりなおした ときに、まえの駅の 位置を つかわない) */
+    const rulerHere = !!this.sim && this._rulerIdx === this.sim.stopIdx;
+    this._rulerIdx = -1;
+    if (rulerHere && P && typeof P.noseX === 'function') {
       try {
         if (P.rulerOn && typeof P.freeze === 'function') P.freeze(300);   // いまの 形で とめて、先頭の 位置を おぼえさせる
         const nx = P.noseX();
@@ -2036,6 +2040,11 @@ const App = {
       if (sim.notch > 0) txt = 'すすむ OK！ ドアが しまったら うごくよ';
       else if (cd <= 6) txt = 'ドアの ランプが ついたら しゅっぱつ';
       else txt = 'おきゃくさんが のりおり中…';
+    } else if (sim.v < 0.5 && sim._left && sim.stoppedAt == null && nx && nx.dist <= 2 && nx.dist >= -12) {
+      /* 「8」で とまる さいごの しゅんかん(とうちゃくの はんていの すこし前)。ここで「しゅっぱつ」や
+       * 「あと 1m」を 出すと、P4 の めあてが 一瞬 光って まちがえて おしてしまう */
+      txt = 'そのまま！ とまるよ';
+      want = sim.notch;
     } else if (sim.v < 0.5 && sim._left && nx && nx.dist > 0.5 && nx.dist < 250 && !redNear) {
       /* 「8」の手前で止まってしまった: レバーを P1 まで(ブレーキ中なら その ぶん 多く)おす */
       const m = Math.round(nx.dist);
@@ -2480,7 +2489,7 @@ const App = {
     const ng = this._nextGoal(res);
     /* 1かいの 運転で きまる めあては「N えき コースで はしる」ボタン(おすと すぐ しゅっぱつ)。
      * あつめる くんしょうだけ 進みぐあいの棒 */
-    const goBtn = ng && ng.run ? `<button class="btn btn-primary rn-go" data-run="${ng.run}">${ng.run}えき コースで はしる ${icon('chevron-right')}</button>` : '';
+    const goBtn = ng && ng.run ? `<button class="btn rn-go" data-run="${ng.run}">${ng.run}えき コースで はしる ${icon('chevron-right')}</button>` : '';
     $('#res-next').innerHTML = ng
       ? `<span class="rn-cap">つぎの めあて</span><span class="rn-txt">${ng.html}</span>${ng.max ? this._progHtml({ cur: ng.cur, max: ng.max }) : ''}${goBtn}`
       : '';
@@ -2708,6 +2717,7 @@ const App = {
     try {
       P.update(S.stopPin || null, show);
       if (typeof P.ruler === 'function') P.ruler(h.next ? h.next.dist : null, this.sim.v, show);
+      if (P.rulerOn) this._rulerIdx = this.sim.stopIdx;   // 判定カードが この駅の ものさしの 先頭を うけつぐ しるし
     } catch (e) { /* 目印なしでも 運転できる */ }
   },
 
