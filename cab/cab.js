@@ -221,7 +221,8 @@ export class Cab {
     } catch (e) { /* 地紋なしでも動く */ }
   }
 
-  /* 大きさが変わったとき: 速度計の解像度・レバーの持ち手の位置 */
+  /* 大きさが変わったとき: 速度計の解像度・レバーの持ち手の位置。
+   * 外のカメラの ほそい計器盤(body.cab-compact)に かわったときも はかりなおす(レイアウトが きまった つぎのコマで) */
   _observeSizes() {
     const onResize = () => { this._fitSpeedo(); this._measureLever(); this._measureGlass(); };
     if (typeof ResizeObserver !== 'undefined') {
@@ -230,7 +231,37 @@ export class Cab {
       this._ro.observe(this.els.lever);
     }
     addEventListener('resize', onResize);
+    try {
+      this._mqStrip = matchMedia('(max-height: 540px) and (orientation: landscape)');
+      this._mqCompact = matchMedia('(min-width: 561px)');
+    } catch (e) { this._mqStrip = null; this._mqCompact = null; }
+    this._compact = this._isCompact();
+    if (typeof MutationObserver !== 'undefined' && document.body) {
+      this._mo = new MutationObserver(() => {
+        const c = this._isCompact();
+        if (c === this._compact) return;
+        this._compact = c;
+        requestAnimationFrame(() => {
+          onResize();
+          if (this._lastNotch != null) this._placeGrip(notchIdx(this._lastNotch));
+        });
+      });
+      this._mo.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    }
     onResize();
+  }
+
+  /* 外のカメラの ほそい計器盤(CSS は 561px 以上の はばのときだけ ほそくする) */
+  _isCompact() {
+    const b = document.body;
+    return !!b && b.classList.contains('cab-compact') && (!this._mqCompact || this._mqCompact.matches);
+  }
+
+  /* マスコンが 横一列(左=ひじょう … 右=P4)か: ほそい計器盤・横向きのスマホ、または 目盛りが横長 */
+  _isStrip(r) {
+    if (this._isCompact()) return true;
+    if (this._mqStrip && this._mqStrip.matches) return true;
+    return !!r && r.width > r.height * 2;
   }
 
   /* 夜のガラスに映る計器の明かりの位置(モニタ・速度計)を #glass-sheen の CSS 変数へ。
@@ -313,6 +344,8 @@ export class Cab {
    * レバーが横長(横一列の目盛り)のときは 左=ひじょう … 右=P4 で横に動かす */
   _placeGrip(idx) {
     const lv = this.els.lever;
+    /* 横一列のときは レバーの列は出さない(CSS)。大きさが 0 なら 何もしない */
+    if (this._isStrip(null) && !(lv.clientWidth > 0)) return;
     if (lv.clientWidth > lv.clientHeight * 2) {
       const W = lv.clientWidth, gw = this.els.leverGrip.offsetWidth || 30;
       const x = clamp(((12 - idx + 0.5) * W) / 13 - gw / 2, 0, W - gw);
@@ -334,9 +367,10 @@ export class Cab {
     if (this._inputBound) return;
     this._inputBound = true;
     const list = this.els.notchList;
-    /* さわった位置 → 段の位置(0〜13 の小数。0 = P4 の上のはし)。目盛りの外(上の天板など)は いちばん近い段へ */
-    const rowAt = (ev, r) => {
-      if (r.width > r.height * 2) return clamp(13 - ((ev.clientX - r.left) / Math.max(1, r.width)) * 13, 0, 12.999);
+    /* さわった位置 → 段の位置(0〜13 の小数。0 = P4 の上のはし)。目盛りの外(上の天板など)は いちばん近い段へ。
+     * 横一列(ほそい計器盤・横向きのスマホ)は 左=ひじょう … 右=P4 */
+    const rowAt = (ev, r, horiz) => {
+      if (horiz) return clamp(13 - ((ev.clientX - r.left) / Math.max(1, r.width)) * 13, 0, 12.999);
       return clamp(((ev.clientY - r.top) / Math.max(1, r.height)) * 13, 0, 12.999);
     };
     const send = (idx) => {
@@ -352,11 +386,11 @@ export class Cab {
         dragIdx = -1;
         if (!canOp()) return;
         const r = list.getBoundingClientRect();
-        horiz = r.width > r.height * 2;
+        horiz = this._isStrip(r);
         rowPx = Math.max(4, (horiz ? r.width : r.height) / 13);
         x0 = ev.clientX; y0 = ev.clientY;
         armed = true;
-        const f = rowAt(ev, r), t = Math.floor(f);
+        const f = rowAt(ev, r, horiz), t = Math.floor(f);
         const cur = this._lastNotch != null ? notchIdx(this._lastNotch) : -1;
         let idx = t;
         if (ev.pointerType !== 'mouse' && cur >= 0 && t !== 12) {
@@ -374,7 +408,7 @@ export class Cab {
           if (Math.abs(horiz ? ev.clientX - x0 : ev.clientY - y0) < rowPx * 0.5) return;
           armed = true;
         }
-        const f = rowAt(ev, list.getBoundingClientRect());
+        const f = rowAt(ev, list.getBoundingClientRect(), horiz);
         if (Math.abs(f - (dragIdx + 0.5)) > 0.8) {
           const idx = Math.floor(f);
           if (idx !== dragIdx) { dragIdx = idx; send(idx); }
