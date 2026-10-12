@@ -44,14 +44,28 @@ const gradeOf = (abs) => (abs <= 0.35 ? { k: 'perfect', mark: '◎', word: 'ぴ�
 /* スタンプのランク: 3=きん(±10cm) 2=いろ(±35cm) 1=くろ(±1m) */
 const tierOf = (abs) => (abs <= 0.10 ? 3 : abs <= 0.35 ? 2 : abs <= 1 ? 1 : 0);
 const TIER_WORD = ['', 'くろ', 'いろ', 'きん'];
-/* ずれをcmで(子どもには「+0.06m」より「6cm いきすぎ」)。1m より大きいときは「5.2m てまえ」 */
+/* ずれをcmで(子どもには「+0.06m」より「6cm ぴったり」)。1m より大きいときは「5.2m てまえ」 */
 const cmOf = (err) => Math.round(Math.abs(err) * 100);
+/* ずれの ことば(判定カード・成績票・スタンプちょうで おなじ きまり。小さな ずれは ほめる):
+ * 10cm まで「ぴったり」/ 35cm まで「ちょっと てまえ・ちょっと さき」/ 1m まで「てまえ・さき」/
+ * それより大きいときだけ「いきすぎ」(いきすぎパネルの ことばは ほんとうに いきすぎた ときだけ) */
+const errWord = (err) => {
+  const a = Math.abs(err);
+  if (a <= 0.10) return 'ぴったり';
+  const fwd = err > 0;
+  if (a <= 0.35) return fwd ? 'ちょっと さき' : 'ちょっと てまえ';
+  if (a <= 1) return fwd ? 'さき' : 'てまえ';
+  return fwd ? 'いきすぎ' : 'てまえ';
+};
 const errTxt = (err) => {
   const a = Math.abs(err);
-  if (a >= 1) return `${a.toFixed(1)}m ${err > 0 ? 'いきすぎ' : 'てまえ'}`;
+  if (a >= 1) return `${a.toFixed(1)}m ${errWord(err)}`;
   const cm = cmOf(err);
-  return cm < 5 ? 'ぴったり' : `${cm}cm ${err > 0 ? 'いきすぎ' : 'てまえ'}`;
+  return cm < 5 ? 'ぴったり' : `${cm}cm ${errWord(err)}`;
 };
+/* シェーダの準備(prewarmAsync)の 時間の めやす。新しい よびかた({ budgetMs })と 古い よびかた(2つめが 数)の
+ * どちらの scene.js でも おなじ 時間に なるよう、数としても よめる 物にする */
+const warmBudget = (ms) => ({ budgetMs: ms, valueOf() { return ms; } });
 /* 距離のまるめ: 100m より遠いと 10m、20m より遠いと 5m きざみ(数字が ちらちら かわって読めない、を ふせぐ) */
 const qStep = (m) => (m >= 100 ? 10 : m >= 20 ? 5 : 1);
 const qM = (m) => Math.round(m / qStep(m)) * qStep(m);
@@ -163,7 +177,7 @@ const App = {
      * 少しずつ作れる(prewarmAsync)なら 待つ(帯を すすめる)。15秒は 止まったときの 保険 */
     const S = this.scene;
     if (typeof S.prewarmAsync === 'function') {
-      try { await Promise.race([S.prewarmAsync((k) => this.setLoad(0.9 + 0.1 * k), 13000), wait(15000)]); } catch (e) { /* 先読みできなくても続行 */ }
+      try { await Promise.race([S.prewarmAsync((k) => this.setLoad(0.9 + 0.1 * k), warmBudget(14000)), wait(15000)]); } catch (e) { /* 先読みできなくても続行 */ }
       /* 時間ぎれで もどっても まだ 準備中(描かない)なら、おわるまで よみこみ画面のまま */
       await this._waitWarm(12000);
     } else if (S.prewarm) { try { S.prewarm(); } catch (e) { /* 先読みできなくても続行 */ } }
@@ -206,13 +220,23 @@ const App = {
     }).catch(() => { /* 帯なしでも よみこめる */ });
   },
 
-  /* 運転画面の「8」の目印・WebGLの文脈の 立ちなおり(あるときだけ) */
+  /* 運転画面の「8」の目印・さいごの 30m の ものさし・WebGLの文脈の 立ちなおり(あるときだけ) */
   _installHudMods() {
     if (!HAS_HUD_MODS) return;
     import('./ui/stoppin.js').then((m) => {
       if (!m || typeof m.createStopPin !== 'function') return;
-      this._pin = m.createStopPin(document.querySelector('.hud'));
+      this._pinMod = m;   // fmtNear(さいごの きょりの 書きかた)も つかう
+      /* 目印には きょりの数字を 出さない(きょりは 上の帯に 1つだけ) */
+      this._pin = m.createStopPin(document.querySelector('.hud'), { label: false });
       this.resizeGL();
+      /* ブレーキの けいかく(ui/coachplan.js)は ものさしと いっしょに 入る(RULER_D が その しるし)。
+       * ない ファイルを よみに いくと 404 の エラーが コンソールに 出るので、しるしが ないときは よまない */
+      if (m.RULER_D == null && typeof m.fmtNear !== 'function') return;
+      import('./ui/coachplan.js').then((cp) => {
+        if (!cp || typeof cp.brakePlan !== 'function') return;
+        this._cplan = cp;
+        this._cpSt = typeof cp.makePlanState === 'function' ? cp.makePlanState() : {};
+      }).catch(() => { /* けいかくなしでも コーチは うごく(1だんずつの あんない) */ });
     }).catch(() => { /* 目印なしでも 運転できる */ });
     import('./ui/glguard.js').then((m) => {
       if (m && typeof m.installGlGuard === 'function') m.installGlGuard(this);
@@ -247,7 +271,7 @@ const App = {
 
   loadSave() {
     this.save = Object.assign({ best: {}, stamps: {}, badges: {}, runs: 0, perfect: 0, cams: {},
-      stampTier: {}, bestErr: {}, bestSeg: {}, last: null }, store.get(SAVE_KEY, {}));
+      stampTier: {}, bestErr: {}, bestSeg: {}, last: null, next: null }, store.get(SAVE_KEY, {}));
     ['stampTier', 'bestErr', 'bestSeg'].forEach((k) => { if (!this.save[k]) this.save[k] = {}; });
     /* 以前の「±35cmだけのスタンプ」は いろつき(ランク2)として引きつぐ */
     Object.keys(this.save.stamps).forEach((n) => {
@@ -383,7 +407,7 @@ const App = {
            * (明けてから render の 先読みで 画面が かたまらないように。10秒は 止まったときの 保険) */
           const S = this.scene;
           if (S && typeof S.prewarmAsync === 'function') {
-            try { await Promise.race([S.prewarmAsync(), wait(10000)]); } catch (e) { /* noop */ }
+            try { await Promise.race([S.prewarmAsync(null, warmBudget(9000)), wait(10000)]); } catch (e) { /* noop */ }
             /* 時間ぎれで もどっても 準備中(描かない)なら、おわるまで 暗転のまま */
             await this._waitWarm(12000);
           } else if (S && S.prewarm) { try { S.prewarm(); } catch (e) { /* noop */ } }
@@ -439,6 +463,9 @@ const App = {
     Array.from(bc).forEach((c) => { if (c.indexOf('mode-') === 0) bc.remove(c); });
     bc.add('mode-' + mode);
     bc.toggle('cam-cab', !!(this.scene && this.scene.camMode === 'cab'));
+    /* ほそい計器盤(外のカメラ)は 運転画面だけ(大きさは この下の resizeGL で はかりなおす) */
+    if (mode !== 'drive') bc.remove('cab-compact');
+    this._applyShadowEvery();
     const screens = { title: 'title', select: 'select', result: 'result', stamps: 'stamps', boot: 'loading' };
     document.querySelectorAll('.screen').forEach((el) => {
       if (el.classList.contains('overlay')) return;
@@ -456,10 +483,29 @@ const App = {
     this.resizeGL();
   },
 
-  /* タイトルの「前回の つづき」: 前回の 列車(種別・区間・じかん・天気)を 1行で */
-  _updateQuick() {
+  /* タイトルを えがく ときの 影の まびき(scene の _shadowEvery。タッチ端末の タイトルは 4コマに1回。
+   * それ以外の 画面は 0 = scene の きまり)。ステージを 作りなおしたときも よぶ */
+  _applyShadowEvery() {
+    const S = this.scene;
+    if (!S) return;
+    S._shadowEvery = this.mode === 'title' && this._touch ? 4 : 0;
+  },
+
+  /* タイトルの すぐ しゅっぱつ ボタン: さいごに はしりおえた 区間の つぎ(save.next)が あれば「つづきから」、
+   * なければ 前回と おなじ 列車(save.last)で「まえと おなじ うんてん」。種別・区間・じかん・天気を 1行で */
+  _quickRun() {
+    const N = this.save.next;
+    if (N && SERVICES[N.service]) return { run: N, next: true };
     const L = this.save.last;
+    return L && SERVICES[L.service] ? { run: L, next: false } : null;
+  },
+
+  _updateQuick() {
+    const Q = this._quickRun();
+    const L = Q ? Q.run : null;
     const q = $('#btn-quick'), sel = $('#btn-to-select');
+    const qm = q.querySelector('.q-main');
+    if (qm) setHtml(qm, Q && Q.next ? 'つづきから' : 'まえと おなじ うんてん');
     const ok = !!(L && SERVICES[L.service] && this.rawLine);
     let sub = '';
     if (ok) {
@@ -687,6 +733,12 @@ const App = {
     /* 「ぜんぶ」チップには かかる時間も出す(46ぷん は小2には長い、とわかるように) */
     const full = this._durOf(this.service);
     $('#rq-all').textContent = full ? `ぜんぶ (${full}ぷん)` : 'ぜんぶ';
+    /* いまの 区間に あう チップを 光らせる(みじかく = 2えき / はんぶん / ぜんぶ = はじめから おわりまで) */
+    const span = end - this.startIdx;
+    const halfEnd = Math.min(n - 1, this.startIdx + Math.max(2, Math.ceil((n - 1) / 2)));
+    $('#rq-short').classList.toggle('on', span === 2);
+    $('#rq-half').classList.toggle('on', end === halfEnd && span !== 2);
+    $('#rq-all').classList.toggle('on', this.startIdx === 0 && end === n - 1);
     /* はじめて開いたとき・区間をかえたときは、スタートの駅が見えるようにリストを動かす */
     if (scroll) this._scrollToStart(ol);
     this.renderSummary();
@@ -784,18 +836,22 @@ const App = {
       const nm = document.createElement('div');
       nm.className = 'sc-name';
       nm.innerHTML = rubyStation(name);
+      /* した の 1行: もらった スタンプは ランクと かいすう、おしかった えきは「あと ◯cm」(こはく色で ただ1つの めあて)。
+       * まだ 1かいも とまっていない えきは 名前だけ(点線の 丸が「まだ」を しめす。行の 高さは のこす) */
       const ct = document.createElement('div');
       ct.className = 'sc-cnt';
       const be = this.save.bestErr[name];
       if (tier) ct.textContent = `${TIER_WORD[tier]} ・ ${Math.max(1, cnt)}かい`;
       else if (be != null) { const cm = cmOf(be); ct.innerHTML = `さいこう ${cm}cm → <b>あと ${Math.max(1, cm - 100)}cm</b>`; }
-      else ct.textContent = 'まだ';
       cell.append(no, cv, nm, ct);
       if (tier < 3) {
+        /* とりに いく: 右上の 小さな 丸い しるし(ことばは 見本の 下に 1行だけ) */
         const go = document.createElement('span');
         go.className = 'sc-go';
-        go.innerHTML = `とりに いく ${icon('chevron-right')}`;
+        go.setAttribute('aria-hidden', 'true');
+        go.innerHTML = icon('chevron-right');
         cell.appendChild(go);
+        cell.setAttribute('aria-label', `${kanaOf(name) || name} の スタンプを とりに いく`);
       }
       cell.addEventListener('click', () => this._goGetStamp(i, names.length));
       grid.appendChild(cell);
@@ -819,6 +875,11 @@ const App = {
         it.append(cv, tx);
         lg.appendChild(it);
       });
+      /* マスの 右上の しるしの せつめい(1行だけ) */
+      const help = document.createElement('span');
+      help.className = 'sl-help';
+      help.innerHTML = `<span class="sl-go" aria-hidden="true">${icon('chevron-right')}</span>まだの えきを タップすると とりに いけるよ`;
+      lg.appendChild(help);
     }
     const bg = $('#badges-grid');
     let nb = 0;
@@ -922,10 +983,11 @@ const App = {
   },
 
   _resetRecords() {
-    this.save = { best: {}, stamps: {}, badges: {}, runs: 0, perfect: 0, cams: {}, stampTier: {}, bestErr: {}, bestSeg: {}, last: null, _migrated: true };
+    this.save = { best: {}, stamps: {}, badges: {}, runs: 0, perfect: 0, cams: {}, stampTier: {}, bestErr: {}, bestSeg: {}, last: null, next: null, _migrated: true };
     this.writeSave();
     this.updateStampCount();
     this.renderSvcCards(); this.renderRoute();
+    if (this.mode === 'title') this._updateQuick();   // 「つづきから」の ボタンも けす
   },
 
   applyVolume() {
@@ -970,6 +1032,7 @@ const App = {
     this.scene.setCameraMode(this._attractSeq(A)[A.camI] || 'chase');
     this._bd = null;
     this._applyBackdrop();
+    this._applyShadowEvery();
     this.resizeGL();
   },
 
@@ -1056,11 +1119,12 @@ const App = {
   bindUI() {
     $('#btn-start').addEventListener('click', () => this.startDrive());
     $('#btn-to-select').addEventListener('click', () => { this._unlockAudio(); this.renderSvcCards(); this.go('select'); this.renderRoute(true); });
-    /* 前回の つづき: 前回と おなじ 列車で すぐ しゅっぱつ */
+    /* つづきから(さいごに はしった 区間の つぎ)/ まえと おなじ うんてん: すぐ しゅっぱつ */
     $('#btn-quick').addEventListener('click', () => {
-      if (this._starting || !this.save.last) return;
+      const Q = this._quickRun();
+      if (this._starting || !Q) return;
       this._unlockAudio();
-      this._applyLast(this.save.last);
+      this._applyLast(Q.run);
       this._syncSelUI();
       this.renderSvcCards(); this.renderRoute();
       this.startDrive();
@@ -1083,6 +1147,18 @@ const App = {
     $('#btn-pause-quit').addEventListener('click', () => this.quitDrive());
     $('#btn-res-retry').addEventListener('click', () => this.startDrive(true));
     $('#btn-res-next').addEventListener('click', () => this._continueRun());
+    /* 成績票の「つぎの めあて」の ボタン(N えき コースで はしる)。中みは 毎回 書きかわるので まとめて うける */
+    $('#res-next').addEventListener('click', (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest('[data-run]') : null;
+      if (b) this._runCourse(Number(b.dataset.run));
+    });
+    /* メニューの ボタンを おした しゅんかんに 小さな「カチッ」(運転中は ならさない・なにもしない) */
+    const TICK_SEL = '.btn, .seg button, .svc-card, .rt:not(.pass), .chip, .stamp-cell, .gl-btn';
+    document.addEventListener('pointerdown', (ev) => {
+      if (this.mode === 'drive' || !this.audio || !this.audio.ctx) return;
+      const t = ev.target && ev.target.closest ? ev.target.closest(TICK_SEL) : null;
+      if (t) this._cue('tick', 0.07, t.classList.contains('btn-primary') ? 1.2 : 1.6);
+    }, { passive: true });
     $('#btn-res-select').addEventListener('click', () => {
       if (this._starting) return;   // 出発の フェード中(すぐ うんてん画面に かわる)
       this.renderSvcCards(); this.go('select'); this.renderRoute(true);
@@ -1190,9 +1266,18 @@ const App = {
     this._camLabT = setTimeout(() => lab.classList.add('hidden'), 1600);
   },
 
-  _setCam(m) {
+  /* opt.ceremony: ゴールの そらからの 景色(計器盤は ふつうの まま。おいわいの とちゅうで 画面の 大きさを かえない) */
+  _setCam(m, opt) {
     this.scene.setCameraMode(m);
-    document.body.classList.toggle('cam-cab', m === 'cab');
+    const bc = document.body.classList;
+    bc.toggle('cam-cab', m === 'cab');
+    /* 外のカメラ(うしろ・よこ・せんろわき・そら)は 運転台が 見えないので 計器盤を ほそい帯に(body.cab-compact)。
+     * かわったときだけ 3Dの 大きさを はかりなおす(作りなおしは 子どもが カメラを かえた ときだけ) */
+    const compact = m !== 'cab' && this.mode === 'drive' && !!this.sim && !this.sim.ended && !(opt && opt.ceremony);
+    if (compact !== bc.contains('cab-compact')) {
+      bc.toggle('cab-compact', compact);
+      this.resizeGL();
+    }
     const RG = this.rainGlass;
     if (RG) {
       /* ゆきの ガラス(雪のつぶ)は rainGlass.setMode が あるときだけ */
@@ -1207,6 +1292,7 @@ const App = {
     if (!this.scene) return;
     const wrap = $('#gl-wrap');
     this.scene.resize(wrap.clientWidth, wrap.clientHeight);
+    if (this._rs) this._rs.idx = null;   // 路線の帯の 名前が きれるかを はかりなおす(つぎの コマで 1回)
     if (this.rainGlass) this.rainGlass.resize(wrap.clientWidth, wrap.clientHeight);
     if (this._pin && typeof this._pin.resize === 'function') this._pin.resize(wrap.clientWidth, wrap.clientHeight);
   },
@@ -1224,8 +1310,10 @@ const App = {
       if (!again && (!this.line || !this.line.meta || this.line.meta.direction !== this.direction)) {
         this.line = prepareLine(this.rawLine, this.direction);
       }
-      /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす) */
+      /* 前回えらんだ列車として おぼえる(つぎに選択画面を開いたときに もどす)。
+       * 「つづきから」(save.next)は この運転を さいごまで はしったら finishRun が 書く */
       this.save.last = { direction: this.direction, service: this.service, daytime: this.daytime, weather: this.weather, startIdx: this.startIdx, endIdx: this.endIdx };
+      this.save.next = null;
       this.writeSave();
       /* 暗転の中に「しゅっぱつカード」(この運転の 種別・区間・じかん・天気・めあて)。
        * 路線・じかん・天気が かわる(準備が ながい)ときは すぐ 下に 棒(slow)。そうでなくても 0.7秒で 出す */
@@ -1264,14 +1352,14 @@ const App = {
       if (yieldOne) await nextFrame();
       this.beginRun(this.startIdx);
       /* シェーダーの先読み: 少しずつ作れるなら(prewarmAsync) 待つ。ないときは いっきに。
-       * prewarmAsync は 中で 空まち3秒+コンパイル(または 分けて準備)まち 約8.5秒までに おさえてある。ここの 10秒は そのうえの 保険。
+       * prewarmAsync は 中で 空まち3秒+コンパイル(または 分けて準備)まち 約9秒(warmBudget)までに おさえてある。ここの 10秒は そのうえの 保険。
        * 保険で 先に 切れても、まだ 準備中(描かない)なら 下で おわるまで 暗転のまま まつ
        * (描画が 止まったまま 運転が はじまらない)。待つあいだは 時計を止める(暗いうちに 発車までの びょうが へらない) */
       this.running = false;
       const S = this.scene;
       if (typeof S.prewarmAsync === 'function') {
         try {
-          await Promise.race([S.prewarmAsync(), new Promise((r) => setTimeout(r, 10000))]);
+          await Promise.race([S.prewarmAsync(null, warmBudget(9000)), new Promise((r) => setTimeout(r, 10000))]);
         } catch (e) { /* 先読みできなくても続行 */ }
       } else if (S.prewarm) {
         try { S.prewarm(); } catch (e) { /* noop */ }
@@ -1323,6 +1411,7 @@ const App = {
     this._setOverrun(false);
     this._resetCoachState();
     this._clearPops();
+    this._rcpOn = false;   // 書きかえの 間の はかりかけ(_rafCapProbe)を すてる
     this.scene.setWorld(this.line, this.sim);
     this.scene.setTimeOfDay(this.daytime);
     this.scene.setWeather(this.weather);
@@ -1344,6 +1433,8 @@ const App = {
       this.cab.setLight(this.daytime === 'night' ? 0.16 : this.daytime === 'evening' ? 0.55
         : this.weather === 'rain' ? 0.7 : this.weather === 'snow' ? 0.85 : 1);
     }
+    /* 天板の 日だまり(P4: cab.setSun)も まえの運転の ものを のこさない */
+    if (typeof this.cab.setSun === 'function') { try { this.cab.setSun(0, 0); } catch (e) { /* noop */ } }
     try { this.cab.render(this.sim.hud()); } catch (e) { /* noop */ }
     this._runT0 = performance.now();
     if (this.audio) {
@@ -1366,6 +1457,10 @@ const App = {
     this._sd = {};
     this._want = undefined; this._wantDir = undefined;
     this._tbMode = null; this._hotCued = false; this._lateHold = 0;
+    this._rulerIdx = -1;   // ものさしの 先頭の うけわたしも わすれる(やりなおし・あたらしい 運転)
+    /* ブレーキの けいかく(ui/coachplan.js)の まえの めあても わすれる */
+    const CP = this._cplan;
+    this._cpSt = CP && typeof CP.makePlanState === 'function' ? CP.makePlanState() : {};
     if (this.cab && typeof this.cab.setTarget === 'function') { try { this.cab.setTarget(null); } catch (e) { /* noop */ } }
     ['#tb-up', '#tb-dn'].forEach((s) => { const b = $(s); if (b) b.classList.remove('want'); });
   },
@@ -1525,12 +1620,12 @@ const App = {
     const ss = $('#sc-stamp');
     ss.className = o.stamp ? 'sc-stamp wait' : 'sc-stamp hidden';
     $('#sc-grade').textContent = g.mark;
-    const dir = err > 0 ? 'いきすぎ' : 'てまえ';
+    /* ずれの ことばは errWord(10cm まで ぴったり / 35cm まで ちょっと / 1m より 大きいときだけ いきすぎ) */
+    const dir = errWord(err);
     if (abs >= 1) {
       $('#sc-cm').innerHTML = `${abs.toFixed(1)}<small>m</small><span class="sc-dir">${dir}</span>`;
     } else {
-      const cm = cmOf(err);
-      $('#sc-cm').innerHTML = `${cm < 5 ? 0 : cm}<small>cm</small><span class="sc-dir">${cm < 5 ? '' : dir}</span>`;
+      $('#sc-cm').innerHTML = `${cmOf(err)}<small>cm</small><span class="sc-dir${abs <= 0.10 ? ' ok' : ''}">${dir}</span>`;
     }
     $('#sc-word').textContent = gold ? 'きんの ぴったり！' : g.word;
     $('#sc-time').innerHTML = st.late > 3 ? `じかん<br><b>${st.late}びょう おくれ</b>` : 'じかん<br><b>ぴったり</b>';
@@ -1538,11 +1633,34 @@ const App = {
     if (g.k === 'ng') { tip.textContent = err > 0 ? 'つぎは ブレーキを もうすこし はやく' : 'つぎは ブレーキを すこし よわく'; tip.classList.remove('hidden'); }
     else if (st.late > 3 && !goal) { tip.textContent = 'つぎは もうすこし はやく はしろう'; tip.classList.remove('hidden'); }
     else tip.classList.add('hidden');
-    /* 列車の先頭が「8」のどこで止まったか(はしから すべりこむ) */
+    /* 列車の先頭が「8」のどこで止まったか(はしから すべりこむ)。
+     * さいごの 30m の ものさし(ui/stoppin.js)が 出ていたら、その 先頭が いた ところから すべりだす
+     * (ものさしの 先頭が そのまま カードの 先頭に なる)。位置を 読むのは カードを 出す この1回だけ */
     const nose = $('#sc-nose');
     const x = 50 + Math.sign(err) * Math.min(1, Math.sqrt(abs / 3)) * 46;
+    let from = 'translateX(-96%)';
+    const P = this._pin;
+    /* ものさしが この駅で 出ていたときだけ(外の カメラで 着いた・やりなおした ときに、まえの駅の 位置を つかわない) */
+    const rulerHere = !!this.sim && this._rulerIdx === this.sim.stopIdx;
+    this._rulerIdx = -1;
+    if (rulerHere && P && typeof P.noseX === 'function') {
+      try {
+        if (P.rulerOn && typeof P.freeze === 'function') P.freeze(300);   // いまの 形で とめて、先頭の 位置を おぼえさせる
+        const nx = P.noseX();
+        if (typeof nx === 'number' && isFinite(nx)) {
+          /* カードの 出る うごき(arriveIn の ちぢみ)を 外して ものさしの 位置を 読む(読んだら うごきは はじめから) */
+          el.style.animation = 'none';
+          const br = nose.parentNode.getBoundingClientRect();
+          el.style.animation = '';
+          if (br.width > 0) {
+            const pct = ((nx - br.left) / br.width) * 100;
+            from = `translateX(${(Math.max(-4, Math.min(104, pct)) - 100).toFixed(1)}%)`;
+          }
+        }
+      } catch (e) { /* はしから すべりこむ */ }
+    }
     nose.style.transition = 'none';
-    nose.style.transform = 'translateX(-96%)';
+    nose.style.transform = from;
     void nose.offsetWidth;   // はじまりの位置を いったん確定させてから すべらせる
     nose.style.transition = '';
     nose.style.transform = `translateX(${(x - 100).toFixed(1)}%)`;
@@ -1690,7 +1808,7 @@ const App = {
       a, b, segA: a, segB: b, k: null, idx: null,
       prev: q('.rs-prev span'), next: q('.rs-next span'), after: q('.rs-after span'),
       afterNode: q('.rs-after'), seg2: q('.rs-seg2'), left: q('.rs-left'),
-      train: $('#rs-train'),
+      train: $('#rs-train'), win: $('#rs-win'),
     };
     this._ticks = null;   // 目もりは この運転の 駅の かずで 作りなおす
     this._updateRouteStrip();
@@ -1704,11 +1822,25 @@ const App = {
       const prev = sim.stops[Math.max(0, sim.stopIdx - 1)];
       const next = sim.stops[Math.min(sim.stops.length - 1, sim.stopIdx)];
       const after = sim.stops[sim.stopIdx + 1];
-      R.prev.textContent = kanaOf(prev.name) || prev.name;
-      R.next.textContent = kanaOf(next.name) || next.name;
-      R.after.textContent = after ? kanaOf(after.name) || after.name : '';
+      const kp = kanaOf(prev.name) || prev.name, kn = kanaOf(next.name) || next.name;
+      const ka = after ? kanaOf(after.name) || after.name : '';
+      R.prev.textContent = kp;
+      R.next.textContent = kn;
+      R.after.textContent = ka;
       R.afterNode.classList.toggle('hidden', !after);
       R.seg2.classList.toggle('hidden', !after);
+      /* ながい 名前が ならぶと 列車の 区間が ちぢんで 列車が うごけない・名前が「…」で きれる:
+       * そのつぎの駅を はぶく(rs-tight)。つぎの駅(いまの めあて)は けっして はぶかない。
+       * かなの かずで きめて、それでも きれるか(帯の はばは 画面で ちがう)は 駅が かわったとき 1回だけ はかる */
+      if (R.win) {
+        let tight = !after || kp.length + kn.length + ka.length > 20;
+        if (!tight) {
+          R.win.classList.remove('rs-tight');
+          const cut = (sp) => sp.clientWidth > 0 && sp.scrollWidth > sp.clientWidth + 1;
+          tight = cut(R.after) || cut(R.prev);
+        }
+        R.win.classList.toggle('rs-tight', tight);
+      }
       const rest = Math.max(0, sim.stops.length - sim.stopIdx);
       R.left.innerHTML = rest <= 1 ? 'つぎ <b>ゴール</b>' : `あと <b>${rest}</b> えき`;
       R.segA = prev.stopAt; R.segB = next.stopAt;
@@ -1761,18 +1893,26 @@ const App = {
     return q;
   },
 
-  /* ブレーキめやす(右の たての パネル)。2つの かお:
+  /* ブレーキめやす(右の たての パネル。背の低い 横画面は 上の帯の 下の よこの 棒)。2つの かお:
    * ・駅: このままのブレーキだと どこで止まるか(「8」の めもり)。ブレーキを かける場所の 120m 手前から・ブレーキ中
-   * ・制限(mode-lim): 駅より手前の 低い制限に あわせる。制限の板 + 「おとす ぶん」の 赤い棒(おとせたら みどりの OK) */
+   * ・制限(mode-lim): 駅より手前の 低い制限に あわせる。制限の板 + 「おとす ぶん」の 赤い棒(おとせたら みどりの OK)
+   * さいごの 30m は ものさし(ui/stoppin.js の ruler)が 出るので かくす(にた 絵を 2つ ならべない)。
+   * 戻り値: 出している かお 'lim' | 'stop'、ものさしが かわりに 出ている 'ruler'、なにも ない null。
+   * コーチは めやすに 出ている 数字を くりかえさない(1つの 数字は 1か所に) */
   _updateBrakeGuide(h) {
     const el = this._bgEl || (this._bgEl = {
       box: $('#brake-guide'), pred: $('#bg-pred'), txt: $('#bg-txt'), cap: $('#bg-cap'),
       lo: document.querySelector('#brake-guide .bg-lbl-over'), ls: document.querySelector('#brake-guide .bg-lbl-short'),
-      plate: $('#bg-lim-plate'), bar: $('#bg-limbar-i'), limv: $('#bg-limv'),
+      plate: $('#bg-lim-plate'), bar: $('#bg-limbar-i'),
     });
+    /* 背の低い 横画面(スマホの 横)は よこの 棒(CSS)。めもりの うごきも よこに(画面の 形は 1回だけ しらべておく) */
+    if (this._bgMq === undefined) this._bgMq = typeof matchMedia === 'function' ? matchMedia('(max-height: 540px) and (orientation: landscape)') : null;
+    const horiz = !!(this._bgMq && this._bgMq.matches);
     const sim = this.sim;
+    const P = this._pin;
+    const ruler = !!(P && P.rulerOn);
     let mode = null, c = null;
-    if (this.settings.guide && !h.doorOpen && sim.v > 0.5 && !this._overrun) {
+    if (this.settings.guide && !h.doorOpen && sim.v > 0.5 && !this._overrun && !ruler) {
       const zone = this._limitZone(h);
       let stopNeed = false;
       if (h.next && h.next.dist < 650 && h.next.dist > -15) {
@@ -1785,7 +1925,7 @@ const App = {
       else if (zone) mode = 'lim';
     }
     setHidden(el.box, !mode);
-    if (!mode) return;
+    if (!mode) return ruler ? 'ruler' : null;
     const isLim = mode === 'lim';
     if (el._lim !== isLim) {
       el._lim = isLim;
@@ -1797,15 +1937,15 @@ const App = {
       setText(el.plate, String(Math.round(a.target)));
       const ok = sim.v <= a.target + 1;
       const k = Math.max(0, Math.min(1, (sim.v - a.target) / Math.max(1, h.limit - a.target)));
-      const sc = ok ? 'scaleY(1)' : `scaleY(${(Math.round(k * 50) / 50).toFixed(2)})`;
+      const ax = horiz ? 'scaleX' : 'scaleY';
+      const sc = ok ? ax + '(1)' : `${ax}(${(Math.round(k * 50) / 50).toFixed(2)})`;
       if (el.bar._s !== sc) { el.bar._s = sc; el.bar.style.transform = sc; }
       if (el._ok !== ok) { el._ok = ok; el.box.classList.toggle('ok', ok); }
-      setHtml(el.limv, `いま <b>${Math.floor(sim.v)}</b>`);
       const d = this._steady('limAt', Math.max(0, a.at - sim.pos));
       h.uiLimAt = d;
       setHtml(el.txt, ok ? '<b>OK</b>' : `あと <b>${d}</b>m`);
       setCls(el.txt, 'bg-txt' + (ok ? ' ok' : ''));
-      return;
+      return mode;
     }
     if (el._ok) { el._ok = false; el.box.classList.remove('ok'); }
     const pred = c.pred;
@@ -1813,13 +1953,15 @@ const App = {
     if (pred == null) {
       if (el.pred._d !== 'none') { el.pred._d = 'none'; el.pred.style.display = 'none'; }
       const toBrake = this._toBrake(h, c);
-      txt = toBrake > 0 ? `ブレーキまで<br><b>${this._steady('toBrake', toBrake)}m</b>` : '<b>ブレーキ</b>を<br>かけよう';
+      /* <br class="bg-br"> は たての パネルだけで おりかえす(よこの 棒では 1行) */
+      txt = toBrake > 0 ? `ブレーキまで <br class="bg-br"><b>${this._steady('toBrake', toBrake)}m</b>` : '<b>ブレーキ</b>を <br class="bg-br">かけよう';
       if (toBrake <= 0) cls = 'over';
     } else {
       const d = pred - h.next.dist;     // +: いきすぎ / -: てまえ
       const k = Math.sign(d) * Math.min(1, Math.sqrt(Math.abs(d) / 40));
       if (el.pred._d !== 'block') { el.pred._d = 'block'; el.pred.style.display = 'block'; }
-      const ty = `translateY(${(50 - k * 50).toFixed(1)}%)`;
+      /* たて: 上が いきすぎ / よこ: 右が いきすぎ(判定カードの ものさしと おなじ むき) */
+      const ty = horiz ? `translateX(${(k * 50).toFixed(1)}%)` : `translateY(${(50 - k * 50).toFixed(1)}%)`;
       if (el.pred._ty !== ty) { el.pred._ty = ty; el.pred.style.transform = ty; }
       const ok = Math.abs(d) <= 1.0;
       cls = ok ? 'ok' : d > 0 ? 'over' : '';
@@ -1832,6 +1974,7 @@ const App = {
     setCls(el.txt, 'bg-txt ' + cls);
     if (el.lo) setCls(el.lo, 'bg-lbl bg-lbl-over' + (act > 0 ? ' act' : ''));
     if (el.ls) setCls(el.ls, 'bg-lbl bg-lbl-short' + (act < 0 ? ' act' : ''));
+    return mode;
   },
 
   /* 時間に おくれそうか(ゆっくり はしりすぎ)。いちど 出したら 5秒は 出しつづける(ちらつかない) */
@@ -1846,7 +1989,10 @@ const App = {
 
   /* 「いまやること」コーチ(小2でもわかる次の一手を常に出す。まちがえる前に知らせる)。
    * ボタンの ことばは レバーの いまの位置で かわる(ブレーキ中の うえ = ゆるめる)。
+   * 「なんかい おすか」と めあての 段(P4・B3 など)を いっしょに 出す。
    * want = その文で つかってほしい ノッチ(運転台の めもりと うえ/した ボタンを 光らせる)。
+   * 駅の ブレーキは ui/coachplan.js(あるとき)の けいかく: となりの 段で ためして いちばん「8」に ちかい 段を
+   * 1回で(さいだい 3かい) すすめる。ないときは 1だんずつ。
    * 計器(cab.render)より 先に よぶ: h.uiLimAt(コーチ・めやすと おなじ まるめの 制限までの距離)と
    * h.uiBrakeNow(いま ブレーキ)を 計器に わたす */
   _updateCoach(h) {
@@ -1867,10 +2013,20 @@ const App = {
     }
     const now = performance.now();
     const nx = h.next;
+    /* ブレーキめやすを 先に。めやす(または さいごの ものさし)に 出ている ものは、コーチの 文に 数字を そえない */
+    const gm = this._updateBrakeGuide(h);
+    const numStop = gm !== 'stop' && gm !== 'ruler';   // 駅の きょり・とまる 位置の ずれ
+    const numLim = gm !== 'lim' && gm !== 'ruler';     // 制限まで の きょり
     let txt = '', hot = false, want = null;
     const redAhead = h.ats && h.ats.kind === 'signal' && h.ats.target === 0;
     const redNear = redAhead && h.ats.at - sim.pos < 150;
     const wet = this.weather === 'rain' || this.weather === 'snow';
+    /* しゅっぱつ・かそくで ねらう 段(あめ・ゆきは すべらないよう P2) */
+    const wantP = wet ? 2 : 4;
+    /* 出発までの びょう: ドアが しまりおわる(発車の 4秒前)ときに 0(さいごの 0.3秒が 0)。上の帯と コーチで おなじ 数 */
+    const cd = h.doorOpen ? Math.max(0, Math.ceil((nx ? nx.dep : sim._departTime) - 4 - sim.t - 0.3)) : 0;
+    /* ブレーキが いる りゆう(赤信号・この先の 低い制限・きいろ信号・ATSの パターンに ちかい)。駅(stop)は べつに みる */
+    const atsWhy = !!h.ats && h.ats.kind !== 'stop' && (sim.v > h.ats.pattern - 10 || (h.ats.at - sim.pos < 700 && sim.v > h.ats.target));
     /* スピード オーバーの チャイムは こえた ときに 1回だけ(制限より おそくなったら また鳴る) */
     if (sim.v > h.limit + 0.5) {
       if (!this._overChimed && !h.doorOpen) { this._overChimed = true; this._cue('atsChime', 0.3); }
@@ -1881,10 +2037,14 @@ const App = {
       txt = '';
     } else if (h.doorOpen) {
       /* のこり びょうは 上の 大型HUDに 1つだけ(ここには 数字を 出さない) */
-      const rest = Math.ceil((nx ? nx.dep : sim._departTime) - sim.t);
       if (sim.notch > 0) txt = 'すすむ OK！ ドアが しまったら うごくよ';
-      else if (rest <= 10) txt = 'ドアの ランプが ついたら しゅっぱつ';
+      else if (cd <= 6) txt = 'ドアの ランプが ついたら しゅっぱつ';
       else txt = 'おきゃくさんが のりおり中…';
+    } else if (sim.v < 0.5 && sim._left && sim.stoppedAt == null && nx && nx.dist <= 2 && nx.dist >= -12) {
+      /* 「8」で とまる さいごの しゅんかん(とうちゃくの はんていの すこし前)。ここで「しゅっぱつ」や
+       * 「あと 1m」を 出すと、P4 の めあてが 一瞬 光って まちがえて おしてしまう */
+      txt = 'そのまま！ とまるよ';
+      want = sim.notch;
     } else if (sim.v < 0.5 && sim._left && nx && nx.dist > 0.5 && nx.dist < 250 && !redNear) {
       /* 「8」の手前で止まってしまった: レバーを P1 まで(ブレーキ中なら その ぶん 多く)おす */
       const m = Math.round(nx.dist);
@@ -1893,9 +2053,17 @@ const App = {
       const st = h.settle || 0;   // 少し手前で止まったときの まちじかん(エンジンに あるときだけ)
       if (st > 0) txt += `（あと <b>${Math.ceil(st)}</b> びょうで ドアが あくよ）`;
       want = 1;
+    } else if (sim._retryStop && nx && nx.dist < 200 && sim.notch >= 0 && sim.notch < 2 && sim.v < 18 && !redNear
+      && this._toBrake(h, this._brakeCalc(h)) > 40) {
+      /* いきすぎて「もういちど とめる」: 180m 手前から ゆっくり(P2 で 25 まで → N → ブレーキ) */
+      txt = `${KUP} を <b>${2 - sim.notch}</b>かい（P2）で ゆっくり`;
+      want = 2;
+    } else if (sim._retryStop && nx && nx.dist < 200 && sim.notch > 0 && sim.v >= 25) {
+      txt = `25 に なったよ → ${KDN} を <b>${sim.notch}</b>かい（N）`;
+      want = 0;
     } else if (sim.v < 0.5 && sim.notch <= 0 && !redNear) {
-      txt = `${KUP} を おして しゅっぱつ！`;
-      want = wet ? 2 : 4;
+      txt = `${KUP} を <b>${wantP - sim.notch}</b>かい（P${wantP}）で しゅっぱつ！`;
+      want = wantP;
     } else if (h.atsLamp === 'brake') {
       /* じどうブレーキが はなれる速さ(engine の照査と同じ: パターン-5 かつ いまの制限+3 いか。2秒は かかったまま) */
       const rel = Math.min(h.ats ? h.ats.pattern - 5 : 999, h.limit + 3);
@@ -1914,7 +2082,7 @@ const App = {
        * 先行パターンの じどうブレーキの 理由なので「もうすぐ ◯◯」「スピード オーバー」より 先に出す */
       const m = this._steady('limAt', Math.max(0, h.ats.at - sim.pos));
       h.uiLimAt = m;
-      txt = `${icon('warn')} このさきは <b>${Math.round(h.ats.target)}</b> まで。いまから おとそう（あと <b>${m}</b> m）`;
+      txt = `${icon('warn')} このさきは <b>${Math.round(h.ats.target)}</b> まで。いまから おとそう` + (numLim ? `（あと <b>${m}</b> m）` : '');
       want = -3;
     } else if (sim.v > h.limit + 0.5) {
       /* だ行(ノッチ N や よわい ブレーキ)の まま 制限を こえた: じどうブレーキの まえに 知らせる */
@@ -1932,7 +2100,7 @@ const App = {
       /* 駅より手前に 低い制限がある: まずは そちらに合わせる(駅の予想を出すと まぎらわしい) */
       const m = this._steady('limAt', Math.max(0, h.ats.at - sim.pos));
       h.uiLimAt = m;
-      txt = `このさきは <b>${Math.round(h.ats.target)}</b> まで。${KDN}で おとそう（あと <b>${m}</b> m）`;
+      txt = `このさきは <b>${Math.round(h.ats.target)}</b> まで。${KDN}で おとそう` + (numLim ? `（あと <b>${m}</b> m）` : '');
       want = -3;
     } else if (nx && nx.dist < 650) {
       /* 駅に近づいた(ブレーキめやすと おなじ 650m から): ブレーキを かける場所と、止まる場所の予想 */
@@ -1941,26 +2109,64 @@ const App = {
       if (sim.notch >= 0) {
         const toBrake = this._toBrake(h, c);
         if (toBrake > 200 && this._lateHint(h, wet, now)) { txt = `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`; want = 4; }
-        else if (toBrake > 40) txt = `ブレーキまで あと <b>${this._steady('toBrake', toBrake)}</b> m`;
-        else if (toBrake > 0) { txt = `そろそろ！ ${KDN}を 3〜4かい`; want = -4; }
+        else if (toBrake > 200 && this._accelOk(h, wantP)) { txt = `${KUP} を あと <b>${wantP - sim.notch}</b>かい（P${wantP}）`; want = wantP; }
+        else if (toBrake > 40) {
+          txt = numStop ? `ブレーキまで あと <b>${this._steady('toBrake', toBrake)}</b> m` : `もうすぐ ブレーキ！ めやすが 0 に なったら ${KDN}`;
+        } else if (toBrake > 0) { txt = `そろそろ！ ${KDN}を 3〜4かい`; want = -4; }
         else { txt = `いま！ ${KDN}`; hot = true; want = -4; }
-      } else if (c.pred == null) {
-        txt = `このままだと とまれない → ${KDN} を もっと`;
-        want = Math.max(-7, sim.notch - 1);
       } else {
-        const d = c.pred - dist;
-        if (Math.abs(d) <= 1) { txt = 'そのまま！ ぴったり とまるよ'; want = sim.notch; }
-        else if (d > 1) {
-          txt = `このままだと <b>いきすぎ</b>（${this._steady('pred', d)}m）→ ${KDN} を 1かい`;
+        /* ブレーキの けいかく(ui/coachplan.js): ok そのまま / wait まつ / press N かい おす / early いったん N へ */
+        const CP = this._cplan;
+        const plan = sim.notch > -8 && CP && typeof CP.brakePlan === 'function' ? CP.brakePlan(sim, dist, this._cpSt || (this._cpSt = {})) : null;
+        const pk = plan ? plan.kind : 'none';
+        if (pk === 'ok') {
+          txt = 'そのまま！ ぴったり とまるよ';
+          want = sim.notch;
+        } else if (pk === 'wait') {
+          txt = 'そのまま まとう（ちかづいたら また おしえるね）';
+          want = sim.notch;
+        } else if (pk === 'press' && plan.steps) {
+          const stronger = plan.steps < 0;
+          const e = plan.eCur;
+          /* このままだと どうなるか(いまの段の よそう)。おす むきと くいちがう ときは ことばを はぶく */
+          let lead = '';
+          if (e == null) lead = 'このままだと とまれない → ';
+          else if ((e > 0) === stronger) {
+            lead = `このままだと <b>${stronger ? 'いきすぎ' : 'てまえ'}</b>` + (numStop ? `（${this._steady('pred', Math.abs(e))}m）` : '') + ' → ';
+          }
+          txt = `${lead}${stronger ? KDN : KUP} を <b>${Math.abs(plan.steps)}</b>かい（B${-plan.best}）`;
+          want = plan.best;
+        } else if (pk === 'early') {
+          txt = `まだ はやい！ ${KUP} を <b>${-sim.notch}</b>かい（N）`;
+          want = 0;
+        } else if (c.pred == null) {
+          txt = `このままだと とまれない → ${KDN} を もっと`;
           want = Math.max(-7, sim.notch - 1);
         } else {
-          txt = `このままだと <b>てまえ</b>（${this._steady('pred', -d)}m）→ ${KUP} を 1かい`;
-          want = Math.min(-1, sim.notch + 1);
+          /* けいかくが ないとき(ui/coachplan.js が まだ・ひじょう): 1だんずつ */
+          const d = c.pred - dist;
+          if (Math.abs(d) <= 1) { txt = 'そのまま！ ぴったり とまるよ'; want = sim.notch; }
+          else if (d > 1) {
+            txt = `このままだと <b>いきすぎ</b>` + (numStop ? `（${this._steady('pred', d)}m）` : '') + ` → ${KDN} を 1かい`;
+            want = Math.max(-7, sim.notch - 1);
+          } else {
+            txt = `このままだと <b>てまえ</b>` + (numStop ? `（${this._steady('pred', -d)}m）` : '') + ` → ${KUP} を 1かい`;
+            want = Math.min(-1, sim.notch + 1);
+          }
         }
       }
     } else if (h.ats && sim.v > h.ats.pattern - 4) {
       txt = `${icon('warn')} スピードを <b>${Math.round(h.ats.target)}</b> まで おとそう`;
       want = -3;
+    } else if (sim.notch < 0 && sim.notch > -8 && sim.v < h.limit - 5 && !redAhead && !this._limitAhead(h) && !atsWhy
+      && (!nx || nx.dist >= 650)) {
+      /* 駅は まだ とおいのに ブレーキ: ゆるめて すすもう(ブレーキの ままだと おくれる) */
+      txt = `まだ ブレーキは いらないよ → ${KUP} を <b>${-sim.notch}</b>かい（N）`;
+      want = 0;
+    } else if (this._accelOk(h, wantP) && (!nx || nx.dist > 650 || this._toBrake(h, this._brakeCalc(h)) > 200)) {
+      /* 1かい おしただけで ゆっくり(P1): P4(あめ・ゆきは P2)まで */
+      txt = `${KUP} を あと <b>${wantP - sim.notch}</b>かい（P${wantP}）`;
+      want = wantP;
     } else if (nx) {
       if (this._lateHint(h, wet, now)) { txt = `じかんが おくれそう！ ${KUP}で <b>${h.limit}</b> ちかくまで`; want = 4; }
       else txt = `つぎは <b>${kanaOf(nx.name) || nx.name}</b> ／ スピードは <b>${h.limit}</b> まで`;
@@ -1991,7 +2197,7 @@ const App = {
     /* 大型HUD(じそく・せいげんの板・つぎの制限 | えきまで / しゅっぱつまで / すぎた) */
     if (!this._bh) {
       this._bh = {
-        v: $('#bh-v'), cap: $('#bh-ctx-cap'), num: $('#bh-ctx-num'),
+        v: $('#bh-v'), cap: $('#bh-ctx-cap'), num: $('#bh-ctx-num'), ico: $('#bh-ctx-ico'),
         unit: $('#bh-ctx-unit'), row: document.querySelector('.bh-ctx'),
         lim: $('#bh-lim'), limN: $('#bh-lim-next'), skip: $('#btn-skip'), card: $('#stop-card'),
       };
@@ -2000,11 +2206,15 @@ const App = {
     setText(B.v, String(Math.floor(sim.v)));   // 速度計の数字(切り捨て)とそろえる
     setCls(B.v, sim.v > h.limit + 1 ? 'over' : sim.v > h.limit - 5 ? 'near' : '');
     setText(B.lim, String(h.limit));
+    /* つぎの制限・信号(運転画面では 運転台の 制限の パネルが 出すので CSS で かくしてある。DOM は のこす)。
+     * 駅で ドアが あいている あいだは 出さない(ふつうの 停車中に 赤い「とまれ」を 出さない) */
     let ln = '';
-    if (h.ats && h.ats.kind === 'limit' && h.ats.target < h.limit && h.ats.at - sim.pos < 700) ln = `つぎ <span class="bh-lim bh-lim-s">${Math.round(h.ats.target)}</span>`;
-    else if (h.ats && h.ats.kind === 'signal' && h.ats.at - sim.pos < 700) {
-      /* 信号の ランプには ことばを そえる(赤い丸だけでは 小2には わからない) */
-      ln = h.ats.target === 0 ? '<i class="sig sig-r"></i>とまれ' : `<i class="sig sig-y"></i>${Math.round(h.ats.target)}`;
+    if (!h.doorOpen) {
+      if (h.ats && h.ats.kind === 'limit' && h.ats.target < h.limit && h.ats.at - sim.pos < 700) ln = `つぎ <span class="bh-lim bh-lim-s">${Math.round(h.ats.target)}</span>`;
+      else if (h.ats && h.ats.kind === 'signal' && h.ats.at - sim.pos < 700) {
+        /* 信号の ランプには ことばを そえる(赤い丸だけでは 小2には わからない) */
+        ln = h.ats.target === 0 ? '<i class="sig sig-r"></i>とまれ' : `<i class="sig sig-y"></i>${Math.round(h.ats.target)}`;
+      }
     }
     setHtml(B.limN, ln);
     setHidden(B.limN, !ln);
@@ -2012,27 +2222,37 @@ const App = {
     const brakeNow = !h.doorOpen && !this._overrun && !!nx && nx.dist > 0 && nx.dist < 650 && sim.v > 0.5
       && sim.notch >= 0 && this._toBrake(h, this._brakeCalc(h)) <= 0;
     h.uiBrakeNow = brakeNow;
-    let cap, num, unit, cls = '';
+    let cap, num, unit, cls = '', ik = 'pin';
     if (h.doorOpen) {
       cap = 'しゅっぱつまで';
-      num = String(Math.max(0, Math.ceil((nx ? nx.dep : sim._departTime) - sim.t)));
+      num = String(cd);
       unit = 'びょう';
+      ik = 'clock';
     } else if (nx && nx.dist < -0.5) {
       /* 「8」を すぎて とまった: 0m ではなく すぎた ぶん(赤) */
       cap = 'すぎた'; num = String(Math.round(-nx.dist)); unit = 'm'; cls = ' bh-over';
     } else if (nx) {
       cap = 'えきまで';
       const dm = Math.max(0, nx.dist);
-      num = dm >= 1000 ? (dm / 1000).toFixed(1) : String(Math.round(dm));
-      unit = dm >= 1000 ? 'km' : 'm';
+      const PM = this._pinMod, P = this._pin;
+      if (P && P.rulerOn && PM && typeof PM.fmtNear === 'function') {
+        /* さいごの 30m(ものさしが 出ている あいだ): 1m より 遠いと 小数1けたの m、ちかいと cm */
+        const f = PM.fmtNear(dm);
+        num = f.num; unit = f.unit;
+      } else {
+        num = dm >= 1000 ? (dm / 1000).toFixed(1) : String(Math.round(dm));
+        unit = dm >= 1000 ? 'km' : 'm';
+      }
       if (brakeNow) cls = ' bh-warn';
     } else {
-      cap = 'ゴールまで'; num = '—'; unit = '';
+      cap = 'ゴールまで'; num = '—'; unit = ''; ik = 'flag';
     }
     setText(B.num, num);
     setText(B.cap, cap);
     setText(B.unit, unit);
     setCls(B.row, 'bh-row bh-ctx' + cls);
+    /* せまい 横画面の 見出しの かわり(1字ぶんの アイコン): かわったときだけ 書く */
+    if (B.ico && B._ik !== ik) { B._ik = ik; B.ico.innerHTML = icon(ik); }
 
     /* しゅっぱつスキップボタン(コーチの中。まだ待ち時間があるときだけ)。
      * とうちゃくの お祝い(判定カード)の あいだは 出さない(お祝いを タップして とばしてしまう) */
@@ -2041,8 +2261,16 @@ const App = {
      * メロディの とちゅうで ドアチャイムが なり、ドアが しまって しまう) */
     const canSkip = !celebrating && !this._overrun && h.doorOpen && ((nx ? nx.dep : sim._departTime) - sim.t) > 7 && !melodyPlaying(sim);
     setHidden(B.skip, !canSkip);
-    this._updateBrakeGuide(h);
     this._updateRouteStrip();
+  },
+
+  /* かそくを すすめて よいか: すすむ側で P4(あめ・ゆきは P2)より 下・いまの 制限より 15 いじょう おそい・
+   * この先の 低い制限や 信号(駅いがい)に ちかづいていない */
+  _accelOk(h, wantP) {
+    const sim = this.sim;
+    if (!(sim.notch >= 0 && sim.notch < wantP && sim.v < h.limit - 15)) return false;
+    const a = h.ats;
+    return !(a && a.kind !== 'stop' && a.at - sim.pos < 1000 && sim.v > a.target - 15);
   },
 
   retryStation() {
@@ -2129,6 +2357,13 @@ const App = {
     const prevSeg = this.save.bestSeg[segKey];
     const segBest = !this._retried && (!prevSeg || res.total > prevSeg.total);
     if (segBest) this.save.bestSeg[segKey] = { total: res.total, rank: res.rank };
+    /* タイトルの「つづきから」: この区間の つぎ(おなじ駅の かずだけ 先)。せんろの おわりまで きたら なし */
+    const nAll = this._svcStops().length;   // sim.stops は この運転の ゴールで 切ってある
+    if (this.endIdx != null && this.endIdx < nAll - 1 && this.save.last) {
+      const span = Math.max(1, this.endIdx - this.startIdx);
+      const nEnd = Math.min(nAll - 1, this.endIdx + span);
+      this.save.next = Object.assign({}, this.save.last, { startIdx: this.endIdx, endIdx: nEnd >= nAll - 1 ? null : nEnd });
+    } else this.save.next = null;
     this.writeSave();
     const nSt = res.stops.length;
     this.grantBadge('first');
@@ -2154,7 +2389,7 @@ const App = {
     const best = { prevSeg, segBest, retried: this._retried };
     this._queuePop(() => {
       if (this.mode !== 'drive' || this.sim !== sim) return;
-      this._setCam('drone');
+      this._setCam('drone', { ceremony: true });   // 計器盤は ふつうの まま(おいわいの とちゅうで 画面の 大きさを かえない)
       const lab = $('#cam-label');
       clearTimeout(this._camLabT);
       lab.innerHTML = `${rubyStation(to)} <b>ゴール</b> ・ おつかれさまでした`;
@@ -2174,12 +2409,15 @@ const App = {
     }, 0);
   },
 
-  /* つぎの目標(いちばん当てはまるものを1つだけ)。{html, cur, max}: cur/max が あれば 進みぐあいの棒も 出す */
+  /* つぎの目標(いちばん当てはまるものを1つだけ)。{html, cur, max, run}:
+   * cur/max は あつめる くんしょう(ぴったりの かず・スタンプの しゅるい)だけ 進みぐあいの棒を 出す。
+   * run = N: 「N えき コースで はしる」ボタン(1かいの 運転で きまる めあては 棒ではなく すぐ ためせる ボタンに) */
   _nextGoal(res) {
     const tot = res.total, nSt = res.stops.length;
-    /* ランクの くんしょうには 駅の かずが いる(みじかい 運転の 100てんでは もらえない) */
-    if (tot >= 95 && nSt < 5 && !this.save.badges.rankS) return { html: '5えき いじょうで ランクS →「でんせつの うんてんし」', cur: nSt, max: 5 };
-    if (tot >= 85 && nSt < 3 && !this.save.badges.rankA) return { html: '3えき いじょうで ランクA →「めいじん うんてんし」', cur: nSt, max: 3 };
+    /* ランクの くんしょうには 駅の かずが いる(みじかい 運転の 100てんでは もらえない)。
+     * ちかい めあて(3えき → めいじん)から じゅんばんに */
+    if (tot >= 85 && nSt < 3 && !this.save.badges.rankA) return { html: '3えき いじょうで ランクA →「めいじん うんてんし」', run: 3 };
+    if (tot >= 95 && nSt < 5 && !this.save.badges.rankS) return { html: '5えき いじょうで ランクS →「でんせつの うんてんし」', run: 5 };
     const up = RANK_LINE.slice().reverse().find(([th]) => tot < th && th - tot <= 8);
     if (up) return { html: `あと <b>${up[0] - tot}</b>てんで ランク<b>${up[1]}</b>！` };
     const near = res.stops.find((st) => Math.abs(st.err) > 0.35 && Math.abs(st.err) <= 1);
@@ -2205,8 +2443,11 @@ const App = {
     $('#res-svc').innerHTML = `<span class="rs-chip">${rubySvc(SERVICES[this.service].name)}</span>`
       + `<span class="nw">${rubyStation(from)} → ${rubyStation(to)}</span>`
       + `<span class="rs-cond nw">${icon(TOD_ICO[this.daytime])}${TOD_WORD[this.daytime]}　${icon(WX_ICO[this.weather])}${WX_WORD[this.weather]}</span>`;
-    /* 「でんせつ」は 5えき いじょうの ランクS だけ */
-    $('#res-title').textContent = res.total >= 95 && nSt >= 5 ? 'でんせつの うんてんし' : res.total >= 85 ? 'めいじん うんてんし' : res.total >= 70 ? 'いちにんまえ うんてんし' : res.total >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
+    /* よびなは くんしょうと おなじ きまり: 「でんせつ」は 5えき いじょうの ランクS、「めいじん」は 3えき いじょうの ランクA いじょう。
+     * みじかい 運転の 85てん いじょうは くんしょうの 名前ではない「ぴったり うんてんし」(よびなと くんしょうが くいちがわない) */
+    const pts = res.total;
+    $('#res-title').textContent = pts >= 95 && nSt >= 5 ? 'でんせつの うんてんし' : pts >= 85 && nSt >= 3 ? 'めいじん うんてんし'
+      : pts >= 85 ? 'ぴったり うんてんし' : pts >= 70 ? 'いちにんまえ うんてんし' : pts >= 55 ? 'みならい うんてんし' : 'もういちど チャレンジ！';
     /* なぜ その点数か(理由をひとこと) */
     const cnt = { perfect: 0, good: 0, ok: 0, ng: 0 };
     res.stops.forEach((st) => { cnt[gradeOf(Math.abs(st.err)).k]++; });
@@ -2246,14 +2487,17 @@ const App = {
     else if (best.segBest) { rb.className = 'res-best info'; rb.textContent = 'この くかんの はじめての きろく'; }
     else { rb.className = 'res-best info'; rb.textContent = `この くかんの ベスト ${ps.total}てん (${ps.rank})`; }
     const ng = this._nextGoal(res);
+    /* 1かいの 運転で きまる めあては「N えき コースで はしる」ボタン(おすと すぐ しゅっぱつ)。
+     * あつめる くんしょうだけ 進みぐあいの棒 */
+    const goBtn = ng && ng.run ? `<button class="btn rn-go" data-run="${ng.run}">${ng.run}えき コースで はしる ${icon('chevron-right')}</button>` : '';
     $('#res-next').innerHTML = ng
-      ? `<span class="rn-cap">つぎの めあて</span><span class="rn-txt">${ng.html}</span>${ng.max ? this._progHtml({ cur: ng.cur, max: ng.max }) : ''}`
+      ? `<span class="rn-cap">つぎの めあて</span><span class="rn-txt">${ng.html}</span>${ng.max ? this._progHtml({ cur: ng.cur, max: ng.max }) : ''}${goBtn}`
       : '';
     $('#res-next').classList.toggle('hidden', !ng);
     /* この運転でもらったスタンプ(96px。下に ランクの ことば) */
     const rs = $('#res-stamps');
     if (this.runStamps.length) {
-      rs.innerHTML = `<p>もらった えきスタンプ ${this.runStamps.length}こ</p>`;
+      rs.innerHTML = `<p>えきスタンプ ${this.runStamps.length}こ</p>`;   // わくの 見出しが「この うんてんで もらったもの」
       const row = document.createElement('div');
       row.className = 'rst-row';
       this.runStamps.slice(0, 6).forEach((r, i) => {
@@ -2278,6 +2522,12 @@ const App = {
       }).join('');
       rbg.classList.remove('hidden');
     } else rbg.classList.add('hidden');
+    /* 「この うんてんで もらったもの」の わく: スタンプも くんしょうも ないときは 出さない(めあての わくが のびる) */
+    const none = !this.runStamps.length && !this.runBadges.length;
+    const rw = $('#res-rewards');
+    if (rw) rw.classList.toggle('hidden', none);
+    const rcol = $('#res-side');
+    if (rcol) rcol.classList.toggle('no-rw', none);
     /* つづきを はしる(区間運転で、まだ先があるとき) */
     const nb = $('#btn-res-next');
     const stops = this._svcStops();
@@ -2288,7 +2538,7 @@ const App = {
       nb.classList.remove('hidden');
     } else nb.classList.add('hidden');
     /* 段階的に見せる */
-    [['#res-breakdown', 1.2], ['#res-next', 1.5], ['#res-stamps', 1.5], ['#res-badges', 1.8], ['.res-table-wrap', 2.0]].forEach(([s, d]) => {
+    [['#res-breakdown', 1.2], ['#res-next', 1.5], ['#res-rewards', 1.4], ['#res-stamps', 1.5], ['#res-badges', 1.8], ['.res-table-wrap', 2.0]].forEach(([s, d]) => {
       const el = $(s);
       el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; el.style.animationDelay = d + 's';
     });
@@ -2331,13 +2581,26 @@ const App = {
     this.startDrive(true);
   },
 
+  /* 成績票の「N えき コースで はしる」: おなじ スタートから N えき(先が たりなければ スタートを まえに ずらす) */
+  _runCourse(N) {
+    if (this._starting || !(N >= 1) || this.mode !== 'result') return;
+    const n = this._svcStops().length;
+    const k = Math.min(N, n - 1);
+    let s = this.startIdx;
+    if (s + k > n - 1) s = Math.max(0, n - 1 - k);
+    this.startIdx = s;
+    this.endIdx = s + k >= n - 1 ? null : s + k;
+    this.startDrive(true);
+  },
+
   /* ================= ループ ================= */
   _render(dt) { this._rc = (this._rc || 0) + 1; this.scene.render(dt); },
 
   loop() {
     requestAnimationFrame(() => this.loop());
     const now = performance.now();
-    const dt = Math.min(0.1, (now - (this._lastT || now)) / 1000);
+    const iv = now - (this._lastT || now);   // まえの コマからの 間(ms)
+    const dt = Math.min(0.1, iv / 1000);
     this._lastT = now;
     /* WebGLの 文脈が きえている あいだは 描かない(ui/glguard.js が 作りなおして もどす) */
     if (!this.scene || this._glLost) return;
@@ -2345,7 +2608,11 @@ const App = {
     const m = this.mode;
     let busy = false, cpuMs = 0;
     if (m === 'drive') {
-      if (!this.sim || !this.running && !this.sim.ended) { this._render(0); return; }
+      if (!this.sim || !this.running && !this.sim.ended) {
+        if (this._rafCapProbe(S, iv)) return;   // カードの うしろで 書きかえの 間を はかっている(描かない)
+        this._render(0);
+        return;
+      }
       if (this.running && !this.paused) {
         const mult = this._fast || 1;
         for (let i = 0; i < mult && this.running; i++) {
@@ -2363,12 +2630,15 @@ const App = {
         if (this._pauseDirty && !S._warming) { this._pauseDirty = false; this._render(0); }
       }
       const h = this.sim.hud();   // 1フレームに1回だけ計算して計器とHUDで使う
-      /* コーチが 先(計器が コーチと おなじ 数字・おなじ「いま ブレーキ」を 出す: h.uiLimAt / h.uiBrakeNow) */
+      /* 「8」の目印・ものさしが 先(ものさしが 出た コマから ブレーキめやすを かくす: _updateBrakeGuide が rulerOn を 見る) */
+      this._updatePin(h);
+      /* コーチが 計器より 先(計器が コーチと おなじ 数字・おなじ「いま ブレーキ」を 出す: h.uiLimAt / h.uiBrakeNow) */
       this._updateCoach(h);
       if (typeof this.cab.setLight === 'function' && S.cockpit) this.cab.setLight(S.cockpit.light);
+      /* 天板の 日だまり(計器盤の 上の あたたかい光。P4: cab.setSun。3Dの 天板と おなじ 位置・こさ) */
+      if (typeof this.cab.setSun === 'function' && S.cockpit) this.cab.setSun(S.cockpit.sunX || 0, S.cockpit.sunK || 0);
       this.cab.render(h);
       cpuMs = performance.now() - c0;
-      this._updatePin(h);
     } else if (m === 'title') {
       /* タイトルは 3Dが 主役。タッチ端末は 2コマに1回(約30fps)にして 熱を おさえる(運転の ために) */
       busy = true;
@@ -2382,25 +2652,13 @@ const App = {
           if (this._bdFrames > 0) this._bdFrames--;
         }
       }
-    } else if (m === 'select') {
-      /* 列車えらび: ほぼ不透明な画面の うしろ。デモ走行は 毎フレーム すすめ、3Dは 6コマに1回(約10fps) */
+    } else if (m === 'select' || m === 'result' || m === 'stamps') {
+      /* 列車えらび・成績票・スタンプちょう: ほぼ不透明な画面の うしろの 3Dは 止まった絵。入ったとき(2コマ)と、
+       * 大きさが かわったとき・画面に もどったとき(_pauseDirty)だけ 描く。
+       * デモ走行は 毎フレーム すすめておく(タイトルに もどったとき 走りつづけて 見える) */
       busy = true;
       if (!document.hidden) {
-        this._attractTick(dt);
-        this._ovAcc = (this._ovAcc || 0) + dt;
-        this._ovN = ((this._ovN || 0) + 1) % 6;
-        if ((this._ovN === 0 || this._bdFrames > 0) && !S._warming) {
-          this._render(Math.min(0.1, this._ovAcc));
-          this._ovAcc = 0;
-          if (this._bdFrames > 0) this._bdFrames--;
-        }
-      }
-    } else if (m === 'result' || m === 'stamps') {
-      /* 成績票・スタンプちょう: うしろの 3Dは 止まった絵。入ったとき(2コマ)と、大きさが かわったとき・
-       * 画面に もどったとき(_pauseDirty)だけ 描く */
-      busy = true;
-      if (!document.hidden) {
-        if (m === 'stamps') this._attractTick(dt);
+        if (m !== 'result') this._attractTick(dt);
         if ((this._pauseDirty || this._bdFrames > 0) && !S._warming) {
           this._pauseDirty = false;
           if (this._bdFrames > 0) this._bdFrames--;
@@ -2408,12 +2666,13 @@ const App = {
         }
       }
     }
-    /* fpsが持続的に低ければ自動で描画負荷を下げる。はかるのは 運転台視点で 運転しているときだけ
-     * (メニュー・タイトル・ほかの視点・ポーズ・暗転・はじまって5秒は はからない)。cpuMs は 描画+計器+コーチの JS 時間 */
+    /* fpsが持続的に低ければ自動で描画負荷を下げる。はかるのは 運転しているときだけ(どの カメラでも。
+     * カメラを かえると scene が はかりかけを すてる)。メニュー・タイトル・ポーズ・暗転・はじまって5秒は はからない。
+     * cpuMs は 描画+計器+コーチの JS 時間 */
     if (typeof S.autoQualityTick === 'function') {
       if (!this._fast && !this.debug) {
         const fadeOn = (this._fadeEl || (this._fadeEl = $('#fade'))).classList.contains('on');
-        const b = busy || fadeOn || now - (this._runT0 || 0) < 5000 || !(m === 'drive' && S.camMode === 'cab');
+        const b = busy || fadeOn || now - (this._runT0 || 0) < 5000 || m !== 'drive';
         S.autoQualityTick(dt, { busy: b, cpuMs });
       }
     } else if (!busy) {
@@ -2428,7 +2687,26 @@ const App = {
     }
   },
 
-  /* 「8」の目印(ui/stoppin.js): 運転台視点・ガイドあり・ドアが しまっている・いきすぎパネルも 判定カードも ないとき */
+  /* 画面の 書きかえが 1秒30回に しぼられているか(iPadの 低電力モードなど)を はかる(ステージごとに 1回)。
+   * しゅっぱつカードで 画面が かくれている あいだ(準備は おわって、カードを 見せて まっている とき)に 3Dを 描かずに
+   * rAF の 間を 20回 平均し、28ms より 長ければ しぼられている。scene の 自動画質が「30fps = GPU が おもい」と
+   * まちがえないように S._rafCap30 に 書く(scene.js が よむ。ないときは 今までどおり)。
+   * 戻り値 true = はかっている コマ(描かない)。準備中(_warming)の コマは 準備の しごとで 間が のびるので はからない */
+  _rafCapProbe(S, iv) {
+    const fade = this._fadeEl || (this._fadeEl = $('#fade'));
+    if (S._rafCap30 !== undefined || S._warming || !this._starting || document.hidden
+      || !fade.classList.contains('card') || !fade.classList.contains('on')) { this._rcpOn = false; return false; }
+    /* 1つめは まえの コマ(描いていた)からの 間なので すてる */
+    if (!this._rcpOn) { this._rcpOn = true; this._rcpN = 0; this._rcpSum = 0; return true; }
+    if (iv > 0 && iv < 100) { this._rcpN++; this._rcpSum += iv; }
+    if (this._rcpN < 20) return true;
+    S._rafCap30 = this._rcpSum / this._rcpN > 28;
+    this._rcpOn = false;
+    return false;
+  },
+
+  /* 「8」の目印・さいごの 30m の ものさし(ui/stoppin.js): 運転台視点・ガイドあり・ドアが しまっている・
+   * いきすぎパネルも 判定カードも ないとき */
   _updatePin(h) {
     const P = this._pin;
     if (!P) return;
@@ -2436,7 +2714,11 @@ const App = {
     const card = this._bh ? this._bh.card : $('#stop-card');
     const show = !!this.settings.guide && S.camMode === 'cab' && !h.doorOpen && !this._overrun && !this.paused
       && card.classList.contains('hidden');
-    try { P.update(S.stopPin || null, show); } catch (e) { /* 目印なしでも 運転できる */ }
+    try {
+      P.update(S.stopPin || null, show);
+      if (typeof P.ruler === 'function') P.ruler(h.next ? h.next.dist : null, this.sim.v, show);
+      if (P.rulerOn) this._rulerIdx = this.sim.stopIdx;   // 判定カードが この駅の ものさしの 先頭を うけつぐ しるし
+    } catch (e) { /* 目印なしでも 運転できる */ }
   },
 
   /* ================= デバッグ(?debug=1) ================= */

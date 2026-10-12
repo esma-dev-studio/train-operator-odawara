@@ -45,7 +45,7 @@
         <div id="bighud">
           <div class="bh-row"><span class="bh-cap">じそく</span><span id="bh-v">0</span><small>km/h</small>
             <span class="bh-limw"><span id="bh-lim" class="bh-lim">100</span><span id="bh-lim-next" class="bh-limn hidden"></span></span></div>
-          <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small></div>
+          <div class="bh-row bh-ctx"><span class="bh-cap" id="bh-ctx-cap">えきまで</span><span class="bh-ico" id="bh-ctx-ico" aria-hidden="true"></span><span id="bh-ctx-num">—</span><small id="bh-ctx-unit">m</small></div>
         </div>
         <div id="drive-head">
           <!-- 路線: いま(まえの駅) → つぎ → そのつぎ と のこりの駅数・れんぞく。
@@ -71,8 +71,9 @@
       <div id="cam-label" class="hidden"></div>
       <!-- いまやること(コーチ)。駅で とまっている あいだは「はやく しゅっぱつ」ボタンも この中に -->
       <div id="coach" class="hidden"><span id="coach-txt"></span><button id="btn-skip" class="skip-btn hidden"><i data-ico="play"></i>はやく しゅっぱつ</button></div>
-      <!-- ブレーキめやす(このままのブレーキで止まる位置)。
-           駅より手前の 低い制限に あわせるときは「スピードを おとす」(.mode-lim: 制限の板と スピードの棒) -->
+      <!-- ブレーキめやす(このままのブレーキで止まる位置)。背の低い 横画面では 上の帯の 下の よこの 棒。
+           駅より手前の 低い制限に あわせるときは「スピードを おとす」(.mode-lim: 制限の板と スピードの棒)。
+           さいごの 30m は ものさし(ui/stoppin.js)に かわる -->
       <div id="brake-guide" class="hidden">
         <div class="bg-cap" id="bg-cap">ブレーキ<br>めやす</div>
         <div class="bg-scale">
@@ -85,7 +86,6 @@
         <div class="bg-lim">
           <span class="bh-lim" id="bg-lim-plate">55</span>
           <div class="bg-limbar"><i id="bg-limbar-i"></i></div>
-          <span class="bg-limv" id="bg-limv"></span>
         </div>
         <div id="bg-txt" class="bg-txt">—</div>
       </div>
@@ -117,13 +117,13 @@
       <div id="msg-center" class="hidden"></div>
       <div id="badge-toast" class="hidden"><span class="bt-ico"></span><span class="bt-txt"></span></div>
       <div id="stamp-pop" class="hidden"><canvas id="stamp-pop-cv"></canvas><p id="stamp-pop-txt"></p></div>
-      <!-- 大きく いきすぎた: 画面を暗くして「もういちど とめる(すこし もどる) / このまま つぎの駅へ」をえらぶ(レバーは うごかない) -->
+      <!-- 大きく いきすぎた: 画面を暗くして「もういちど とめる(180m もどって ゆっくり) / このまま つぎの駅へ」をえらぶ(レバーは うごかない) -->
       <div id="overrun-modal" class="ov-scrim hidden">
         <div class="ov-card">
           <span class="ov-ico" data-ico="warn"></span>
           <h3>いきすぎ！</h3>
           <p id="ov-txt"></p>
-          <button id="btn-overrun-retry" class="btn btn-primary btn-big"><i data-ico="retry"></i>もういちど とめる<small>（すこし もどる）</small></button>
+          <button id="btn-overrun-retry" class="btn btn-primary btn-big"><i data-ico="retry"></i>もういちど とめる<small>（180m もどって ゆっくり）</small></button>
           <button id="btn-overrun-go" class="btn btn-ghost">このまま つぎの<ruby>駅<rt>えき</rt></ruby>へ</button>
         </div>
       </div>
@@ -194,8 +194,9 @@
       きみが<ruby>運転士<rt>うんてんし</rt></ruby>。レバーでスピードをあやつって、<ruby>駅<rt>えき</rt></ruby>にぴったりとめよう。
     </p>
     <div class="t-btns">
-      <!-- 前回と おなじ 列車で すぐ しゅっぱつ(前回の きろくが あるときだけ) -->
-      <button id="btn-quick" class="btn btn-primary btn-big hidden"><span class="q-main"><ruby>前回<rt>ぜんかい</rt></ruby>の つづき</span><small id="quick-sub"></small></button>
+      <!-- すぐ しゅっぱつ: さいごに はしりおえた 区間の つぎ(「つづきから」)か、前回と おなじ 列車(「まえと おなじ うんてん」)。
+           前回の きろくが あるときだけ。ことばは main.js の _updateQuick -->
+      <button id="btn-quick" class="btn btn-primary btn-big hidden"><span class="q-main">まえと おなじ うんてん</span><small id="quick-sub"></small></button>
       <button id="btn-to-select" class="btn btn-primary btn-big"><ruby>運転<rt>うんてん</rt></ruby>をはじめる</button>
       <button id="btn-to-stamps" class="btn btn-ghost"><i data-ico="stamp"></i>えきスタンプ <span id="stamp-count" class="pill">0/23</span></button>
     </div>
@@ -312,10 +313,14 @@
             <table id="res-stops"></table>
           </div>
         </div>
-        <div class="res-col">
+        <div class="res-col" id="res-side">
           <div id="res-next" class="res-next res-reveal hidden"></div>
-          <div id="res-stamps" class="res-stamps res-reveal hidden"></div>
-          <div id="res-badges" class="res-badges res-reveal hidden"></div>
+          <!-- この うんてんで もらったもの(スタンプ・くんしょう)を 1つの わくに。どちらも ないときは かくす -->
+          <div class="res-rewards res-reveal" id="res-rewards">
+            <p class="rr-h">この うんてんで もらったもの</p>
+            <div id="res-stamps" class="res-stamps res-reveal hidden"></div>
+            <div id="res-badges" class="res-badges res-reveal hidden"></div>
+          </div>
         </div>
       </div>
     </div>
