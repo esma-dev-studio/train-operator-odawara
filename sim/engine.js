@@ -38,6 +38,8 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const SHORT_GRACE = 8;
 /* 「もういちど とめる」(retryApproach)で やりなおした駅の 停止位置の点の上限(1=ぴったりの満点) */
 const RETRY_CAP = 0.6;
+/* 発車メロディ(audio の 4.6秒)が おわって ドアチャイムまでの間合い(メロディと チャイムを かさねない) */
+const MELODY_GAP = 4.9;
 
 export class TrainSim {
   /* line: data/line.json の内容 / opts: {service:'local'|'exp'|'rapid', weather:'clear'|'rain'} */
@@ -101,7 +103,9 @@ export class TrainSim {
     this.notch = 0;                // +4..-8(EB)
     this.accelCur = 0;             // 実効力行加速度（立ち上がり済み）
     this.brakeCur = 0;             // 実効ブレーキ減速度
-    this.t = this.timetable[stopIdx].dep - 20;   // 発車20秒前から
+    /* 発車13秒前から(はじめの待ち時間を みじかく): 0.8秒で メロディ → メロディの あとに ドアチャイム →
+     * 9秒で ドアが しまる(dep-4)。dep(ダイヤ)は かわらないので 遅れの点・ダイヤには ひびかない */
+    this.t = this.timetable[stopIdx].dep - 13;
     this.startIdx = stopIdx;       // いま停車している駅
     this.stopIdx = stopIdx + 1;    // 次に停まる駅のindex
     this.doorOpen = true;
@@ -131,8 +135,9 @@ export class TrainSim {
     this._doorPhase = 'boarding';  // boarding→closing→ready→run
     this._stopEval = null;
     this._departTime = this.timetable[stopIdx].dep;
-    this._melodyAt = this._departTime - 16;   // 発車メロディの合図
+    this._melodyAt = Math.max(this.t + 0.8, this._departTime - 16);   // 発車メロディの合図
     this._melodyDone = false;
+    this._melodyT = -1e9;                     // メロディが 鳴りはじめた時刻(ドアチャイムを その あとにする)
     this._approachDone = -1;                  // 「まもなく」を出した停車駅index
     this._departDone = false;                 // 「つぎは」を出したか
     this._left = false;
@@ -173,16 +178,38 @@ export class TrainSim {
 
   /* ============ 信号 ============ */
   _placeSignals() {
-    const sigs = [];
+    const deps = [];
     /* 出発信号: 各「停車駅」の先端+40m */
     this.stops.forEach((st, i) => {
-      if (i < this.stops.length - 1) sigs.push({ s: st.stopAt + 40, kind: 'dep', stopIdx: i });
+      if (i < this.stops.length - 1) deps.push({ s: st.stopAt + 40, kind: 'dep', stopIdx: i });
     });
-    /* 閉塞信号: 全駅間を~1.1kmで分割 */
-    for (let s = 900; s < this.line.meta.length - 400; s += 1100) {
-      sigs.push({ s, kind: 'block' });
+    /* 閉塞信号: 全駅間を~1.1kmで分割。ただし ホームの上には立てない(人の あいだに信号機が立ち、
+     * 柱が ホームに うまる)。すべての駅(通過駅も)の st.s-210 〜 st.s+50 に入るものは、
+     * その駅の st.s-250(予告の 300m と 200m の板の あいだ。どちらとも 50m はなれる)へ うしろに ずらす。
+     * 300m・200m の予告・制限/解除の板と ±3m で かさなるものは 6m ずらす(同じ列に 2つ ならばない) */
+    const sts = this.line.stations;
+    const inWin = (s) => sts.some((x) => s > x.s - 210 && s < x.s + 50);
+    const marks = [];
+    sts.forEach((x) => marks.push(x.s - 300, x.s - 200));
+    (this.line.limits || []).forEach((z) => marks.push(z.from - 15, z.to + 10));
+    const blocks = [];
+    for (let s0 = 900; s0 < this.line.meta.length - 400; s0 += 1100) {
+      let s = s0;
+      const x = sts.find((y) => s > y.s - 210 && s < y.s + 50);
+      if (x) s = x.s - 250;
+      for (const m of marks) if (Math.abs(s - m) <= 3) { s += s >= m ? 6 : -6; break; }
+      if (s < 300 || inWin(s)) continue;     // ずらした先も ホームなら やめる(駅が つづくところ)
+      blocks.push({ s, kind: 'block' });
     }
-    sigs.sort((a, b) => a.s - b.s);
+    /* 前に のこした信号(出発信号もふくむ)から 250m より近い閉塞信号は やめる(信号が 2つ ならばない) */
+    const all = deps.concat(blocks).sort((a, b) => a.s - b.s);
+    const sigs = [];
+    let prev = -1e9;
+    for (const g of all) {
+      if (g.kind === 'block' && g.s - prev < 250) continue;
+      sigs.push(g);
+      prev = g.s;
+    }
     return sigs;
   }
 
@@ -321,10 +348,14 @@ export class TrainSim {
       const dep = this._departTime;
       if (!this._melodyDone && this.t >= this._melodyAt) {
         this._melodyDone = true;
+        this._melodyT = this.t;
         const here = this.stops[this.stopIdx - 1];
         this._emit('melody', { seed: here ? here.lineIdx : 0 });
       }
-      if (this._doorPhase === 'boarding' && this.t >= dep - 10) {
+      /* ドアチャイム(しまります)は ふだん dep-10。メロディ(4.6秒)が まだ鳴っているときは 鳴りおわってから
+       * (はじめの駅は メロディが dep-12 なので dep-7.3 ごろ)。ドアが しまるのは いつも dep-4 */
+      const chimeAt = Math.max(dep - 10, Math.min(dep - 6, this._melodyT + MELODY_GAP));
+      if (this._doorPhase === 'boarding' && this.t >= chimeAt) {
         this._doorPhase = 'closing';
         this._emit('door-closing');
       }
@@ -512,6 +543,7 @@ export class TrainSim {
     this._departTime = Math.max(dep, this.t + this.service.dwell);
     this._melodyAt = Math.max(this.t + 1.0, this._departTime - 16);
     this._melodyDone = false;
+    this._melodyT = -1e9;
     this._departDone = false;
     this._emit('door-open', { departAt: this._departTime });
   }
