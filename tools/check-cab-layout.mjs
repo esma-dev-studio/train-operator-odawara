@@ -48,8 +48,8 @@ for (const v of VIEWS) {
   await page.waitForTimeout(1200);
   /* EBにして持ち手の位置もみる(ドアが開いていてもブレーキは入る) */
   await page.evaluate(() => __test.app.sim.setNotch(-8));
-  await page.waitForFunction(() => document.querySelector('#lever-grip').textContent.trim() === 'EB', null, { timeout: 60000 })
-    .catch(() => fails.push(`${v.name}: EBにしても持ち手の表示が変わらない`));
+  await page.waitForFunction(() => document.querySelector('#lever-grip').textContent.trim() === 'ひじょう', null, { timeout: 60000 })
+    .catch(() => fails.push(`${v.name}: EBにしても持ち手の表示が「ひじょう」に変わらない`));
   await page.waitForTimeout(300);
   /* 持ち手は 90ms でカチッと動く(CSSの transition)。ソフト描画ではコマが遅いので、動きおわるまで待つ */
   await page.waitForFunction(() => {

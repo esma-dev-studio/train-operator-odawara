@@ -29,6 +29,8 @@ const rubySt = (name) => ruby(name, STATION_KANA[name]);
 const fun = (m) => ([2, 5, 7, 9].includes(m % 10) ? 'ふん' : 'ぷん');
 /* 距離の表示のきざみ(main.js の qStep と同じ: 100m以上は10m、20m以上は5m、ほかは1m) */
 const qStep = (m) => (m >= 100 ? 10 : m >= 20 ? 5 : 1);
+/* このさきの制限・信号を出しはじめる距離(main.js の上の帯と同じ 700m) */
+const LOOKAHEAD = 700;
 
 /* ノッチ: 上から P4 … P1, N, B1 … B7, EB の13段 */
 const NOTCHES = [['P4', 4], ['P3', 3], ['P2', 2], ['P1', 1], ['N', 0],
@@ -452,9 +454,13 @@ export class Cab {
     if (sim.t < lastT - 0.5) { this._listIdx = null; this._limAt = null; }
     this._lastSimT = sim.t;
     if (h.notch !== this._lastNotch) this._renderNotch(h.notch);
+    /* 駅でドアが開いているあいだの 出発信号(赤)は 注意にしない(のりおりを待っているだけ。
+     * 赤い「とまれ」・きいろの帯・スピードちゅうい を出すと「なにか まちがえた」と思ってしまう) */
+    const a = h.ats;
+    this._dwellRed = !!h.doorOpen && !!a && a.kind === 'signal' && a.target === 0;
     this._renderSpeedo(h);
     this._renderBC(h.bc);
-    this._cls(this.els.lampPat, 'on', h.atsLamp === 'pattern' || h.atsLamp === 'brake');
+    this._cls(this.els.lampPat, 'on', (h.atsLamp === 'pattern' && !this._dwellRed) || h.atsLamp === 'brake');
     this._cls(this.els.lampBrk, 'on', h.atsLamp === 'brake');
     this._renderDoorLamp(!h.doorOpen && !h.finished);
     this._cls(this.els.lampSlip, 'on', !!h.slipping);
@@ -517,7 +523,8 @@ export class Cab {
       g.classList.add('lg-' + z);
       this._gripZone = z;
     }
-    this.els.gripT.textContent = n === -8 ? 'EB' : n > 0 ? 'P' + n : n < 0 ? 'B' + -n : 'N';
+    /* 持ち手の字は 目盛り・コーチと同じ ことば(ひじょう) */
+    this.els.gripT.textContent = n === -8 ? 'ひじょう' : n > 0 ? 'P' + n : n < 0 ? 'B' + -n : 'N';
     this._placeGrip(idx);
   }
 
@@ -543,13 +550,13 @@ export class Cab {
       }
     }
     const lim = h.limit;
-    const a = h.ats;
+    const a = this._dwellRed ? null : h.ats;
     const pat = a && a.pattern < lim ? a.pattern : 999;
     const patI = pat < 999 ? Math.floor(pat / 2.5) : 99;
     /* このさきの制限(線路わきの標識・信号)の目標スピード: その位置に小さいきいろの三角
      * (止まれの信号・駅の停止(0km/h)は出さない: 針の止まる位置にかさなるため) */
     const tgtI = a && a.kind !== 'stop' && a.target >= 2.5 && a.target < lim ? Math.floor(a.target / 2.5) : -1;
-    const lamp = h.atsLamp;
+    const lamp = this._dwellRed && h.atsLamp === 'pattern' ? 'normal' : h.atsLamp;
     /* きいろの帯(パターン〜制限)を光らせるのは、ATSが注意を出しているか、パターンに近いときだけ
      * (駅で止まっているあいだは 帯を出さず、パターンのはじまりに 小さな印だけ) */
     const warn = lamp !== 'normal' || v > pat - 10 ? 1 : 0;
@@ -714,9 +721,14 @@ export class Cab {
     c.fillStyle = ink;
     c.textAlign = 'center'; c.textBaseline = 'middle';
     c.font = `700 ${(R * (small ? 0.19 : 0.18)).toFixed(1)}px ${NUM_FONT}`;
+    /* 数字は 目盛りの線(0.76R から外)に かからない半径に。字の はば・高さを 角度の向きに投影した半分だけ 内へ
+     * (3時の「100」は 横に長いので内へ、12時の「60」は 高さのぶんだけ) */
+    const nh = (small ? 0.19 : 0.18) * 0.72, rn0 = small ? 0.70 : 0.72;
     for (let v = 0; v <= VMAX; v += 20) {
-      const an = angOf(v), rn = !small && (v === 0 || v === VMAX) ? 0.66 : 0.62;
-      c.fillText(String(v), Math.cos(an) * R * rn, Math.sin(an) * R * rn);
+      const an = angOf(v), str = String(v), w = c.measureText(str).width / R;
+      const ext = Math.abs(Math.cos(an)) * w / 2 + Math.abs(Math.sin(an)) * nh / 2;
+      const rn = rn0 - ext;
+      c.fillText(str, Math.cos(an) * R * rn, Math.sin(an) * R * rn);
     }
     c.shadowBlur = 0; c.shadowColor = 'transparent';
     if (!small) {
@@ -828,10 +840,11 @@ export class Cab {
      * だいだい(.near)は「いま ブレーキ」のときだけ(コーチ・ブレーキめやすと同じ きまり: だいだい = いま やる) */
     const d = Math.max(0, nx.dist);
     const past = nx.dist < -0.5;
-    const dk = past ? -1 - Math.round(-nx.dist) : d >= 1000 ? 100000 + Math.round(d / 10) : Math.round(d);
+    const dk = past ? -1 - Math.round(-nx.dist) : d >= 1000 ? 100000 + Math.round(d / 100) : Math.round(d);
     if (!atSta && dk !== this._distK) {
       this._distK = dk;
-      E.timsDist.textContent = past ? `すぎた ${Math.round(-nx.dist)} m` : d >= 1000 ? (d / 1000).toFixed(2) + ' km' : Math.round(d) + ' m';
+      /* km は 小数1けた(上の帯と同じ書き方) */
+      E.timsDist.textContent = past ? `すぎた ${Math.round(-nx.dist)} m` : d >= 1000 ? (d / 1000).toFixed(1) + ' km' : Math.round(d) + ' m';
       this._cls(E.timsDist, 'late', past);
     }
     if (!atSta) this._cls(E.timsDist, 'near', !past && h.uiBrakeNow === true);
@@ -849,13 +862,21 @@ export class Cab {
       }
     } else {
       this._depM = null;
-      /* じかん: 分のきざみ(こどもが読みやすく、表示もほとんど変わらない) */
-      const early = nx.arr - sim.t;
+      /* じかん: 分のきざみ。時計(上の 時:分)と つく時刻(時:分)の ひき算と かならず同じ数に
+       * (どちらも 表示している「分」で数える。時計の分が かわるのと 同じコマで かわる) */
+      const b = (this.baseHour || 10) * 3600;
+      const mNow = Math.floor((sim.t + b) / 60), mArr = Math.floor((nx.arr + b) / 60);
       let dk2, txt, late = false;
-      if (early >= 60) { const m = Math.floor(early / 60); dk2 = m; txt = `つく じかんまで あと ${m}${fun(m)}`; }
-      else if (early >= 0) { dk2 = 0; txt = 'もうすぐ つく じかん'; }
-      else if (early > -60) { dk2 = -1; txt = 'すこし おくれ'; late = true; }
-      else { const m = Math.floor(-early / 60); dk2 = -1 - m; txt = `${m}${fun(m)} おくれ`; late = true; }
+      if (nx.arr >= sim.t) {
+        const m = Math.max(0, mArr - mNow);
+        dk2 = m;
+        txt = m >= 1 ? `つく じかんまで あと ${m}${fun(m)}` : 'もうすぐ つく じかん';
+      } else {
+        const m = Math.max(0, mNow - mArr);
+        dk2 = -1 - m;
+        txt = m === 0 ? 'すこし おくれ' : `${m}${fun(m)} おくれ`;
+        late = true;
+      }
       if (dk2 !== this._delayK) { this._delayK = dk2; E.timsDelay.textContent = txt; this._cls(E.timsDelay, 'late', late); }
     }
     /* すすみぐあい(前の駅→つぎの駅) */
@@ -882,7 +903,8 @@ export class Cab {
       }
     }
     const a = h.ats;
-    if (a && (a.kind === 'limit' || a.kind === 'signal')) {
+    /* このさきの制限・信号は 700m 手前から(上の帯と同じ)。駅で のりおり中の 赤信号は 出さない */
+    if (a && (a.kind === 'limit' || a.kind === 'signal') && a.at - h.pos < LOOKAHEAD && !this._dwellRed) {
       if (a.at !== this._limAt) { this._limAt = a.at; this._limD0 = Math.max(1, a.at - h.pos); this._limSd = null; }
       if (a.kind !== this._limKind || a.target !== this._limKey) {
         this._limKind = a.kind; this._limKey = a.target;
@@ -918,14 +940,17 @@ export class Cab {
     }
   }
 
-  /* 勾配: たいら / のぼりざか / くだりざか(‰ は小さく。せまい画面では出さない) */
+  /* 勾配: たいら / のぼりざか / くだりざか。きつさは 小さな棒の数(10‰まで 1本・20‰まで 2本・それより きつい 3本と「きつい」)。
+   * ‰ の数字は 小学2年生には読めないので出さない */
   _renderGrade(g) {
     const kind = Math.abs(g) < 1.5 ? 0 : g > 0 ? 1 : -1;
-    const pm = Math.round(Math.abs(g));
-    const key = kind * 1000 + (kind ? pm : 0);
+    const pm = Math.abs(g);
+    const pips = kind === 0 ? 0 : pm >= 20 ? 3 : pm >= 10 ? 2 : 1;
+    const key = kind * 10 + pips;
     if (key === this._gradeK) return;
     this._gradeK = key;
     this.els.grade.innerHTML = kind === 0 ? '<i class="gr-ico gr-0"></i>たいら'
-      : `<i class="gr-ico gr-${kind > 0 ? 'up' : 'dn'}"></i>${kind > 0 ? 'のぼりざか' : 'くだりざか'}<small>${pm}‰</small>`;
+      : `<i class="gr-ico gr-${kind > 0 ? 'up' : 'dn'}"></i>${kind > 0 ? 'のぼりざか' : 'くだりざか'}`
+        + `<span class="gr-pips gr-${kind > 0 ? 'up' : 'dn'}-c" aria-hidden="true">${'<i></i>'.repeat(pips)}</span>${pips === 3 ? '<span class="gr-hard">きつい</span>' : ''}`;
   }
 }
