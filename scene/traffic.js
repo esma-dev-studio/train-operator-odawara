@@ -115,13 +115,15 @@ class AiTrain {
   }
 
   /* 自列車との位置関係(音用): 0=横にいる、±=前後の距離、相対速度 */
-  /* 音用: 相手の編成中心までの距離(+前方)と、近づく速さ(+接近/−遠ざかる) */
-  passing(me, vMe) {
+  /* 音用: 相手の編成中心までの距離(+前方)と、近づく速さ(+接近/−遠ざかる)。
+   * o を渡すと そこに書いて返す(毎フレームの new をしない) */
+  passing(me, vMe, o) {
     const center = this.s - this.dir * this.nCars * CAR * 0.5;
     const dist = center - (me - 80);
     const vRel = this.dir * this.v - vMe;
     const closing = dist === 0 ? 0 : -Math.sign(dist) * vRel;
     const offset = typeof this.offset === 'function' ? this.offset(this.s) : this.offset;
+    if (o) { o.dist = dist; o.relSpeed = closing; o.offset = offset; return o; }
     return { dist, relSpeed: closing, offset };
   }
 
@@ -242,9 +244,22 @@ export class Traffic {
     return false;
   }
 
-  passingInfo() {
+  /* 音用: 700m 以内の ほかの列車の位置関係の一覧。
+   * out(配列)を渡すと、それを空にして詰めなおして返す(毎フレームの配列・入れ物を作らない。
+   * 入れ物は列車ごとに使い回す)。渡さなければ 今までどおり新しい配列 */
+  passingInfo(out) {
     const sim = this.rs.sim;
-    return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 700);
+    if (!Array.isArray(out)) return this.list.map((t) => t.passing(sim.pos, sim.v / 3.6)).filter((p) => Math.abs(p.dist) < 700);
+    out.length = 0;
+    if (!sim) return out;
+    const list = this.list, vMe = sim.v / 3.6;
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (!t._pass) t._pass = { dist: 0, relSpeed: 0, offset: 0 };
+      const p = t.passing(sim.pos, vMe, t._pass);
+      if (Math.abs(p.dist) < 700) out.push(p);
+    }
+    return out;
   }
 
   /* ここで初めて編成を本当に解放する(置き場の分も) */

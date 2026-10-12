@@ -120,8 +120,9 @@ export function installGlGuard(app) {
         }
         if (app.scene === S) {
           if (typeof S.prewarmAsync === 'function') {
-            /* 遅い端末でも 準備が終わってから明ける(止まったときだけ 30秒で先へ) */
-            await Promise.race([S.prewarmAsync(), sleep(30000)]);
+            /* 遅い端末でも 準備が終わってから明ける。準備そのものにも 30秒の上限(budgetMs。こえたら のこりは
+             * 暗転の中で いっきに作る)。止まったときの保険の 31秒の待ちも のこす */
+            await Promise.race([S.prewarmAsync(null, { budgetMs: 30000 }), sleep(31000)]);
             /* それでも 準備中(描かない)なら、おわるまで 暗転のまま(12秒まで) */
             const t0 = performance.now();
             while (app.scene === S && S._warming && !S.glLost && performance.now() - t0 < 12000) await sleep(50);

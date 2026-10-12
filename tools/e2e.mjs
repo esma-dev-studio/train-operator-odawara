@@ -4,12 +4,14 @@
  * 各画面のスクリーンショットと、コンソールエラーが無いことを確認する。
  * つづけて: 「8」を大きく行きすぎた → 「もういちど とめる(すこし もどる)」で 180m 手前から止めなおす流れ、
  * WebGLの文脈が消えた → もどる(一時停止のまま 同じ位置で 描画が再開する)、
+ * 空が黒くならない(iPadの大きさ・画素密度2で: 晴れの空(HDR)が20秒おくれて届く / 夜のタイトルから昼の運転)、
  * 最後に 長い処理(long task, 250ms以上)の記録を出す(ソフト描画では GPU待ちも ふくむ)。
+ * 待つのは運転の状態(ドアが しまった・走りだした)で。停車の時間(秒)を決めうちしない
  *
  * 使い方: (ローカルHTTPサーバを立ててから)
  *   npx http-server -p 8123 -c-1 .
  *   node tools/e2e.mjs [http://localhost:8123] [出力フォルダ]
- * 環境変数: Q=high|mid|low(画質・既定low) / GPU=1(実GPUで描画) / W,H(画面サイズ)
+ * 環境変数: Q=high|mid|low(画質・既定low) / GPU=1(実GPUで描画) / W,H(画面サイズ) / SKY_ONLY=1(空の見張りだけ)
  * ========================================================= */
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,6 +45,98 @@ await page.addInitScript(() => {
   } catch (e) { /* 古いブラウザ */ }
 });
 const phase = (n) => page.evaluate((x) => { window.__ltPhase = x; }, n);
+
+/* ---- 空が黒くならない(iPadの黒い空の見張り) ----
+ * iPad の よこ(1180x820・画素密度2・タッチ)・低画質で 新しいページを開き、運転を はじめて しばらく待ってから:
+ *  ・背景(scene.background)が 空の画像(テクスチャ)で、見え方の決めた背景(_bgLive)と同じ・捨てた代わりの青空(_deadBg)でない
+ *  ・撮った絵の #gl-wrap の 上のまんなか(高さの25%: 運転台の屋根の ふちより下の空)の 40x20 の箱が 暗くない(輝度60より上)・上の4割に まっ黒が ほとんどない
+ * (i) 朝10時(昼のタイトル)・晴れの空(HDR)が 20秒おくれて届く → 梅ヶ丘から運転 → 25秒後
+ * (ii) 夜9時(夜のタイトル) → すぐに 昼の運転(梅ヶ丘から) → 20秒後 */
+const skyBad = [];
+async function skyCase(name, hour, hdrDelay, cfg, waitMs) {
+  const ctx = await browser.newContext({ viewport: { width: 1180, height: 820 }, deviceScaleFactor: 2, hasTouch: true });
+  const p = await ctx.newPage();
+  p.on('console', (m) => { if (m.type() === 'error') errors.push(`${name}: ${m.text()}`); });
+  p.on('pageerror', (e) => errors.push(`${name}: ${e.message}\n${e.stack}`));
+  await p.addInitScript((h) => { Date.prototype.getHours = function () { return h; }; }, hour);
+  if (hdrDelay) {
+    await p.route('**/assets/sky/sky_clear.hdr*', async (route) => {
+      await new Promise((r) => setTimeout(r, hdrDelay));
+      await route.continue().catch(() => { /* ページを とじた */ });
+    });
+  }
+  try {
+    let at = 'ひらく';
+    const t0 = Date.now();
+    const sec = () => ((Date.now() - t0) / 1000).toFixed(0) + '秒';
+    try {
+      await p.goto(`${base}/index.html?debug=1&q=low&v=${Date.now()}`, { timeout: 240000 });
+      at = 'タイトルまち';
+      await p.waitForFunction(() => window.__test && __test.app.mode === 'title', null, { timeout: 300000, polling: 500 });
+    } catch (e) { throw new Error(`${at} (${sec()}): ${e.message.split('\n')[0]}`); }
+    const tod0 = await p.evaluate(() => __test.app.scene.timeOfDay);
+    await p.evaluate((c) => { __test.setup(c); return true; }, cfg);
+    await p.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 300000, polling: 500 })
+      .catch((e) => { throw new Error(`運転の はじまりまち (${sec()}): ${e.message.split('\n')[0]}`); });
+    await p.waitForTimeout(waitMs);
+    /* 準備中・暗転中なら 終わるまで(ソフト描画では長い) */
+    await p.waitForFunction(() => {
+      const S = __test.app.scene, f = document.querySelector('#fade');
+      return S && !S._warming && (!f || parseFloat(getComputedStyle(f).opacity) < 0.01);
+    }, null, { timeout: 120000, polling: 250 }).catch(() => skyBad.push(`${name}: 準備・暗転が おわらない`));
+    const st = await p.evaluate(() => {
+      const S = __test.app.scene, bg = S.scene.background;
+      return { tod: S.timeOfDay, tex: !!(bg && bg.isTexture), live: bg === S._bgLive, dead: !!bg && bg === S._deadBg,
+        hdr: !!(S.env.clear && !S.env.clear.placeholder), standIn: !!S._standIn };
+    });
+    const png = await p.screenshot({ path: join(out, `10_sky_${name}.png`), timeout: 120000 });
+    const px = await p.evaluate(async (b64) => {
+      const R = document.querySelector('#gl-wrap').getBoundingClientRect();
+      const img = new Image();
+      img.src = 'data:image/png;base64,' + b64;
+      await img.decode();
+      const k = img.width / innerWidth;
+      const cv = document.createElement('canvas');
+      cv.width = img.width; cv.height = img.height;
+      const c = cv.getContext('2d');
+      c.drawImage(img, 0, 0);
+      const bw = Math.round(40 * k), bh = Math.round(20 * k);
+      const d = c.getImageData(Math.round((R.left + R.width / 2) * k - bw / 2), Math.round((R.top + R.height * 0.25) * k - bh / 2), bw, bh).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const u = c.getImageData(Math.round(R.left * k), Math.round(R.top * k), Math.round(R.width * k), Math.round(R.height * 0.4 * k)).data;
+      let blk = 0;
+      for (let i = 0; i < u.length; i += 16) if (u[i] < 6 && u[i + 1] < 6 && u[i + 2] < 6) blk++;
+      return { box: Math.round(sum / (d.length / 4)), black: Math.round(blk / (u.length / 16) * 1000) / 10 };
+    }, png.toString('base64'));
+    step(`空(${name}): タイトル ${tod0} → ${st.tod} / 背景 ${st.tex ? '空の画像' : 'ちがう'} / _bgLive と同じ ${st.live} / 捨てた空 ${st.dead} / HDR ${st.hdr} / 上の箱 ${px.box} / まっ黒 ${px.black}%`);
+    if (!st.tex) skyBad.push(`${name}: 背景が 空の画像でない`);
+    if (!st.live) skyBad.push(`${name}: 背景が _bgLive と ちがう`);
+    if (st.dead) skyBad.push(`${name}: 背景が 捨てた代わりの青空`);
+    if (!(px.box > 60)) skyBad.push(`${name}: 上のまんなかが 暗い (輝度 ${px.box})`);
+    if (px.black > 10) skyBad.push(`${name}: 上の4割の ${px.black}% が まっ黒`);
+  } catch (e) {
+    skyBad.push(`${name}: ${e.message}`);
+  } finally {
+    await ctx.close();
+  }
+}
+async function skyRun() {
+  await skyCase('late_hdr', 10, 20000, { service: 'local', weather: 'clear', daytime: 'day', dir: 'down', start: 8 }, 25000);
+  await skyCase('night_title_day_run', 21, 0, { service: 'local', weather: 'clear', daytime: 'day', dir: 'down', start: 8 }, 20000);
+  bad.push(...skyBad);
+}
+
+
+/* SKY_ONLY=1: 空の見張りだけ(ほかの通しは とばす) */
+if (process.env.SKY_ONLY === '1') {
+  await skyRun();
+  await browser.close();
+  if (errors.length) { console.error('★ コンソールエラー:\n' + errors.join('\n')); process.exit(1); }
+  if (bad.length) { console.error('★ ' + bad.join('\n★ ')); process.exit(1); }
+  console.log('OK');
+  process.exit(0);
+}
 
 await page.goto(`${base}/index.html?debug=1&q=${process.env.Q || 'low'}`);
 await page.waitForFunction(() => window.__test && window.__test.app.mode === 'title', null, { timeout: 120000 });
@@ -130,8 +224,8 @@ await page.evaluate(() => __test.setup({ service: 'local', start: 8, end: 10 }))
 await page.waitForFunction(() => __test.app.mode === 'drive' && __test.app.running, null, { timeout: 120000 });
 const ov = await page.evaluate(() => {
   const A = __test.app, sim = A.sim;
-  sim.skipDwell();
-  __test.advance(8);   // ドアが しまって 走りだすまで
+  /* ドアが しまって 走りだすまで(停車の時間は エンジンの側で かわるので、状態を見て すすめる) */
+  for (let k = 0; k < 240 && (sim.doorOpen || !(sim.v > 0)) && !sim.ended; k++) __test.advance(0.5);
   const first = __test.arrive();
   sim.skipDwell();
   __test.approach(120);
@@ -179,8 +273,10 @@ await page.waitForTimeout(800);
 const guard = await page.evaluate(() => !!__test.app._glGuard);
 if (guard) {
   const g0 = await page.evaluate(() => {
-    const A = __test.app;
-    A.sim.skipDwell(); __test.advance(20);
+    const A = __test.app, sim = A.sim;
+    /* 走りだすまで すすめてから、もう少し(停車の時間は 決めうちしない) */
+    for (let k = 0; k < 240 && (sim.doorOpen || !(sim.v > 0)) && !sim.ended; k++) __test.advance(0.5);
+    __test.advance(6);
     const pos = A.sim.pos, d0 = A.scene.drawCount || 0;
     let ok = false;
     if (__test.loseGL) ok = __test.loseGL() !== false;
@@ -225,6 +321,10 @@ Object.keys(by).forEach((k) => {
   const a = by[k].sort((x, y) => y - x);
   console.log(`  ${k.padEnd(12)} ${a.length}回 最大${a[0]} / ${a.slice(0, 6).join(', ')}`);
 });
+
+/* 空の見張り(別のページで)。もとのページは 白紙にして 描画を止める(CPUを取り合わない) */
+await page.goto('about:blank').catch(() => { /* noop */ });
+await skyRun();
 
 await browser.close();
 console.log('スクリーンショット:', out);

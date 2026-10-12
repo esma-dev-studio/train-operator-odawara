@@ -7,6 +7,8 @@
  *   node tools/shots.mjs <出力フォルダ> [場面名の一部でしぼる...]
  * 環境変数: BASE(既定 http://localhost:8123) / Q=high|mid|low(既定mid) / GPU=1(実GPU)
  * 場面ごとの描画負荷(draw call・三角形・シェーダー数・影の地図のぶんの draw call)を <出力フォルダ>/calls.json に書く。
+ * 昼・夕方の運転の場面(夜・トンネル・ターミナル・メニューの画面は のぞく)は、撮った絵の空が黒くないかを見る
+ * (iPadの黒い空の見張り)。黒ければ「SKY BLACK」と出して、終了コード1。
  * 場面の項目: setup / advance / approach / notch / cam / finish / arrive(停車するまで自動運転) /
  *            overrun(「8」を m すぎて止まる) / toCrossing(つぎの踏切の m 手前まで自動運転) /
  *            vp(画面サイズ) / touch / dpr(画素密度) / wait /
@@ -76,7 +78,49 @@ const SCENES = [
   { name: '39_loading', loading: { delay: 4000, at: 2000 } },
   /* しゅっぱつの暗転カード(__test.fadeCard) */
   { name: '40_fade_card', setup: { start: 9 }, fadeCard: true },
+  /* デザイン第4回で ふやした場面: 多摩川の橋を 線路わきから / 「8」の 10m 手前(さいごの よせ) */
+  { name: '41_front_bridge', setup: { start: 16 }, advance: 32, cam: 'front' },
+  { name: '42_final_approach', setup: { start: 9 }, approach: 10, notch: -2, cam: 'cab', wait: 600 },
 ];
+
+/* 空の見張りを しない場面(夜・トンネル・ターミナル・メニュー・成績票・いきすぎの幕・暗転カード) */
+const NO_SKY = new Set(['03_cab_terminal', '12_tunnel_cab', '20_up_terminal_arrival', '27_tunnel_portal']);
+const skyScene = (sc) => !!sc.setup && sc.setup.daytime !== 'night' && !sc.finish && !sc.overrun && !sc.fadeCard &&
+  !sc.loading && !sc.screen && !NO_SKY.has(sc.name);
+
+/* 撮った絵(PNG)の空を はかる: #gl-wrap の 上のまんなか(高さの25%: 運転台の屋根の ふちより下の空)の 40x20 の箱の明るさの平均(sRGB の輝度)と、
+ * 上の4割の中の まっ黒な画素(RGBどれも 6 未満)の割合。絵の読みとりは ページの中で(PNG を読む道具が いらない) */
+async function measureSky(page, png) {
+  return page.evaluate(async (b64) => {
+    const wrap = document.querySelector('#gl-wrap') || document.querySelector('#gl');
+    if (!wrap) return null;
+    const R = wrap.getBoundingClientRect();
+    const img = new Image();
+    img.src = 'data:image/png;base64,' + b64;
+    await img.decode();
+    const k = img.width / innerWidth;   // 画素密度(dpr 2 の画面は 2倍の絵)
+    const cv = document.createElement('canvas');
+    cv.width = img.width; cv.height = img.height;
+    const c = cv.getContext('2d');
+    c.drawImage(img, 0, 0);
+    const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    const bw = Math.round(40 * k), bh = Math.round(20 * k);
+    const bx = Math.round((R.left + R.width / 2) * k - bw / 2), by = Math.round((R.top + R.height * 0.25) * k - bh / 2);
+    const bd = c.getImageData(Math.max(0, bx), Math.max(0, by), bw, bh).data;
+    let sum = 0;
+    for (let i = 0; i < bd.length; i += 4) sum += lum(bd, i);
+    const box = sum / (bd.length / 4);
+    const ux = Math.round(R.left * k), uy = Math.round(R.top * k), uw = Math.round(R.width * k), uh = Math.round(R.height * 0.4 * k);
+    const ud = c.getImageData(Math.max(0, ux), Math.max(0, uy), Math.max(1, uw), Math.max(1, uh)).data;
+    let blk = 0;
+    for (let i = 0; i < ud.length; i += 16) if (ud[i] < 6 && ud[i + 1] < 6 && ud[i + 2] < 6) blk++;
+    const S = window.__test && __test.app.scene;
+    const bg = S && S.scene ? S.scene.background : null;
+    const tag = !bg ? 'null' : bg.isColor ? 'color' : bg.isTexture ? 'texture' : '?';
+    return { box: Math.round(box * 10) / 10, black: Math.round(blk / (ud.length / 16) * 1000) / 10, bg: tag,
+      live: !!S && bg === S._bgLive, dead: !!S && !!bg && bg === S._deadBg };
+  }, png.toString('base64'));
+}
 
 const pick = filters.length ? SCENES.filter((s) => filters.some((f) => s.name.includes(f))) : SCENES;
 const args = process.env.GPU ? ['--enable-gpu', '--ignore-gpu-blocklist'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
@@ -84,6 +128,7 @@ const browser = await chromium.launch({ args: [...args, '--autoplay-policy=no-us
 const pages = new Map();
 const errors = [];
 const perf = {};
+const sky = {};   // 空の見張りの はかった値(<出力フォルダ>/sky.json)
 
 async function pageFor(vp = [1280, 800], touch = false, dpr = 1) {
   const key = vp.join('x') + (touch ? 't' : '') + (dpr !== 1 ? `@${dpr}x` : '');
@@ -231,8 +276,17 @@ for (const sc of pick) {
     }, null, { timeout: 30000, polling: 200 }).catch(() => { /* noop */ });
     await page.waitForTimeout(600);
   }
-  await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
+  const png = await page.screenshot({ path: join(out, sc.name + '.png'), timeout: 180000 });
   if (sc.fadeCard) await page.evaluate(() => { if (__test.fadeCard) __test.fadeCard(false); });
+  if (skyScene(sc)) {
+    /* 空の見張り: 上のまんなかの箱が暗い(輝度25未満)か、上の4割の1割より多くが まっ黒なら 黒い空 */
+    const sk = await measureSky(page, png).catch(() => null);
+    if (sk && (sk.box < 25 || sk.black > 10 || sk.dead)) {
+      console.log(`SKY BLACK ${sc.name}: box ${sk.box} / black ${sk.black}% / background ${sk.bg}${sk.live ? '' : ' (not _bgLive)'}${sk.dead ? ' (disposed stand-in)' : ''}`);
+      errors.push(`${sc.name}: SKY BLACK`);
+    }
+    if (sk) { sky[sc.name] = sk; writeFileSync(join(out, 'sky.json'), JSON.stringify(sky, null, 1)); }
+  }
   /* 描画負荷: 1コマぶん(影・本描画・ポストエフェクトの合計)を数える。
    * メニューの うしろは 3フレームに1回しか描かないので、3Dを描いた回数(__test.renders)で わる */
   const info = await page.evaluate(() => new Promise((resolve) => {

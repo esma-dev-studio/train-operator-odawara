@@ -7,7 +7,7 @@
 /* importmapは使わない(古いiPadのSafariが非対応のため、相対パスで読み込む) */
 import * as THREE from '../vendor/three.module.min.js';
 import { RGBELoader } from '../vendor/RGBELoader.js';
-import { LOOK, pickLook, prepareClearHdr, horizonRadiance, fogFromHorizon, acesFilmic, makeMacroTex, makeWeatherUniforms, installWeather, makeDuskSky, makeNightSky } from './look.js';
+import { LOOK, pickLook, prepareClearHdr, horizonRadiance, fogFromHorizon, acesFilmic, makeMacroTex, makeWeatherUniforms, installWeather, makeDuskSky, makeNightSky, applyGrade } from './look.js';
 import { EffectComposer } from '../vendor/addons/EffectComposer.js';
 import { RenderPass } from '../vendor/addons/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/addons/UnrealBloomPass.js';
@@ -1133,6 +1133,8 @@ export class RailScene {
     const Q = QUALITY[this.quality];
     this.composer = null;
     this.bloom = null;
+    /* 出力パス(トーンマップ+表ごとの仕上げ uGrSat/uGrLift/uGrGain。look.js)。低画質は null */
+    this._outPass = null;
     if (!Q.bloom) return;
     try {
       const gl = this.renderer.getContext();
@@ -1153,14 +1155,17 @@ export class RailScene {
       this._bloomTinted = false;
       if (this._perf && this._perf.bloomShift > 0) { bloom.bloomTintColors.forEach((c) => c.multiplyScalar(0.74)); this._bloomTinted = true; }
       comp.addPass(bloom);
-      comp.addPass(new OutputPass());
+      const out = new OutputPass();
+      comp.addPass(out);
       bloom.enabled = false;
       this.composer = comp;
       this.bloom = bloom;
+      this._outPass = out;
       if (this._w) this.composer.setSize(this._w, this._h);
     } catch (e) {
       this.composer = null;
       this.bloom = null;
+      this._outPass = null;
     }
     this._needPrewarm = true;
   }
@@ -1170,11 +1175,12 @@ export class RailScene {
     return !!this.composer;
   }
 
-  /* ブルームを効かせるか(夜・夕方・雨雪・トンネルやターミナルの中)。メニューの背景では止める。
+  /* ブルームを効かせるか(いまの見え方の表 LOOK に bloom があるとき=夜・夕方、と トンネルやターミナルの中)。
+   * 昼の雨・雪は表の bloom が null(しきい値をこえる明るさがない。にじみの計算は むだ)。メニューの背景では止める。
    * _kE は目の慣れ(露出)の値(なければ 1) */
   _bloomOn() {
     const kk = Math.min(this._k, this._kE != null ? this._kE : 1);
-    return this._perf.bloom !== false && !this._backdrop && (kk < 0.95 || this.timeOfDay !== 'day' || this.weather !== 'clear');
+    return this._perf.bloom !== false && !this._backdrop && (kk < 0.95 || !!(this._lk && this._lk.bloom));
   }
 
   /* 使うシェーダを走り出す前に全部コンパイルしておく(走行中のカクつき防止)。
@@ -1252,17 +1258,25 @@ export class RailScene {
    * ・ない(iPadのSafari・ソフト描画): 材質ごとに「作る→リンクを待つ→1回描く」を 12ms ずつに分けて、
    *   あいだで ほかのタスクに ゆずる(_warmSliced)。描くところまでしないと、GPU側の準備が最初のコマに残る
    * ワールドも見え方も変わっていなければ(_needPrewarm も _worldNew もない)カメラを置くだけで すぐ終わる。
+   * 前の準備が そろったときと同じ見え方の目印(_warmDone: 同じワールド・同じ _warmSig)なら、シェーダは もう
+   * そろっているので 準備しない('[p6] warm skipped')。古い目印は おぼえない(three.js は どの材質も使わなくなった
+   * シェーダを捨てるので、昼→夜→昼 は ほんとうに作りなおしになる)。
    * onProgress(0..1) で進み具合を知らせる。完成を待っている間に届いた描画(render)は描かずに戻る。
    * 先に はじまった準備(タイトルへ戻る暗転の中など)が まだ描画を止めていれば、それが終わるまで返さない
    * (返すと 呼んだ側が暗転を明けて、絵が止まったまま運転が はじまる)。
-   * maxMs: 空まちも ふくめた 全体の時間の めやす(呼ぶ側の 10秒の保険より 前に終わる)。
-   *   分けて準備しているうちに こえたら、のこりは 仕上げで いっきに作る(暗転の中。ふつうの prewarm と同じ) */
-  async prewarmAsync(onProgress, maxMs) {
+   * 準備を はじめるたびに番号(_warmTok)を1つ進める。古い番号の準備は つぎの確認で やめて、仕上げもしない
+   * (いちばん新しい見え方だけを準備する。重なった2つの準備が かわるがわる背景を もどして 空が黒くなるのを防ぐ)。
+   * opts.budgetMs: 空まちも ふくめた 全体の時間の めやす(ms。なければ 8.5秒。古い呼び方の「2つめが数」も同じ)。
+   *   分けて準備しているうちに こえたら、のこりは 仕上げで いっきに作る(暗転の中。ふつうの prewarm と同じ。
+   *   走っている途中では作らない) */
+  async prewarmAsync(onProgress, opts) {
     const prog = typeof onProgress === 'function' ? onProgress : null;
     const tell = (k) => { if (prog) { try { prog(k); } catch (e) { /* noop */ } } };
     const r = this.renderer;
     if (!r || !this.scene || this.glLost || this._dead) { tell(1); return; }
-    const deadline = performance.now() + (maxMs > 0 ? maxMs : 8500);
+    const bud = typeof opts === 'number' ? opts
+      : opts && typeof opts === 'object' && typeof opts.budgetMs === 'number' ? opts.budgetMs : 0;
+    const deadline = performance.now() + (bud > 0 ? bud : 8500);
     if (!this._needPrewarm && !this._worldNew && this._booted && !this._lateN) {
       this._placeView();
       /* 準備は いらないが、先に はじまった準備が まだ続いていれば 描けるようになるまで待つ */
@@ -1270,12 +1284,15 @@ export class RailScene {
       tell(1);
       return;
     }
+    /* ここから準備する: 番号を進める(先に はじまった準備は つぎの確認で やめる) */
+    const tok = this._warmTok = (this._warmTok || 0) + 1;
+    const stale = () => tok !== this._warmTok || this._dead;
     this._needPrewarm = false;
     this._booted = true;
     /* 空を待つ間も描かない(_needPrewarm を下ろしたまま描くと、新しいワールドのシェーダをそのコマで全部作って止まる) */
     this._warming = (this._warming || 0) + 1;   // 数で持つ(2回重ねて呼ばれても、先に終わった側が描画を再開しない)
     const cap = (ms) => new Promise((res) => setTimeout(res, ms));
-    let env0 = null, sliced = false, cut = false;
+    let env0 = null, sliced = false, cut = false, skip = false;
     const gen = this._worldGen;
     try {
       /* 使う空(HDR)を読みこみ中なら、少しだけ待ってから(あとで差しかえると全部コンパイルしなおしになる)。
@@ -1285,50 +1302,71 @@ export class RailScene {
       const ld = wk ? this._envLoad[wk] : null;
       if (ld && !this._envLate[wk] && !(this.env[wk] && !this.env[wk].placeholder)) {
         await Promise.race([ld, cap(3000)]);
-        if (this._dead) return;   // 待つあいだに捨てられた(cancelAsync)
       }
-      if (this._lateN) this._promoteEnv(true);
-      this._needPrewarm = false;
-      /* シェーダの完成を待つ間に空が届いて差しかわったら、仕上げの準備(_needPrewarm)を消さない */
-      env0 = this.scene.environment;
-      this._placeView();
-      const ex = r.extensions;
-      const par = !!(ex && typeof ex.has === 'function' && ex.has('KHR_parallel_shader_compile'));
-      if (par) {
-        const prev = r.getRenderTarget();
-        let p = null;
-        try {
-          r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
-          p = this._compileMain(true);
-        } catch (e) { p = null; }
-        r.setRenderTarget(prev);
-        /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒(全体の めやすの のこり)で先へ(描かないまま止まらないように)。
-         * まだのものは 仕上げの1回の描画で そろう */
-        const left = Math.max(1000, Math.min(6000, deadline - performance.now()));
-        if (p) { try { await Promise.race([p, cap(left)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
-      } else {
-        sliced = true;
-        const sig0 = this._warmSig();
-        cut = await this._warmSliced(gen, tell, deadline);
-        /* 準備のあいだに 晴れの空(HDR)が届いて差しかわるなどで _needPrewarm がまた立った:
-         * 見え方の目印(_warmSig)が同じなら シェーダは同じなので そのまま下ろす。ちがえば もう1回だけ分けて準備する
-         * (立てたままにすると、つぎの render が いっきに準備して止まる) */
-        if (this._needPrewarm && gen === this._worldGen && !this.glLost) {
-          this._needPrewarm = false;
-          if (this._warmSig() !== sig0) {
-            /* 時間切れなら 分けずに 仕上げで いっきに */
-            if (performance.now() < deadline) {
-              this._placeView();
-              cut = await this._warmSliced(gen, tell, deadline);
-            } else {
-              cut = true;
+      /* 待つあいだに捨てられた(cancelAsync)・新しい準備が はじまった: ここで やめる */
+      if (!stale()) {
+        if (this._lateN) this._promoteEnv(true);
+        this._needPrewarm = false;
+        const W = this._warmDone;
+        if (W && W.gen === this._worldGen && !this._worldNew && W.sig === this._warmSig()) {
+          /* 前の準備と同じ見え方: シェーダは そろっている(GPUを待つ回数 0) */
+          skip = true;
+          this._placeView();
+          if (this._debug) console.log('[p6] warm skipped: ' + W.sig);
+        } else {
+          /* シェーダの完成を待つ間に空が届いて差しかわったら、仕上げの準備(_needPrewarm)を消さない */
+          env0 = this.scene.environment;
+          this._placeView();
+          const ex = r.extensions;
+          const par = !!(ex && typeof ex.has === 'function' && ex.has('KHR_parallel_shader_compile'));
+          if (par) {
+            const prev = r.getRenderTarget();
+            let p = null;
+            try {
+              r.setRenderTarget(this.composer ? this.composer.renderTarget1 : null);
+              p = this._compileMain(true);
+            } catch (e) { p = null; }
+            r.setRenderTarget(prev);
+            /* 完成の知らせが来ない(文脈を失ったなど)ときも6秒(全体の めやすの のこり)で先へ(描かないまま止まらないように)。
+             * 新しい準備が はじまったら すぐ やめる。まだのものは 仕上げの1回の描画で そろう */
+            const left = Math.max(1000, Math.min(6000, deadline - performance.now()));
+            if (p) { try { await Promise.race([p, this._tokWait(tok, left)]); } catch (e) { /* 描画時にコンパイルされるだけ */ } }
+          } else {
+            sliced = true;
+            const sig0 = this._warmSig();
+            cut = await this._warmSliced(gen, tell, tok, deadline);
+            /* 準備のあいだに 晴れの空(HDR)が届いて差しかわるなどで _needPrewarm がまた立った:
+             * 見え方の目印(_warmSig)が同じなら シェーダは同じなので そのまま下ろす。ちがえば もう1回だけ分けて準備する
+             * (立てたままにすると、つぎの render が いっきに準備して止まる) */
+            if (this._needPrewarm && gen === this._worldGen && !this.glLost && !stale()) {
+              this._needPrewarm = false;
+              if (this._warmSig() !== sig0) {
+                /* 時間切れなら 分けずに 仕上げで いっきに */
+                if (performance.now() < deadline) {
+                  this._placeView();
+                  cut = await this._warmSliced(gen, tell, tok, deadline);
+                } else {
+                  cut = true;
+                }
+              }
+              env0 = this.scene.environment;
             }
           }
-          env0 = this.scene.environment;
         }
       }
     } finally {
       this._warming = Math.max(0, (this._warming || 0) - 1);
+    }
+    /* やめた(新しい準備が はじまった・捨てた)・準備しなくてよかった: 仕上げは しない。
+     * ほかの準備がまだ続いていれば 描けるようになるまで待ってから返す */
+    if (skip || stale()) {
+      if (this._warming && !this._dead) await this._untilDrawable(15000);
+      if (skip && !stale()) {
+        this._flushStale();
+        this._bgSafe();
+        tell(1);
+      }
+      return;
     }
     /* ほかの準備(先に はじまった prewarmAsync・少しずつ作るワールド)がまだ続いている: 仕上げは そちらで。
      * ここは 描けるようになるまで待ってから返す(すぐ返すと、呼んだ側が 描けないまま 暗転を明ける) */
@@ -1351,14 +1389,28 @@ export class RailScene {
     if (this.scene.environment === env0) this._needPrewarm = false;
     if (gen === this._worldGen) {
       this._worldNew = false;
-      /* 準備が そろったときの見え方の目印(render が 同じ見え方で いっきに準備しなおさないように) */
+      /* 準備が そろったときの見え方の目印(render・つぎの prewarmAsync が 同じ見え方で 準備しなおさないように) */
       if (!this._needPrewarm) this._warmDone = { sig: this._warmSig(), gen };
     }
+    /* 背景の保険(準備のあいだに 古い空・捨てた空が もどっていたら、いまの空へ) */
+    this._bgSafe();
     tell(1);
     try { this.render(0); } catch (e) { /* noop */ }
     /* 仕上げの絵をGPUが描き終えるまで待ってから返す(呼び出し側が暗転を明けたときに絵ができている。
      * 待たずに進むと、つぎの何かの「待ち合わせ」で止まる) */
     await this._gpuIdle(gen);
+  }
+
+  /* ms たつか、準備の番号(_warmTok)が変わる(新しい準備が はじまった)・捨てたステージになるまで待つ */
+  _tokWait(tok, ms) {
+    return new Promise((res) => {
+      const t0 = performance.now();
+      const look = () => {
+        if (tok !== this._warmTok || this._dead || performance.now() - t0 >= ms) { res(); return; }
+        setTimeout(look, Math.min(50, Math.max(1, ms - (performance.now() - t0))));
+      };
+      look();
+    });
   }
 
   /* 分けて準備する(並行コンパイルがないとき)。準備するもの:
@@ -1372,10 +1424,13 @@ export class RailScene {
    *   3) 三角形1つだけ本番と同じ描画先・同じ光の数で描く(リンク結果の読みとりとGPUの描画の準備)
    *   4) もう一度 GPU側を待つ
    * フェンスがない(WebGL1)ときは 3) で1つずつ待つことになるが、1回分が小さいので長くは止まらない。
-   * ワールドが作り直されたら(gen)・文脈が消えたら やめる。
-   * deadline(performance.now() の時刻)を こえたら やめて true を返す(のこりは 呼んだ側の仕上げで いっきに) */
-  async _warmSliced(gen, tell, deadline) {
+   * ワールドが作り直されたら(gen)・新しい準備が はじまったら(tok と _warmTok がちがう)・文脈が消えたら やめる。
+   * deadline(performance.now() の時刻)を こえたら やめて true を返す(のこりは 呼んだ側の仕上げで いっきに)。
+   * 一時的に変える物(カメラ・光のレイヤー・背景・描画先)は、1回分ごとに その時の値を覚えて もどす
+   * (最初に覚えた値に もどすと、あいだに届いた空・別の準備が変えた物を 古い値に もどしてしまう) */
+  async _warmSliced(gen, tell, tok, deadline) {
     const until = deadline > 0 ? deadline : Infinity;
+    const gone = () => gen !== this._worldGen || this.glLost || this._dead || (tok != null && tok !== this._warmTok);
     const r = this.renderer;
     const gl = r.getContext();
     const fences = !!(gl && typeof gl.fenceSync === 'function');
@@ -1390,26 +1445,27 @@ export class RailScene {
     const total = items.length + 1;
     /* 全体の状態を一時的に: カメラは WARM_LAYER だけを見る(光も同じレイヤーに入れて、光の数を本番と同じに) */
     const cam = this.camera;
-    const camMask = cam.layers.mask;
     const lights = [];
-    const addLights = (sc) => sc.traverse((o) => { if (o.isLight) lights.push([o, o.layers.mask]); });
+    const addLights = (sc) => sc.traverse((o) => { if (o.isLight) lights.push(o); });
     addLights(this.scene);
     if (ovl) addLights(ovl.scene);
     const sm = r.shadowMap;
-    /* 背景は 1回分ごとに覚えて もどす(最初に覚えた物に もどすと、あいだに届いて差しかわった空(HDR)を
-     * 古い空(捨てた代わりの青空・雨の灰色)に もどしてしまう) */
-    const st = { ac: true, smAuto: false, smNeed: false, rt: null, bg: null };
+    /* 背景・カメラと光のレイヤーは 1回分ごとに覚えて もどす(set と unset のあいだに待ちはない) */
+    const st = { ac: true, smAuto: false, smNeed: false, rt: null, bg: null, cam: 0, lm: [] };
     const set = () => {
       st.ac = r.autoClear; st.smAuto = sm.autoUpdate; st.smNeed = sm.needsUpdate; st.rt = r.getRenderTarget();
       st.bg = this.scene.background;
+      st.cam = cam.layers.mask;
+      st.lm.length = 0;
+      for (let i = 0; i < lights.length; i++) st.lm.push(lights[i].layers.mask);
       cam.layers.set(WARM_LAYER);
-      for (let i = 0; i < lights.length; i++) lights[i][0].layers.enable(WARM_LAYER);
+      for (let i = 0; i < lights.length; i++) lights[i].layers.enable(WARM_LAYER);
       r.autoClear = false;
       sm.autoUpdate = false; sm.needsUpdate = false;
     };
     const unset = () => {
-      cam.layers.mask = camMask;
-      for (let i = 0; i < lights.length; i++) lights[i][0].layers.mask = lights[i][1];
+      cam.layers.mask = st.cam;
+      for (let i = 0; i < lights.length; i++) lights[i].layers.mask = st.lm[i];
       this.scene.background = st.bg;
       r.autoClear = st.ac;
       sm.autoUpdate = st.smAuto; sm.needsUpdate = st.smNeed;
@@ -1450,7 +1506,7 @@ export class RailScene {
     const prog = () => (r.info.programs ? r.info.programs.length : 0);
     let i = 0, waits = 0, longest = 0, cut = false;
     while (i < items.length) {
-      if (gen !== this._worldGen || this.glLost) break;
+      if (gone()) break;
       if (performance.now() > until) { cut = true; break; }
       const t = performance.now(), p0 = prog(), i0 = i;
       set();
@@ -1461,18 +1517,24 @@ export class RailScene {
         }
       } finally { unset(); }
       longest = Math.max(longest, performance.now() - t);
-      if (fences && prog() > p0) { await this._gpuIdle(gen, until); waits++; }
-      if (gen !== this._worldGen || this.glLost) break;
+      if (fences && prog() > p0) { await this._gpuIdle(gen, until, tok); waits++; }
+      if (gone()) break;
       const t2 = performance.now();
       set();
       try {
         for (let k = i0; k < i; k++) { try { drawItem(items[k]); } catch (e) { /* noop */ } }
       } finally { unset(); }
       longest = Math.max(longest, performance.now() - t2);
-      if (fences) { await this._gpuIdle(gen, until); waits++; } else await yieldTask(0);
-      tell(Math.min(0.99, i / total));
+      if (fences) { await this._gpuIdle(gen, until, tok); waits++; } else await yieldTask(0);
+      /* やめた準備は 進み具合も知らせない(新しい準備の帯を もどさない) */
+      if (!gone()) tell(Math.min(0.99, i / total));
     }
     this._shadowDirty = true;
+    /* やめた古い準備は まとめも出さない(新しい準備の まとめと まざらないように) */
+    if (tok != null && tok !== this._warmTok) {
+      if (this._debug) console.log('[p6] warm aborted at ' + i + '/' + items.length + ' (newer pass)');
+      return cut;
+    }
     if (this._debug) {
       const c = { A: 0, B: 0, C: 0, D: 0 };
       items.forEach((it) => { c[it.k]++; });
@@ -1485,8 +1547,9 @@ export class RailScene {
 
   /* GPU側(シェーダのリンク・描画の準備)が いま出した命令まで終わるのを待つ。
    * フェンスの状態は ほかのタスクの合間に のぞくだけなので、待つあいだ画面(しゅっぱつカードなど)は止まらない。
-   * 30秒・deadline(performance.now() の時刻。なければ なし)・ワールドの作り直し・文脈が消えたら 待つのをやめる */
-  async _gpuIdle(gen, deadline) {
+   * 30秒・deadline(performance.now() の時刻。なければ なし)・ワールドの作り直し・文脈が消えたら 待つのをやめる。
+   * tok(準備の番号)を渡したときは、新しい準備が はじまったら(_warmTok がちがう)・捨てたステージでも やめる */
+  async _gpuIdle(gen, deadline, tok) {
     const gl = this.renderer.getContext();
     let sync = null;
     try { sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0); gl.flush(); } catch (e) { sync = null; }
@@ -1496,6 +1559,7 @@ export class RailScene {
       for (let n = 0; ; n++) {
         await yieldTask(n < 2 ? 0 : 6);
         if (gen !== this._worldGen || this.glLost || gl.isContextLost()) break;
+        if (tok != null && (tok !== this._warmTok || this._dead)) break;
         if (gl.getSyncParameter(sync, gl.SYNC_STATUS) === gl.SIGNALED) break;
         if (performance.now() - t0 > 30000 || (deadline > 0 && performance.now() > deadline)) break;
       }
@@ -1792,9 +1856,10 @@ export class RailScene {
     }
     const r = this.renderer;
     t.mapping = THREE.EquirectangularReflectionMapping;
-    /* 太陽の円盤を抑えてから環境光を作る(影がはっきり出る) */
-    const sunDir = k === 'clear' ? prepareClearHdr(t) : null;
+    /* 地平線の明るさ(霧の色)を先に測り、太陽の円盤を抑えてから環境光を作る(影がはっきり出る)。
+     * 晴れの地平線より下は、その明るさから地面の色へ なめらかに(そらからの視点で 霧と同じ色に溶ける) */
     const hor = horizonRadiance(t);
+    const sunDir = k === 'clear' ? prepareClearHdr(t, hor) : null;
     let bg = null, cube = null;
     try {
       cube = new THREE.WebGLCubeRenderTarget(Math.max(16, t.image.height >> 1), { type: THREE.HalfFloatType });
@@ -1853,19 +1918,42 @@ export class RailScene {
     this._shadowDirty = true;
     if (apply) this._applyWeather();
     this._dropStandIn();
+    if (apply) this._bgSafe();
   }
 
   /* 晴れの空(HDR)が届いたあと、代わりの青空(_standIn)を どこも使っていなければ捨てる(GPUの約6MB)。
-   * 背景・環境光・曇りの代わり(env.rain)のどれかが まだ使っていれば、つぎの機会まで残す */
+   * 背景・環境光・曇りの代わり(env.rain)のどれかが まだ使っていれば、つぎの機会まで残す。
+   * 準備中(_warming)は捨てない: 分けて準備する _warmSliced は 背景を一時的に入れかえて もどすので、
+   * 捨てた青空が もどされると 黒い空になる。準備のあとの _flushStale で もう一度 呼ばれる。
+   * 捨てた背景は _deadBg に おぼえておく(背景の保険 _bgSafe が もどさないように) */
   _dropStandIn() {
     const si = this._standIn;
     if (!si || !this.env.clear || this.env.clear.placeholder) return;
+    if (this._warming) return;
     const sc = this.scene;
-    if (sc.environment === si.ibl || sc.background === si.bg) return;
+    if (sc.environment === si.ibl || sc.background === si.bg || this._bgLive === si.bg) return;
     if (this.env.rain && (this.env.rain.ibl === si.ibl || this.env.rain.bg === si.bg)) return;
     this._standIn = null;
+    this._deadBg = si.bg;
     try { if (si.iblRT) si.iblRT.dispose(); } catch (e) { /* noop */ }
     try { if (si.cube) si.cube.dispose(); } catch (e) { /* noop */ }
+  }
+
+  /* 背景の保険: いまの背景が、_applyAtmosphere の決めた背景(_bgLive)と ちがえば もどす
+   * (準備のあいだに 古い空・null が残った)。決めた背景が もう捨てた代わりの青空(_deadBg)なら、
+   * 見え方を決めなおす(届いた本物の空になる)。準備のおわり・届いた空を使いはじめたときに呼ぶ */
+  _bgSafe() {
+    const sc = this.scene;
+    if (!sc || this._bgLive === undefined) return;
+    if (this._deadBg && this._bgLive === this._deadBg) {
+      if (this._debug) console.warn('[p6] background was a disposed stand-in sky: re-applied');
+      this._applyWeather();
+      return;
+    }
+    if (sc.background !== this._bgLive) {
+      if (this._debug) console.warn('[p6] background restored after warm-up');
+      sc.background = this._bgLive;
+    }
   }
 
   /* 遠いセル(全線を約700m/750mごとに分けたメッシュ)を登録する。
@@ -2031,16 +2119,29 @@ export class RailScene {
     /* 動きが止まっても数フレームは描く(ドアが閉まった瞬間に人が立ち位置へ移るなど) */
     if (act || force) this._shadowHold = 4;
     else if (slow && this._frame % 3 === 0) this._shadowHold = Math.max(this._shadowHold, 1);
-    /* 中画質(と軽量化の段階)では、動いている間の描きなおしは 1秒30回まで(60fps なら1コマおき)。
+    /* 動いている間の描きなおしの間隔 per(60fps の コマの数。1 = 毎コマ):
+     *   _shadowEvery(main.js が決める。タッチ端末のタイトルで 4 など)> 0 なら それ。
+     *   夜・雨・雪は 4(月・くもり空の影は うすく、ずれは見えない。ブルーム・雨・雪の粒で GPU も いちばん重い)、
+     *   中画質(と軽量化の段階)は 2(1秒30回まで)、高は 1。
      * 描いたコマの数ではなく時間で決める(タッチ端末のタイトルは 1秒30コマに おさえて描くので、
-     * コマの数で1つおきにすると 1秒15回になって 走るデモ列車の影が ちらつく)。
+     * コマの数で数えると 回数が半分になって 走るデモ列車の影が ちらつく)。
      * 止まっている物の影は、描いたときの影の行列で見るので ずれない
-     * (自列車と 近くを動く ほかの列車の影は 最大1コマ遅れる)。
+     * (自列車と 近くを動く ほかの列車の影は 最大 per-1 コマ遅れる)。
+     * 影の箱が 前に描いた所から 12m 以上 動いたら 待たずに描く(重くて コマが とびとびのとき)。
      * dt が 0 の 1回だけの描きなおし(一時停止中など)は 時間が すすまないので、またずに描く */
     const alt = this._shadowLite || this.quality !== 'high';
+    const per = this._shadowEvery > 0 ? this._shadowEvery
+      : (this.timeOfDay === 'night' || this.weather !== 'clear') ? 4 : alt ? 2 : 1;
+    const minAge = per > 1 ? (per - 0.32) / 60 : 0;   // 2 → 0.028秒(1秒30回まで)・4 → 0.061秒(1秒15回まで)
+    if (!this._shMapTgt) this._shMapTgt = new THREE.Vector3(1e9, 0, 0);
+    const jump = tg.distanceToSquared(this._shMapTgt) > 144;
     this._shAge = (this._shAge || 0) + (dt > 0 ? dt : 0);
-    const want = !this._backdrop && (force || (this._shadowHold > 0 && (!alt || !act || !(dt > 0) || this._shAge >= 0.028)));
-    if (want) this._shAge = 0;
+    const want = !this._backdrop && (force || (this._shadowHold > 0 && (per <= 1 || !act || !(dt > 0) || jump || this._shAge >= minAge)));
+    if (want) {
+      this._shAge = 0;
+      this._shMapTgt.copy(tg);
+      this._shN = (this._shN || 0) + 1;   // 影の地図を描いた回数(確認用)
+    }
     r.shadowMap.needsUpdate = want;
     if (this._shadowHold > 0) this._shadowHold--;
     this._shadowDirty = false;
@@ -2211,8 +2312,10 @@ export class RailScene {
     const fps = Math.min(A.n, drawn > 0 ? drawn : A.n) / A.t, mx = A.mx, cpuAvg = A.cn ? A.cs / A.cn : -1;
     A.t = 0; A.n = 0; A.mx = 0; A.cs = 0; A.cn = 0; A.d0 = this.drawCount;
     this._aqLast = { fps, cpu: cpuAvg };
-    /* 30fps前後で1コマの長さがそろっている = 画面の書きかえの上限(iPadの低電力モードなど)。GPUの限界ではないので保存しない */
-    this._capLike = fps > 27 && fps < 32 && mx < 0.045;
+    /* 30fps前後で1コマの長さがそろっている = 画面の書きかえの上限(iPadの低電力モードなど)。GPUの限界ではないので保存しない。
+     * _rafCap30: main.js が しゅっぱつカードの間(描かないとき)の rAF の間隔から決める
+     * (true = 書きかえが 1秒30回に しぼられている / false = しぼられていない=30fps は GPU の重さ / undefined = わからない) */
+    this._capLike = (this._rafCap30 === true || this._rafCap30 === undefined) && fps > 27 && fps < 32 && mx < 0.045;
     /* 上げてみた段の見きわめ(2回) */
     if (A.trial) {
       const t = A.trial;
@@ -2365,6 +2468,8 @@ export class RailScene {
     const eveSky = eve && !wet && !!this.env.evening;
     if (this.eveSky) this.eveSky.visible = eveSky;
     if (this.nightSky) this.nightSky.visible = night && !!this.env.night;
+    /* _bgLive: ここで決めた背景(null・空の立方体・色)。準備(_warmSliced)が一時的に背景を消しても、
+     * 最後に これと くらべて もどす(古い空・捨てた代わりの青空を もどさない: iPad の黒い空) */
     if ((night || eveSky) && env) {
       this.scene.background = null;
       this.scene.environment = env.ibl;
@@ -2376,6 +2481,7 @@ export class RailScene {
       this.scene.background = this._bgCol.setHex(night ? 0x0a0f16 : rain ? 0x8d959c : snow ? 0xc9cfd5 : eve ? 0x9a7a6a : 0xa8c4dd);
       this.scene.environment = null;
     }
+    this._bgLive = this.scene.background;
     if (this._nightU) {
       this._nightU.uStars.value = wet ? 0 : 1;
       if (wet) this._nightU.uGlow.value.copy(this._glowWet);
@@ -2416,8 +2522,10 @@ export class RailScene {
     const sd = this._sunDir, az = Math.atan2(sd.z, sd.x), el = THREE.MathUtils.degToRad(36);
     this._sunLow.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az));
     this.sun.color.setHex(L.sun[1]);
+    /* 夕方の光の高さは 8°まで上げる(空の夕日の円盤は 3.2°のまま: _eveSunDir)。
+     * 5°だと 上を向いた面(運転台から見える 線路の砂利)に日が ほとんど当たらず、黒い板になる */
     this._curSunDir = night ? (this._moonDir || this._sunLow)
-      : eveSky && this._eveSunDir ? this._eveSunDir.clone().setY(Math.max(0.09, this._eveSunDir.y)).normalize() : this._sunLow;
+      : eveSky && this._eveSunDir ? this._eveSunDir.clone().setY(Math.max(0.14, this._eveSunDir.y)).normalize() : this._sunLow;
     /* 影はどの時間帯・天気でも落とす(切りかえると全シェーダの作り直しで止まる)。
      * 夜は月の青い影、雨はうすい影になる(強さは太陽の明るさで決まる) */
     this.sun.castShadow = QUALITY[this.quality].shadowsOn;
@@ -2428,8 +2536,8 @@ export class RailScene {
     }
     this._hemiSky.setHex(L.hemi[1]);
     this._hemiGnd.setHex(L.hemi[2]);
-    /* 霧の照り返しに使う太陽の向き(夕方だけ値が入る。_applyLightLevel) */
-    this.U.uSunDirW.value.copy(this._eveSunDir || this._curSunDir);
+    /* 霧の照り返しに使う太陽の向き(夕方は 見えている夕日の向き・昼は 光の太陽の向き。強さは _applyLightLevel) */
+    this.U.uSunDirW.value.copy(eveSky && this._eveSunDir ? this._eveSunDir : this._curSunDir);
     /* --- ぬれ・雪(全材質共通の部品の値は _applyLightLevel で。トンネルの中は乾いている) --- */
     this.M.railHead.roughness = wet ? 0.12 : 0.3;
     this.M.water.roughness = night ? 0.22 : wet ? 0.38 : 0.3;
@@ -2454,7 +2562,7 @@ export class RailScene {
   }
 
   /* 目の慣れ k(屋外1・トンネルの奥0.1)で決まるもの。毎フレーム呼ぶので値の書きかえだけ(new しない)。
-   * 光の強さは k、露出は目の慣れ _kE(暗い所へ入ると約2秒かけて慣れ、明るい所へ出ると約1秒まぶしい) */
+   * 光の強さは k、露出は目の慣れ _kE(暗い所へ入ると約2秒かけて慣れ、明るい所へ出ると約1秒まぶしい。夜は小さく) */
   _applyLightLevel(k) {
     const L = this._lk;
     if (!L) return;
@@ -2462,7 +2570,11 @@ export class RailScene {
     const day = this.timeOfDay === 'day';
     const post = this._usePost();
     const kE = this._kE != null ? this._kE : k;
-    const boost = Math.min(2, 1 + 0.9 * (1 - kE));
+    /* 目の慣れで露出を上げる量: 昼は大きく(暗いトンネルの中も見える)、夜は小さく
+     * (夜は灯りのあるトンネル・ターミナルのほうが外より明るい。上げすぎると 出たときに窓や灯りが白くとぶ) */
+    const tod = this.timeOfDay;
+    const adK = tod === 'night' ? 0.2 : tod === 'evening' ? 0.6 : 0.9;
+    const boost = Math.min(2, 1 + adK * (1 - kE));
     /* 太陽: ターミナルの中から見る外は、屋根の下より明るい(まぶしい出口)。影がある画質では、太陽は弱めない
      * (屋根の影で中には日が入らない。目の慣れで露出が上がるぶん、外が白くにじむ)。影のない画質は今までどおり */
     const kSun = (this._termCam || this._termSun) && this.renderer.shadowMap.enabled ? 1 : k;
@@ -2471,7 +2583,7 @@ export class RailScene {
      * 出口で急に消えないよう k だけで決める。ターミナルは天井の灯りが多いので控えめに)。
      * 晴れの夜の空の光は、郊外ほど暗い(街灯・看板の照り返しが少ない。_glowK: 0=都心 1=郊外) */
     const fill = k < 1 ? (this._inTerminal(this._camS, 30) ? 0.35 : 0.7) * (1 - k) : 0;
-    const open = L.key === 'night' ? 1.05 - 0.2 * this._glowK : 1;
+    const open = L.key === 'night' ? 1.05 - 0.1 * this._glowK : 1;
     this.hemi.intensity = L.hemi[0] * k * open + fill;
     this.hemi.color.copy(this._hemiSky).lerp(this._hemiInSky, 1 - k);
     this.hemi.groundColor.copy(this._hemiGnd).lerp(this._hemiInGnd, 1 - k);
@@ -2482,24 +2594,32 @@ export class RailScene {
     if (kf < 1) fog.color.lerp(this._fogIn, 1 - kf);
     fog.near = I.fog[1] + (L.fog[1] - I.fog[1]) * kf;
     fog.far = I.fog[2] + (L.fog[2] - I.fog[2]) * kf;
-    /* 上空から: 街の外の何もない地面がかすみに溶けこむよう、霧を近くから濃く */
-    if (this.camMode === 'drone') { fog.near = Math.min(fog.near, 20); fog.far = Math.min(fog.far, 1050); }
-    /* ターミナルの中から出口の先を見ると、外は明るい空の色に白っぽくかすむ(暗い所から見る外はまぶしい)。
-     * 霧を出口の少し先から濃くする(屋根の下は変わらない)。出たあとは目の慣れ(k)にあわせて元の霧へもどす */
+    /* 上空から: 街の外の何もない地面がかすみに溶けこむよう、霧を近くから濃く(800m で地平線の色) */
+    if (this.camMode === 'drone') { fog.near = Math.min(fog.near, 20); fog.far = Math.min(fog.far, 800); }
+    /* ターミナルの中から出口の先を見ると、外は明るい(目の慣れで露出が上がっている)。
+     * 霧は出口の少し先から ゆるく足すだけ(濃くすると 外が白い霧の日に見えて、色と影が消える)。
+     * まぶしさは ブルームで出口のふちを にじませる(下の _termCam のしきい値)。出たあとは目の慣れ(k)で元へ */
     const tw = this._termW || 0;
     if (tw > 0) {
       const n0 = Math.max(fog.near, (this._termD || 0) + 5);
       fog.near += (n0 - fog.near) * tw;
-      fog.far += (n0 + 300 - fog.far) * tw;
-      fog.color.multiplyScalar(1 + tw);
+      fog.far += (n0 + 1000 - fog.far) * tw;
+      fog.color.multiplyScalar(1 + 0.4 * tw);
     }
-    /* 霧の照り返し(夕方・ブルーム経由だけ。直接描く霧はトーンマップ後の色なので足さない)。
-     * 太陽の側だけ明るく(せまい範囲)、反対側は地平線と同じ青みの灰色へ(_duskU.uHorAnti) */
+    /* 霧の照り返し(ブルーム経由だけ。直接描く霧はトーンマップ後の色なので足さない)。
+     * 夕方: 太陽の側だけ明るく(せまい範囲)、反対側は地平線と同じ青みの灰色へ(_duskU.uHorAnti)。
+     * 昼: 太陽の側は少し あたたかく明るい かすみ、反対側(日かげの側の遠い丘)は青い かすみ(空気遠近) */
     const eveP = L.key === 'eve' && post;
+    const dayP = L.key === 'day' && post;
     if (eveP) this.U.uFogSun.value.set(0.55 * kf, 0.12 * kf, 0.02 * kf);
+    else if (dayP) this.U.uFogSun.value.set(0.10 * kf, 0.085 * kf, 0.06 * kf);
     else this.U.uFogSun.value.set(0, 0, 0);
-    this.U.uFogDir.value = eveP ? kf : 0;
+    this.U.uFogDir.value = eveP ? kf : dayP ? 0.55 * kf : 0;
     if (eveP && this._duskU && this._duskU.uHorAnti) this.U.uFogAnti.value.copy(this._duskU.uHorAnti.value);
+    else if (dayP) {
+      if (!this._fogAntiK) this._fogAntiK = new THREE.Color().setRGB(0.88, 0.97, 1.16, THREE.LinearSRGBColorSpace);
+      this.U.uFogAnti.value.copy(this._fogPost).multiply(this._fogAntiK);
+    }
     /* 遠景クリップ = 霧の終わり+60m(夜は対向列車の灯りが消えないよう1300m以上) */
     const far = Math.round(Math.max(fog.far + 60, this.timeOfDay === 'night' ? 1300 : 0));
     if (far !== this.camera.far) {
@@ -2518,6 +2638,14 @@ export class RailScene {
     this.U.uNightDs.value = (L.desat || 0) * k;
     this.U.uDsLo.value = post ? 0.01 : 0.08;
     this.U.uDsHi.value = post ? 0.12 : 0.45;
+    /* 色をぬいた暗い所の色み: 夜は青い灰色(目が暗い所で青を強く感じる)。明かりの当たる所は あたたかいまま */
+    if (this.U.uDsTint) {
+      if (L.key === 'night') this.U.uDsTint.value.set(0.88, 1.0, 1.32);
+      else if (L.key === 'nightWet') this.U.uDsTint.value.set(0.92, 1.0, 1.18);
+      else this.U.uDsTint.value.set(1, 1, 1);
+    }
+    /* 表ごとの仕上げ(中・高の出力パス)。黒のうき上がりは目の慣れ k に合わせて(トンネルの中は なし) */
+    if (this._outPass) applyGrade(this._outPass.uniforms, L.grade, k);
     /* 前照灯(昼の屋外は0、トンネルでは点ける) */
     if (this.headlight) this.headlight.intensity = L.head + (I.head - L.head) * (1 - k);
     /* ブルーム: 明るさの境目(しきい値)は表どおり。屋内(昼)は k に合わせてじわっと効かせる。
@@ -2526,7 +2654,8 @@ export class RailScene {
       const kb = Math.min(k, kE);
       const inside = day && kb < 0.95;
       const b = inside ? I.bloom : (L.bloom || I.bloom);
-      this.bloom.threshold = b[0];
+      /* ターミナルの屋根の下から見る明るい出口は、しきい値を下げて ふちを にじませる(霧で白くしない) */
+      this.bloom.threshold = this._termCam ? Math.min(1.3, b[0]) : b[0];
       this.bloom.strength = b[1] * (inside ? Math.min(1, (1 - kb) / 0.3) : 1);
       this.bloom.radius = b[2];
     }
@@ -3476,6 +3605,11 @@ export class RailScene {
 
   /* カメラ: 'cab'(運転台) / 'chase'(うしろ上) / 'side'(よこ) / 'front'(線路わきで待ちかまえる) / 'drone'(上空) */
   setCameraMode(mode) {
+    /* 自動画質の はかりかけ(4秒)は捨てる(運転台と外の視点の重さを まぜない。切りかえの1コマも数えない) */
+    if (mode !== this.camMode && this._aq) {
+      const A = this._aq;
+      A.t = 0; A.n = 0; A.mx = 0; A.cs = 0; A.cn = 0; A.d0 = -1; A.hitch = performance.now();
+    }
     this.camMode = mode;
     this._shadowDirty = true;
     this._cullX = 1e9;
@@ -3502,19 +3636,28 @@ export class RailScene {
     sc.updateProjectionMatrix();
   }
 
-  /* 音の環境(audio.update に渡す) */
+  /* 音の環境(audio.update に渡す)。毎フレーム呼ばれるので、入れ物と配列は使い回す(new しない) */
   audioEnv() {
     const sim = this.sim;
     const s = sim.pos;
-    return {
-      inTunnel: this._inTunnel(s - 40) || this._inTerminal(s, -10),
-      curveRadius: sim.radiusAt ? sim.radiusAt(s - 40) : Infinity,
-      crossings: (this.crossSpots || []).map((c) => c - s).filter((d) => Math.abs(d) < 400),
-      passing: this.traffic ? this.traffic.passingInfo() : [],
-      rain: this.weather === 'rain',
-      snow: this.weather === 'snow',
-      external: this.camMode !== 'cab',
-    };
+    const a = this._aEnv || (this._aEnv = { inTunnel: false, curveRadius: Infinity, crossings: [], passing: [], rain: false, snow: false, external: false });
+    /* トンネルの中か(_inTunnel と同じ判定を for で。関数を作らない) */
+    const tn = this.line.sections.tunnel, s40 = s - 40;
+    let inT = false;
+    for (let i = 0; i < tn.length; i++) if (s40 > tn[i].from && s40 < tn[i].to) { inT = true; break; }
+    a.inTunnel = inT || this._inTerminal(s, -10);
+    a.curveRadius = sim.radiusAt ? sim.radiusAt(s - 40) : Infinity;
+    const cr = a.crossings, cs = this.crossSpots;
+    cr.length = 0;
+    if (cs) for (let i = 0; i < cs.length; i++) { const d = cs[i] - s; if (Math.abs(d) < 400) cr.push(d); }
+    const tr = this.traffic;
+    if (tr && typeof tr.passingInfo === 'function' && tr.passingInfo.length >= 1) a.passing = tr.passingInfo(a.passing);
+    else if (tr) a.passing = tr.passingInfo();
+    else a.passing.length = 0;
+    a.rain = this.weather === 'rain';
+    a.snow = this.weather === 'snow';
+    a.external = this.camMode !== 'cab';
+    return a;
   }
 
   /* 運転台の体感(ブレーキで前のめり・カーブで内側へ傾く・25mごとのレールの継ぎ目でコトン) */
@@ -3700,7 +3843,7 @@ export class RailScene {
 
   /* 目の慣れ: カメラがトンネル・ターミナルにいると暗く(k<1)。
    * 光(k)は出入り口の30mで0.4秒ほどで変わる。目(露出 _kE)は遅れて追いかける:
-   * 入るときは約2.2秒(しばらく暗い)、出るときは約0.9秒(しばらくまぶしい=白くにじむ) */
+   * 入るときは約2.2秒(しばらく暗い)、出るときは約0.9秒(しばらくまぶしい=白くにじむ)。夜は どちらも約0.6秒 */
   _updateLightLevel(dt) {
     const s = this._camS;
     let kT = 1, kfT = 1, wxT = 1, indoor = false, term = false;
@@ -3737,7 +3880,8 @@ export class RailScene {
     else if (dt > 0) {
       const a = 1 - Math.exp(-dt / 0.4);
       const aw = 1 - Math.exp(-dt * 1.2);
-      const ae = 1 - Math.exp(-dt / (kT < this._kE ? 2.2 : 0.9));
+      /* 夜は入るときも出るときも 0.6秒(灯りのあるトンネルは外より明るいので、昼のように「しばらく暗い・出口でまぶしい」にしない) */
+      const ae = 1 - Math.exp(-dt / (this.timeOfDay === 'night' ? 0.6 : kT < this._kE ? 2.2 : 0.9));
       this._k += (kT - this._k) * a;
       this._kFog += (kfT - this._kFog) * a;
       this._kWx += (wxT - this._kWx) * aw;
